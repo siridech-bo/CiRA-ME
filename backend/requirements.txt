@@ -1,0 +1,46 @@
+# CiRA ME - Backend Dependencies
+# Machine Intelligence for Edge Computing
+
+# Core Flask
+Flask>=3.0.0
+Flask-CORS>=4.0.0
+Werkzeug>=3.0.0
+
+# Database
+# SQLite is built-in to Python
+
+# Data Processing
+pandas>=2.0.0
+numpy>=1.24.0
+scipy>=1.11.0
+
+# Machine Learning - Classification
+scikit-learn>=1.3.0
+
+# Machine Learning - Anomaly Detection
+pyod>=1.1.0
+
+# Feature Extraction
+tsfresh>=0.20.0
+
+# CBOR Support
+cbor2>=5.5.0
+
+# SSH Deployment
+paramiko>=3.3.0
+scp>=0.14.0
+
+# Model Export (Optional)
+joblib>=1.3.0
+# skl2onnx>=1.15.0  # For ONNX export
+# onnxruntime>=1.16.0  # For ONNX inference
+
+# LLM Integration (Optional)
+# ollama>=0.1.0  # For local Llama integration
+
+# Visualization (Optional - for backend-generated plots)
+matplotlib>=3.7.0
+seaborn>=0.12.0
+
+# Development
+python-dotenv>=1.0.0

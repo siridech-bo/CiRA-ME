@@ -1,0 +1,246 @@
+/**
+ * CiRA ME - Global Styles
+ * Machine Intelligence for Edge Computing
+ */
+
+// Fonts
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+// CSS Variables
+:root {
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+
+  // Brand colors
+  --cira-primary: #6366F1;
+  --cira-secondary: #22D3EE;
+  --cira-accent: #A855F7;
+
+  // Status colors
+  --cira-success: #10B981;
+  --cira-warning: #F59E0B;
+  --cira-error: #EF4444;
+  --cira-info: #3B82F6;
+}
+
+// Base styles
+html, body {
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+// Code/monospace elements
+code, pre, .mono {
+  font-family: var(--font-mono);
+}
+
+// Custom scrollbar
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(99, 102, 241, 0.3);
+  border-radius: 4px;
+
+  &:hover {
+    background: rgba(99, 102, 241, 0.5);
+  }
+}
+
+// Logo animation
+.logo-wave {
+  animation: wave-flow 3s ease-in-out infinite;
+}
+
+@keyframes wave-flow {
+  0%, 100% {
+    d: path('M 0 20 Q 20 10, 40 20 T 80 20');
+  }
+  50% {
+    d: path('M 0 20 Q 20 30, 40 20 T 80 20');
+  }
+}
+
+// Status indicator
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+
+  &.connected {
+    background-color: var(--cira-success);
+    box-shadow: 0 0 8px var(--cira-success);
+  }
+
+  &.disconnected {
+    background-color: var(--cira-error);
+  }
+
+  &.loading {
+    background-color: var(--cira-warning);
+    animation: pulse 1s infinite;
+  }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+// Pipeline stepper customization
+.pipeline-stepper {
+  .v-stepper-item {
+    &.v-stepper-item--complete {
+      .v-stepper-item__avatar {
+        background: linear-gradient(135deg, var(--cira-primary), var(--cira-secondary)) !important;
+      }
+    }
+  }
+}
+
+// Data table enhancements
+.v-data-table {
+  .anomaly-chip {
+    &.normal {
+      background: rgba(16, 185, 129, 0.2) !important;
+      color: #10B981 !important;
+    }
+
+    &.anomaly {
+      background: rgba(239, 68, 68, 0.2) !important;
+      color: #EF4444 !important;
+    }
+  }
+}
+
+// Chart containers
+.chart-container {
+  position: relative;
+  height: 300px;
+  width: 100%;
+}
+
+// Metric cards
+.metric-card {
+  position: relative;
+  overflow: hidden;
+
+  &::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 4px;
+    background: linear-gradient(90deg, var(--cira-primary), var(--cira-secondary));
+  }
+
+  .metric-value {
+    font-size: 2rem;
+    font-weight: 700;
+    color: var(--cira-primary);
+  }
+
+  .metric-change {
+    font-size: 0.875rem;
+
+    &.positive {
+      color: var(--cira-success);
+    }
+
+    &.negative {
+      color: var(--cira-error);
+    }
+  }
+}
+
+// Mode toggle styling
+.mode-toggle {
+  .v-btn {
+    transition: all 0.3s ease;
+
+    &.v-btn--active {
+      background: linear-gradient(135deg, var(--cira-primary), var(--cira-secondary)) !important;
+    }
+  }
+}
+
+// Feature list
+.feature-list {
+  .feature-item {
+    border-left: 3px solid transparent;
+    transition: all 0.2s ease;
+
+    &:hover {
+      background: rgba(99, 102, 241, 0.1);
+      border-left-color: var(--cira-primary);
+    }
+
+    &.selected {
+      background: rgba(99, 102, 241, 0.15);
+      border-left-color: var(--cira-secondary);
+    }
+  }
+}
+
+// LLM Assistant panel
+.llm-assistant {
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  border-radius: 12px;
+
+  .assistant-message {
+    background: rgba(99, 102, 241, 0.1);
+    border-radius: 8px;
+    padding: 12px;
+    margin-bottom: 8px;
+
+    &::before {
+      content: '🤖';
+      margin-right: 8px;
+    }
+  }
+}
+
+// Deployment progress
+.deployment-progress {
+  .step {
+    display: flex;
+    align-items: center;
+    padding: 8px 0;
+
+    .step-icon {
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-right: 12px;
+
+      &.pending {
+        border: 2px solid rgba(255, 255, 255, 0.3);
+      }
+
+      &.in-progress {
+        background: var(--cira-warning);
+        animation: pulse 1s infinite;
+      }
+
+      &.completed {
+        background: var(--cira-success);
+      }
+
+      &.failed {
+        background: var(--cira-error);
+      }
+    }
+  }
+}

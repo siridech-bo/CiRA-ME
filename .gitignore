@@ -1,0 +1,58 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Node
+node_modules/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Backend data
+backend/data/*.db
+backend/datasets/
+
+# Dataset files (large binary files)
+*.cbor
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+npm-debug.log*
+
+# Build output
+frontend/dist/
+
+# Claude plans
+.claude/
+
+# Trained models (binary)
+*.pkl
+*.onnx
+*.h5
+*.pt
+*.pth
+
+# Windows reserved filenames
+nul

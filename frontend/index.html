@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <link rel="icon" type="image/svg+xml" href="/logo.svg">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CiRA ME - Machine Intelligence for Edge</title>
+    <style>
+      /* Initial loading styles */
+      body {
+        margin: 0;
+        background-color: #0F172A;
+      }
+      #app-loader {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        background-color: #0F172A;
+        color: #E2E8F0;
+        font-family: system-ui, -apple-system, sans-serif;
+      }
+      .loader-wave {
+        width: 80px;
+        height: 40px;
+        margin-bottom: 20px;
+      }
+      .loader-wave path {
+        fill: none;
+        stroke: #6366F1;
+        stroke-width: 3;
+        animation: wave 1.5s ease-in-out infinite;
+      }
+      @keyframes wave {
+        0%, 100% { d: path('M 0 20 Q 20 10, 40 20 T 80 20'); }
+        50% { d: path('M 0 20 Q 20 30, 40 20 T 80 20'); }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <div id="app-loader">
+        <svg class="loader-wave" viewBox="0 0 80 40">
+          <path d="M 0 20 Q 20 10, 40 20 T 80 20" />
+        </svg>
+        <div>Loading CiRA ME...</div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
