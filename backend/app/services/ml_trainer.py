@@ -14,8 +14,10 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, f1_score,
-    confusion_matrix, classification_report, roc_auc_score
+    confusion_matrix, classification_report, roc_auc_score,
+    roc_curve, auc, precision_recall_curve, average_precision_score
 )
+from sklearn.preprocessing import label_binarize
 
 from .feature_extractor import FeatureExtractor, _feature_sessions
 
@@ -234,40 +236,202 @@ class MLTrainer:
             metrics['test_anomalies_detected'] = int(np.sum(y_pred_test))
 
             # If we have ground truth test labels
-            if y_test is not None and len(np.unique(y_test)) == 2:
-                y_binary = (y_test == 'anomaly') | (y_test == 1) | (y_test == '1')
-                y_binary = y_binary.astype(int)
+            if y_test is not None and len(y_test) > 0:
+                # Convert labels to binary (0=normal, 1=anomaly)
+                # Handle various label formats
+                y_test_arr = np.array(y_test)
+                if y_test_arr.dtype == np.object_ or y_test_arr.dtype.kind in ['U', 'S']:
+                    # String labels - check for anomaly indicators
+                    y_binary = np.array([
+                        1 if str(l).lower() in ['anomaly', 'abnormal', 'fault', 'failure', 'attack', 'malicious', '1', 'true', 'yes', 'bad']
+                        else 0
+                        for l in y_test_arr
+                    ])
+                else:
+                    # Numeric labels - assume non-zero is anomaly
+                    y_binary = (y_test_arr != 0).astype(int)
 
+                # Only calculate metrics if we have both classes
+                if len(np.unique(y_binary)) == 2:
+                    # Basic metrics
+                    metrics.update({
+                        'accuracy': float(accuracy_score(y_binary, y_pred_test)),
+                        'precision': float(precision_score(y_binary, y_pred_test, zero_division=0)),
+                        'recall': float(recall_score(y_binary, y_pred_test, zero_division=0)),
+                        'f1': float(f1_score(y_binary, y_pred_test, zero_division=0))
+                    })
+
+                    # Confusion matrix with labels
+                    cm = confusion_matrix(y_binary, y_pred_test)
+                    metrics['confusion_matrix'] = cm.tolist()
+                    metrics['confusion_matrix_labels'] = ['Normal', 'Anomaly']
+                    metrics['classes'] = ['Normal', 'Anomaly']
+
+                    # TP/TN/FP/FN breakdown
+                    tn, fp, fn, tp = cm.ravel()
+                    metrics['tp'] = int(tp)
+                    metrics['tn'] = int(tn)
+                    metrics['fp'] = int(fp)
+                    metrics['fn'] = int(fn)
+                    # Also use long names for frontend compatibility
+                    metrics['true_positives'] = int(tp)
+                    metrics['true_negatives'] = int(tn)
+                    metrics['false_positives'] = int(fp)
+                    metrics['false_negatives'] = int(fn)
+
+                    # Per-class metrics
+                    metrics['per_class_metrics'] = [
+                        {
+                            'class': 'Normal',
+                            'precision': float(tn / (tn + fn)) if (tn + fn) > 0 else 0,
+                            'recall': float(tn / (tn + fp)) if (tn + fp) > 0 else 0,
+                            'support': int(tn + fp)
+                        },
+                        {
+                            'class': 'Anomaly',
+                            'precision': float(precision_score(y_binary, y_pred_test, zero_division=0)),
+                            'recall': float(recall_score(y_binary, y_pred_test, zero_division=0)),
+                            'support': int(tp + fn)
+                        }
+                    ]
+
+                    # ROC curve
+                    try:
+                        fpr, tpr, _ = roc_curve(y_binary, decision_scores_test)
+                        metrics['auc_roc'] = float(roc_auc_score(y_binary, decision_scores_test))
+                        metrics['roc_auc'] = metrics['auc_roc']  # Alias for frontend
+                        # Downsample curve points (max 100 points)
+                        if len(fpr) > 100:
+                            indices = np.linspace(0, len(fpr) - 1, 100, dtype=int)
+                            fpr = fpr[indices]
+                            tpr = tpr[indices]
+                        metrics['roc_curve'] = {
+                            'fpr': fpr.tolist(),
+                            'tpr': tpr.tolist()
+                        }
+                    except ValueError:
+                        pass
+
+                    # PR curve
+                    try:
+                        precision_curve, recall_curve, _ = precision_recall_curve(y_binary, decision_scores_test)
+                        metrics['auc_pr'] = float(average_precision_score(y_binary, decision_scores_test))
+                        # Downsample curve points
+                        if len(precision_curve) > 100:
+                            indices = np.linspace(0, len(precision_curve) - 1, 100, dtype=int)
+                            precision_curve = precision_curve[indices]
+                            recall_curve = recall_curve[indices]
+                        metrics['pr_curve'] = {
+                            'precision': precision_curve.tolist(),
+                            'recall': recall_curve.tolist()
+                        }
+                    except ValueError:
+                        pass
+                else:
+                    # Test labels don't have both classes
+                    unique_labels = np.unique(y_binary)
+                    metrics['metrics_info'] = f'Cannot calculate accuracy metrics - test data has only {len(unique_labels)} class(es). Need both normal and anomaly samples.'
+
+        elif y_train is not None and len(y_train) > 0:
+            # Fallback: evaluate on training data if no test set
+            # Convert labels to binary (0=normal, 1=anomaly)
+            y_train_arr = np.array(y_train)
+            if y_train_arr.dtype == np.object_ or y_train_arr.dtype.kind in ['U', 'S']:
+                # String labels - check for anomaly indicators
+                y_binary = np.array([
+                    1 if str(l).lower() in ['anomaly', 'abnormal', 'fault', 'failure', 'attack', 'malicious', '1', 'true', 'yes', 'bad']
+                    else 0
+                    for l in y_train_arr
+                ])
+            else:
+                # Numeric labels - assume non-zero is anomaly
+                y_binary = (y_train_arr != 0).astype(int)
+
+            # Only calculate if we have both classes
+            if len(np.unique(y_binary)) == 2:
+                # Basic metrics
                 metrics.update({
-                    'accuracy': float(accuracy_score(y_binary, y_pred_test)),
-                    'precision': float(precision_score(y_binary, y_pred_test, zero_division=0)),
-                    'recall': float(recall_score(y_binary, y_pred_test, zero_division=0)),
-                    'f1': float(f1_score(y_binary, y_pred_test, zero_division=0)),
-                    'confusion_matrix': confusion_matrix(y_binary, y_pred_test).tolist()
+                    'accuracy': float(accuracy_score(y_binary, y_pred_train)),
+                    'precision': float(precision_score(y_binary, y_pred_train, zero_division=0)),
+                    'recall': float(recall_score(y_binary, y_pred_train, zero_division=0)),
+                    'f1': float(f1_score(y_binary, y_pred_train, zero_division=0))
                 })
 
+                # Confusion matrix with labels
+                cm = confusion_matrix(y_binary, y_pred_train)
+                metrics['confusion_matrix'] = cm.tolist()
+                metrics['confusion_matrix_labels'] = ['Normal', 'Anomaly']
+                metrics['classes'] = ['Normal', 'Anomaly']
+
+                # TP/TN/FP/FN breakdown
+                tn, fp, fn, tp = cm.ravel()
+                metrics['tp'] = int(tp)
+                metrics['tn'] = int(tn)
+                metrics['fp'] = int(fp)
+                metrics['fn'] = int(fn)
+                # Also use long names for frontend compatibility
+                metrics['true_positives'] = int(tp)
+                metrics['true_negatives'] = int(tn)
+                metrics['false_positives'] = int(fp)
+                metrics['false_negatives'] = int(fn)
+
+                # Per-class metrics
+                metrics['per_class_metrics'] = [
+                    {
+                        'class': 'Normal',
+                        'precision': float(tn / (tn + fn)) if (tn + fn) > 0 else 0,
+                        'recall': float(tn / (tn + fp)) if (tn + fp) > 0 else 0,
+                        'support': int(tn + fp)
+                    },
+                    {
+                        'class': 'Anomaly',
+                        'precision': float(precision_score(y_binary, y_pred_train, zero_division=0)),
+                        'recall': float(recall_score(y_binary, y_pred_train, zero_division=0)),
+                        'support': int(tp + fn)
+                    }
+                ]
+
+                # ROC curve
                 try:
-                    metrics['auc_roc'] = float(roc_auc_score(y_binary, decision_scores_test))
+                    fpr, tpr, _ = roc_curve(y_binary, decision_scores_train)
+                    metrics['auc_roc'] = float(roc_auc_score(y_binary, decision_scores_train))
+                    metrics['roc_auc'] = metrics['auc_roc']  # Alias for frontend
+                    # Downsample curve points
+                    if len(fpr) > 100:
+                        indices = np.linspace(0, len(fpr) - 1, 100, dtype=int)
+                        fpr = fpr[indices]
+                        tpr = tpr[indices]
+                    metrics['roc_curve'] = {
+                        'fpr': fpr.tolist(),
+                        'tpr': tpr.tolist()
+                    }
                 except ValueError:
                     pass
 
-        elif y_train is not None and len(np.unique(y_train)) == 2:
-            # Fallback: evaluate on training data if no test set
-            y_binary = (y_train == 'anomaly') | (y_train == 1) | (y_train == '1')
-            y_binary = y_binary.astype(int)
+                # PR curve
+                try:
+                    precision_curve, recall_curve, _ = precision_recall_curve(y_binary, decision_scores_train)
+                    metrics['auc_pr'] = float(average_precision_score(y_binary, decision_scores_train))
+                    # Downsample curve points
+                    if len(precision_curve) > 100:
+                        indices = np.linspace(0, len(precision_curve) - 1, 100, dtype=int)
+                        precision_curve = precision_curve[indices]
+                        recall_curve = recall_curve[indices]
+                    metrics['pr_curve'] = {
+                        'precision': precision_curve.tolist(),
+                        'recall': recall_curve.tolist()
+                    }
+                except ValueError:
+                    pass
+            else:
+                # Labels don't have both classes - can't calculate supervised metrics
+                unique_labels = np.unique(y_binary)
+                metrics['metrics_info'] = f'Cannot calculate accuracy metrics - training data has only {len(unique_labels)} class(es). Anomaly detection requires labeled test data with both normal and anomaly samples.'
 
-            metrics.update({
-                'accuracy': float(accuracy_score(y_binary, y_pred_train)),
-                'precision': float(precision_score(y_binary, y_pred_train, zero_division=0)),
-                'recall': float(recall_score(y_binary, y_pred_train, zero_division=0)),
-                'f1': float(f1_score(y_binary, y_pred_train, zero_division=0)),
-                'confusion_matrix': confusion_matrix(y_binary, y_pred_train).tolist()
-            })
-
-            try:
-                metrics['auc_roc'] = float(roc_auc_score(y_binary, decision_scores_train))
-            except ValueError:
-                pass
+        # If no labels available at all
+        if y_train is None or len(y_train) == 0:
+            if X_test is None:
+                metrics['metrics_info'] = 'No labeled data available. Model trained using unsupervised anomaly detection. To see accuracy metrics, provide labeled test data.'
 
         # Generate session ID and save model
         training_session_id = str(uuid.uuid4())
@@ -366,29 +530,186 @@ class MLTrainer:
         classes = np.unique(y)
         is_binary = len(classes) == 2
 
+        # Basic metrics
         metrics = {
             'accuracy': float(accuracy_score(y_test, y_pred)),
             'precision': float(precision_score(y_test, y_pred, average='weighted', zero_division=0)),
             'recall': float(recall_score(y_test, y_pred, average='weighted', zero_division=0)),
             'f1': float(f1_score(y_test, y_pred, average='weighted', zero_division=0)),
-            'confusion_matrix': confusion_matrix(y_test, y_pred).tolist(),
-            'classes': classes.tolist() if hasattr(classes, 'tolist') else list(classes),
             'train_samples': len(X_train),
             'test_samples': len(X_test),
             'split_method': split_method
         }
 
+        # Convert classes to list safely
+        class_list = classes.tolist() if hasattr(classes, 'tolist') else list(classes)
+        class_labels = [str(c) for c in class_list]
+        metrics['classes'] = class_list
+
+        # Confusion matrix with labels
+        cm = confusion_matrix(y_test, y_pred)
+        metrics['confusion_matrix'] = cm.tolist()
+        metrics['confusion_matrix_labels'] = class_labels
+
+        # TP/TN/FP/FN breakdown (for binary classification or per-class)
+        if is_binary:
+            # Binary case - direct TP/TN/FP/FN
+            tn, fp, fn, tp = cm.ravel()
+            metrics['tp'] = int(tp)
+            metrics['tn'] = int(tn)
+            metrics['fp'] = int(fp)
+            metrics['fn'] = int(fn)
+            # Also use long names for frontend compatibility
+            metrics['true_positives'] = int(tp)
+            metrics['true_negatives'] = int(tn)
+            metrics['false_positives'] = int(fp)
+            metrics['false_negatives'] = int(fn)
+        else:
+            # Multiclass - compute per class
+            per_class_metrics = []
+            for i, cls in enumerate(class_labels):
+                # One-vs-rest approach
+                tp = cm[i, i]
+                fn = cm[i, :].sum() - tp
+                fp = cm[:, i].sum() - tp
+                tn = cm.sum() - tp - fn - fp
+                per_class_metrics.append({
+                    'class': cls,
+                    'tp': int(tp),
+                    'tn': int(tn),
+                    'fp': int(fp),
+                    'fn': int(fn)
+                })
+            metrics['per_class_breakdown'] = per_class_metrics
+            # Also provide totals
+            metrics['tp'] = int(np.trace(cm))
+            metrics['fn'] = int(cm.sum() - np.trace(cm))
+
         # Classification report
         report = classification_report(y_test, y_pred, output_dict=True, zero_division=0)
         metrics['classification_report'] = report
 
-        # AUC-ROC for binary classification
-        if is_binary and hasattr(model, 'predict_proba'):
+        # Per-class metrics for display
+        per_class = []
+        for cls in class_list:
+            cls_str = str(cls)
+            if cls_str in report:
+                per_class.append({
+                    'class': cls_str,
+                    'precision': float(report[cls_str].get('precision', 0)),
+                    'recall': float(report[cls_str].get('recall', 0)),
+                    'f1': float(report[cls_str].get('f1-score', 0)),
+                    'support': int(report[cls_str].get('support', 0))
+                })
+        metrics['per_class_metrics'] = per_class
+
+        # ROC and PR curves
+        if hasattr(model, 'predict_proba'):
             try:
-                y_proba = model.predict_proba(X_test_scaled)[:, 1]
-                metrics['auc_roc'] = float(roc_auc_score(y_test, y_proba))
-            except ValueError:
-                pass
+                y_proba = model.predict_proba(X_test_scaled)
+
+                if is_binary:
+                    # Binary classification ROC curve
+                    y_proba_pos = y_proba[:, 1]
+                    # Convert labels to binary
+                    y_test_binary = (y_test == classes[1]).astype(int)
+
+                    # ROC curve
+                    fpr, tpr, thresholds = roc_curve(y_test_binary, y_proba_pos)
+                    metrics['auc_roc'] = float(roc_auc_score(y_test_binary, y_proba_pos))
+                    metrics['roc_auc'] = metrics['auc_roc']  # Alias for frontend
+                    # Downsample curve points for UI (max 100 points)
+                    if len(fpr) > 100:
+                        indices = np.linspace(0, len(fpr) - 1, 100, dtype=int)
+                        fpr = fpr[indices]
+                        tpr = tpr[indices]
+                    metrics['roc_curve'] = {
+                        'fpr': fpr.tolist(),
+                        'tpr': tpr.tolist()
+                    }
+
+                    # PR curve
+                    precision_curve, recall_curve, _ = precision_recall_curve(y_test_binary, y_proba_pos)
+                    metrics['auc_pr'] = float(average_precision_score(y_test_binary, y_proba_pos))
+                    # Downsample curve points
+                    if len(precision_curve) > 100:
+                        indices = np.linspace(0, len(precision_curve) - 1, 100, dtype=int)
+                        precision_curve = precision_curve[indices]
+                        recall_curve = recall_curve[indices]
+                    metrics['pr_curve'] = {
+                        'precision': precision_curve.tolist(),
+                        'recall': recall_curve.tolist()
+                    }
+                else:
+                    # Multiclass - compute macro-averaged ROC
+                    # CRITICAL: Use model.classes_ for binarization to match y_proba column order
+                    # model.predict_proba returns probabilities in order of model.classes_, NOT np.unique(y)
+                    model_classes = model.classes_.tolist() if hasattr(model.classes_, 'tolist') else list(model.classes_)
+
+                    # Debug: Check for class ordering mismatch
+                    print(f"[ML DEBUG] class_list (from np.unique): {class_list}")
+                    print(f"[ML DEBUG] model.classes_: {model_classes}")
+                    print(f"[ML DEBUG] y_proba shape: {y_proba.shape}")
+                    print(f"[ML DEBUG] y_proba row sums (should be ~1): {y_proba.sum(axis=1)[:5]}")
+
+                    # Binarize using MODEL's class order (not sorted unique)
+                    y_test_bin = label_binarize(y_test, classes=model_classes)
+                    if y_test_bin.shape[1] == 1:
+                        # This can happen with 2 classes
+                        y_test_bin = np.hstack([1 - y_test_bin, y_test_bin])
+
+                    print(f"[ML DEBUG] y_test_bin shape: {y_test_bin.shape}")
+                    print(f"[ML DEBUG] y_test unique values: {np.unique(y_test)}")
+
+                    # Compute ROC curve per class and average
+                    all_fpr = np.linspace(0, 1, 100)
+                    mean_tpr = np.zeros_like(all_fpr)
+                    valid_classes = 0
+
+                    for i in range(len(model_classes)):
+                        if i < y_proba.shape[1] and i < y_test_bin.shape[1]:
+                            fpr_i, tpr_i, _ = roc_curve(y_test_bin[:, i], y_proba[:, i])
+                            class_auc = auc(fpr_i, tpr_i)
+                            print(f"[ML DEBUG] Class {i} ({model_classes[i]}): AUC={class_auc:.4f}, samples={y_test_bin[:, i].sum()}")
+                            mean_tpr += np.interp(all_fpr, fpr_i, tpr_i)
+                            valid_classes += 1
+
+                    if valid_classes > 0:
+                        mean_tpr /= valid_classes
+
+                    print(f"[ML DEBUG] mean_tpr range: [{mean_tpr.min():.4f}, {mean_tpr.max():.4f}]")
+
+                    # Print sample curve points to verify shape
+                    sample_indices = [0, 25, 50, 75, 99]
+                    print(f"[ML DEBUG] Sample ROC points (fpr, tpr):")
+                    for idx in sample_indices:
+                        print(f"  [{idx}] ({all_fpr[idx]:.3f}, {mean_tpr[idx]:.3f})")
+
+                    metrics['roc_curve'] = {
+                        'fpr': all_fpr.tolist(),
+                        'tpr': mean_tpr.tolist()
+                    }
+
+                    try:
+                        # IMPORTANT: Pass labels parameter so sklearn knows y_proba column order
+                        metrics['auc_roc'] = float(roc_auc_score(
+                            y_test, y_proba,
+                            multi_class='ovr',
+                            average='weighted',
+                            labels=model_classes  # Tell sklearn the column order matches model.classes_
+                        ))
+                        metrics['roc_auc'] = metrics['auc_roc']  # Alias for frontend
+                        print(f"[ML DEBUG] Final ROC-AUC (sklearn ovr weighted): {metrics['auc_roc']:.4f}")
+                    except ValueError as e:
+                        print(f"[ML DEBUG] sklearn roc_auc_score failed: {e}")
+                        # Fallback: compute from the averaged curve
+                        metrics['roc_auc'] = float(auc(all_fpr, mean_tpr))
+                        metrics['auc_roc'] = metrics['roc_auc']
+                        print(f"[ML DEBUG] Fallback ROC-AUC from curve: {metrics['roc_auc']:.4f}")
+
+            except Exception as e:
+                # Log but don't fail if curve computation fails
+                print(f"Warning: Could not compute ROC/PR curves: {e}")
 
         # Feature importance (if available)
         if hasattr(model, 'feature_importances_'):

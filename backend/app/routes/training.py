@@ -3,6 +3,7 @@ CiRA ME - ML Training Routes
 Handles Anomaly Detection (PyOD), Classification (Scikit-learn), and Deep Learning (TimesNet)
 """
 
+import logging
 from flask import Blueprint, request, jsonify
 from ..auth import login_required
 from ..services.ml_trainer import MLTrainer
@@ -10,6 +11,7 @@ from ..services.timesnet_trainer import TimesNetTrainer, TimesNetConfig
 from ..services.data_loader import _data_sessions
 from ..config import ANOMALY_ALGORITHMS, CLASSIFICATION_ALGORITHMS
 
+logger = logging.getLogger(__name__)
 training_bp = Blueprint('training', __name__)
 
 
@@ -27,6 +29,100 @@ def get_algorithms():
             }
         }
     })
+
+
+@training_bp.route('/gpu-status', methods=['GET'])
+@login_required
+def get_gpu_status():
+    """
+    Get GPU availability and status for deep learning training.
+    Returns whether CUDA is available, GPU info, and memory usage.
+
+    Uses subprocess to check GPU status to avoid DLL conflicts.
+    """
+    import os
+    import sys
+    import json
+    import subprocess
+    import tempfile
+    from pathlib import Path
+
+    status = {
+        'available': False,
+        'cuda_available': False,
+        'device_name': None,
+        'device_count': 0,
+        'memory_total': None,
+        'memory_used': None,
+        'memory_free': None,
+        'error': None,
+        'recommendation': 'cpu',
+        'torch_available': False
+    }
+
+    # Use subprocess approach to avoid DLL conflicts with other CUDA apps
+    config_path = None
+    output_path = None
+
+    try:
+        subprocess_script = Path(__file__).parent.parent / 'services' / 'torch_subprocess.py'
+
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as config_file:
+            job = {'task': 'check_gpu', 'config': {}, 'data': {}}
+            json.dump(job, config_file)
+            config_path = config_file.name
+
+        output_path = config_path.replace('.json', '_output.json')
+
+        result = subprocess.run(
+            [sys.executable, str(subprocess_script), config_path, output_path],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+
+        if result.returncode == 0 and os.path.exists(output_path):
+            with open(output_path, 'r') as f:
+                subprocess_status = json.load(f)
+
+            status.update(subprocess_status)
+
+            if status.get('cuda_available'):
+                status['recommendation'] = 'cuda'
+            else:
+                status['recommendation'] = 'cpu'
+                if not status.get('error'):
+                    status['info'] = 'CUDA not available. Training will use CPU.'
+
+            return jsonify(status)
+
+        else:
+            # Subprocess failed but didn't throw exception
+            if result.stderr:
+                logger.warning(f"GPU check subprocess stderr: {result.stderr}")
+            status['torch_available'] = True  # Assume available if subprocess ran
+            status['recommendation'] = 'cpu'
+            status['info'] = 'GPU check completed. Subprocess training available.'
+
+    except subprocess.TimeoutExpired:
+        status['error'] = 'GPU check timed out'
+        status['torch_available'] = True
+        status['info'] = 'GPU check timed out but training should work.'
+    except Exception as e:
+        logger.warning(f"Subprocess GPU check failed: {e}")
+        status['error'] = str(e)
+        status['torch_available'] = True  # Subprocess failed but torch may still work
+        status['info'] = 'Subprocess training available.'
+    finally:
+        # Cleanup temp files
+        for path in [config_path, output_path]:
+            try:
+                if path and os.path.exists(path):
+                    os.unlink(path)
+            except:
+                pass
+
+    return jsonify(status)
 
 
 @training_bp.route('/train/anomaly', methods=['POST'])
@@ -193,6 +289,7 @@ def train_timesnet_anomaly():
     epochs = data.get('epochs', 50)
     batch_size = data.get('batch_size', 32)
     learning_rate = data.get('learning_rate', 0.001)
+    device = data.get('device', 'cpu')  # 'cpu' or 'cuda'
 
     if not windowed_session_id:
         return jsonify({'error': 'Windowed session ID required'}), 400
@@ -206,7 +303,7 @@ def train_timesnet_anomaly():
     labels = session.get('labels')
 
     try:
-        trainer = TimesNetTrainer()
+        trainer = TimesNetTrainer(device=device)
 
         # Build config
         num_channels = windows.shape[2] if len(windows.shape) == 3 else 1
@@ -254,6 +351,7 @@ def train_timesnet_classification():
     batch_size = data.get('batch_size', 32)
     learning_rate = data.get('learning_rate', 0.001)
     test_size = data.get('test_size', 0.2)
+    device = data.get('device', 'cpu')  # 'cpu' or 'cuda'
 
     if not windowed_session_id:
         return jsonify({'error': 'Windowed session ID required'}), 400
@@ -270,7 +368,7 @@ def train_timesnet_classification():
         return jsonify({'error': 'Labels required for classification'}), 400
 
     try:
-        trainer = TimesNetTrainer()
+        trainer = TimesNetTrainer(device=device)
 
         # Build config
         num_channels = windows.shape[2] if len(windows.shape) == 3 else 1

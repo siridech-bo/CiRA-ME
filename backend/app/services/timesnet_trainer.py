@@ -1,17 +1,27 @@
 """
 CiRA ME - TimesNet Deep Learning Trainer
 State-of-the-art time-series analysis using TimesNet architecture
+
+Uses subprocess isolation to avoid DLL conflicts with other CUDA applications.
 """
 
 import os
+import sys
 import uuid
+import json
 import pickle
+import subprocess
+import tempfile
 import numpy as np
 from typing import Dict, Any, Optional, List
 from datetime import datetime
+from pathlib import Path
 
 # Global storage for TimesNet models
 _timesnet_sessions: Dict[str, Dict] = {}
+
+# Path to the subprocess script
+SUBPROCESS_SCRIPT = Path(__file__).parent / 'torch_subprocess.py'
 
 
 class TimesNetConfig:
@@ -64,19 +74,115 @@ class TimesNetTrainer:
     both intraperiod and interperiod variations.
     """
 
-    def __init__(self, models_path: str = './models'):
+    def __init__(self, models_path: str = './models', device: str = 'cpu'):
+        """
+        Initialize TimesNet trainer.
+
+        Args:
+            models_path: Directory to save trained models
+            device: Training device - 'cpu' or 'cuda'
+        """
         self.models_path = models_path
+        self.device = device
         os.makedirs(models_path, exist_ok=True)
         self._check_dependencies()
 
     def _check_dependencies(self):
-        """Check if PyTorch is available."""
-        self.torch_available = False
+        """
+        Check if PyTorch subprocess script exists.
+
+        NOTE: We do NOT import torch here to avoid DLL conflicts with other CUDA apps.
+        The subprocess will handle torch import in its own isolated process.
+        """
+        self.torch_available = True  # Assume available, subprocess will verify
+        self.torch_error = None
+
+        # Verify subprocess script exists
+        if not SUBPROCESS_SCRIPT.exists():
+            self.torch_error = f"Subprocess script not found: {SUBPROCESS_SCRIPT}"
+            self.torch_available = False
+            print(f"[Warning] {self.torch_error}")
+
+        # Keep the user's device selection - subprocess will validate
+        print(f"[TimesNet] Configured device: {self.device} (will be validated in subprocess)")
+
+    def _run_subprocess_training(
+        self,
+        task: str,
+        config: dict,
+        data: dict,
+        timeout: int = 600
+    ) -> Dict[str, Any]:
+        """
+        Run PyTorch training in an isolated subprocess.
+
+        This avoids DLL conflicts with other CUDA applications on Windows.
+        """
+        # Create temp files for communication
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as config_file:
+            job = {
+                'task': task,
+                'config': config,
+                'data': data
+            }
+            json.dump(job, config_file)
+            config_path = config_file.name
+
+        output_path = config_path.replace('.json', '_output.json')
+
         try:
-            import torch
-            self.torch_available = True
-        except ImportError:
-            pass
+            # Run subprocess
+            python_exe = sys.executable
+            cmd = [python_exe, str(SUBPROCESS_SCRIPT), config_path, output_path]
+
+            print(f"[TimesNet] Running training in subprocess...")
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=str(Path(__file__).parent.parent.parent)  # backend directory
+            )
+
+            # Print subprocess output for debugging
+            if result.stderr:
+                print(f"[Subprocess stderr]: {result.stderr}")
+
+            if result.returncode != 0:
+                return {
+                    'success': False,
+                    'error': f'Subprocess failed with code {result.returncode}',
+                    'stderr': result.stderr
+                }
+
+            # Read output
+            if os.path.exists(output_path):
+                with open(output_path, 'r') as f:
+                    return json.load(f)
+            else:
+                return {
+                    'success': False,
+                    'error': 'Subprocess did not produce output file'
+                }
+
+        except subprocess.TimeoutExpired:
+            return {
+                'success': False,
+                'error': f'Training timed out after {timeout} seconds'
+            }
+        except Exception as e:
+            return {
+                'success': False,
+                'error': str(e)
+            }
+        finally:
+            # Cleanup temp files
+            for path in [config_path, output_path]:
+                try:
+                    if os.path.exists(path):
+                        os.unlink(path)
+                except:
+                    pass
 
     def get_default_config(self, mode: str, num_channels: int, num_classes: int = 2) -> TimesNetConfig:
         """Get default TimesNet configuration based on mode."""
@@ -127,6 +233,95 @@ class TimesNetTrainer:
 
         For anomaly detection, TimesNet learns to reconstruct normal patterns.
         Anomalies are detected when reconstruction error exceeds a threshold.
+
+        Uses subprocess isolation to avoid DLL conflicts with other CUDA apps.
+        """
+        # Get configuration
+        num_channels = windows.shape[2] if len(windows.shape) == 3 else 1
+        if config is None:
+            config = self.get_default_config('anomaly', num_channels)
+
+        # Prepare subprocess config
+        subprocess_config = {
+            'seq_len': windows.shape[1],
+            'enc_in': num_channels,
+            'd_model': config.d_model,
+            'd_ff': config.d_ff,
+            'dropout': config.dropout,
+            'epochs': epochs,
+            'batch_size': batch_size,
+            'learning_rate': learning_rate,
+            'device': self.device
+        }
+
+        # Prepare data (convert to lists for JSON serialization)
+        data = {
+            'windows': windows.tolist(),
+            'labels': labels.tolist() if labels is not None else None
+        }
+
+        # Run training in subprocess
+        result = self._run_subprocess_training('train_anomaly', subprocess_config, data)
+
+        if not result.get('success'):
+            # If subprocess fails, try fallback
+            error_msg = result.get('error', 'Unknown error')
+            print(f"[TimesNet] Subprocess training failed: {error_msg}")
+
+            if 'DLL' in error_msg or 'OSError' in error_msg:
+                print("[TimesNet] Falling back to non-PyTorch methods...")
+                return self._train_fallback_anomaly(windows, labels, config, epochs)
+
+            return {'error': error_msg}
+
+        # Generate session ID and save model
+        session_id = f"timesnet_anomaly_{uuid.uuid4().hex[:8]}"
+        model_path = os.path.join(self.models_path, f'{session_id}.pkl')
+
+        model_data = {
+            'model_state': result.get('model_state'),
+            'config': config.to_dict(),
+            'threshold': result['metrics'].get('threshold', 0),
+            'mode': 'anomaly'
+        }
+
+        with open(model_path, 'wb') as f:
+            pickle.dump(model_data, f)
+
+        # Store session
+        _timesnet_sessions[session_id] = {
+            'config': config,
+            'threshold': result['metrics'].get('threshold', 0),
+            'mode': 'anomaly',
+            'metrics': result['metrics'],
+            'model_path': model_path,
+            'created_at': datetime.utcnow().isoformat()
+        }
+
+        return {
+            'training_session_id': session_id,
+            'algorithm': 'TimesNet',
+            'mode': 'anomaly',
+            'metrics': result['metrics'],
+            'config': config.to_dict(),
+            'model_path': model_path,
+            'device': result.get('device', self.device)
+        }
+
+    def _train_anomaly_direct(
+        self,
+        windows: np.ndarray,
+        labels: Optional[np.ndarray] = None,
+        config: Optional[TimesNetConfig] = None,
+        epochs: int = 50,
+        batch_size: int = 32,
+        learning_rate: float = 0.001,
+        project_id: Optional[int] = None,
+        user_id: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """
+        Direct training (legacy method, kept for reference).
+        Uses subprocess now instead.
         """
         if not self.torch_available:
             return self._train_fallback_anomaly(windows, labels, config, epochs)
@@ -134,6 +329,10 @@ class TimesNetTrainer:
         import torch
         import torch.nn as nn
         from torch.utils.data import DataLoader, TensorDataset
+
+        # Set device
+        device = torch.device(self.device)
+        print(f"[TimesNet] Training on device: {device}")
 
         # Get configuration
         num_channels = windows.shape[2] if len(windows.shape) == 3 else 1
@@ -150,6 +349,7 @@ class TimesNetTrainer:
 
         # Build model (simplified TimesNet-like architecture)
         model = self._build_timesnet_model(config)
+        model = model.to(device)  # Move model to device
         optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
         criterion = nn.MSELoss()
 
@@ -160,7 +360,7 @@ class TimesNetTrainer:
         for epoch in range(epochs):
             epoch_loss = 0.0
             for batch in dataloader:
-                x = batch[0]
+                x = batch[0].to(device)  # Move data to device
                 optimizer.zero_grad()
 
                 # Forward pass (reconstruction)
@@ -178,9 +378,10 @@ class TimesNetTrainer:
 
         # Calculate reconstruction errors for threshold
         model.eval()
+        X_device = X.to(device)
         with torch.no_grad():
-            all_outputs = model(X)
-            reconstruction_errors = torch.mean((X - all_outputs) ** 2, dim=(1, 2)).numpy()
+            all_outputs = model(X_device)
+            reconstruction_errors = torch.mean((X_device - all_outputs) ** 2, dim=(1, 2)).cpu().numpy()
 
         # Set threshold (e.g., 95th percentile)
         threshold = np.percentile(reconstruction_errors, 95)
@@ -247,7 +448,8 @@ class TimesNetTrainer:
             'mode': 'anomaly',
             'metrics': metrics,
             'config': config.to_dict(),
-            'model_path': model_path
+            'model_path': model_path,
+            'device': self.device
         }
 
     def train_classification(
@@ -262,7 +464,109 @@ class TimesNetTrainer:
         project_id: Optional[int] = None,
         user_id: Optional[int] = None
     ) -> Dict[str, Any]:
-        """Train TimesNet for multi-class classification."""
+        """
+        Train TimesNet for multi-class classification.
+
+        Uses subprocess isolation to avoid DLL conflicts with other CUDA apps.
+        """
+        from sklearn.preprocessing import LabelEncoder
+
+        # Encode labels to get num_classes
+        le = LabelEncoder()
+        y_encoded = le.fit_transform(labels)
+        num_classes = len(le.classes_)
+        class_names = le.classes_.tolist()
+
+        # Get configuration
+        num_channels = windows.shape[2] if len(windows.shape) == 3 else 1
+        if config is None:
+            config = self.get_default_config('classification', num_channels, num_classes)
+        config.num_class = num_classes
+
+        # Prepare subprocess config
+        subprocess_config = {
+            'seq_len': windows.shape[1],
+            'enc_in': num_channels,
+            'd_model': config.d_model,
+            'd_ff': config.d_ff,
+            'dropout': config.dropout,
+            'epochs': epochs,
+            'batch_size': batch_size,
+            'learning_rate': learning_rate,
+            'test_size': test_size,
+            'device': self.device
+        }
+
+        # Prepare data (convert to lists for JSON serialization)
+        data = {
+            'windows': windows.tolist(),
+            'labels': labels.tolist()
+        }
+
+        # Run training in subprocess
+        result = self._run_subprocess_training('train_classification', subprocess_config, data)
+
+        if not result.get('success'):
+            # If subprocess fails, try fallback
+            error_msg = result.get('error', 'Unknown error')
+            print(f"[TimesNet] Subprocess training failed: {error_msg}")
+
+            if 'DLL' in error_msg or 'OSError' in error_msg:
+                print("[TimesNet] Falling back to non-PyTorch methods...")
+                return self._train_fallback_classification(windows, labels, config, epochs, test_size)
+
+            return {'error': error_msg}
+
+        # Generate session ID and save model
+        session_id = f"timesnet_class_{uuid.uuid4().hex[:8]}"
+        model_path = os.path.join(self.models_path, f'{session_id}.pkl')
+
+        model_data = {
+            'model_state': result.get('model_state'),
+            'config': config.to_dict(),
+            'label_encoder_classes': class_names,
+            'mode': 'classification'
+        }
+
+        with open(model_path, 'wb') as f:
+            pickle.dump(model_data, f)
+
+        # Store session
+        _timesnet_sessions[session_id] = {
+            'config': config,
+            'label_encoder_classes': class_names,
+            'mode': 'classification',
+            'metrics': result['metrics'],
+            'model_path': model_path,
+            'created_at': datetime.utcnow().isoformat()
+        }
+
+        return {
+            'training_session_id': session_id,
+            'algorithm': 'TimesNet',
+            'mode': 'classification',
+            'metrics': result['metrics'],
+            'config': config.to_dict(),
+            'model_path': model_path,
+            'device': result.get('device', self.device)
+        }
+
+    def _train_classification_direct(
+        self,
+        windows: np.ndarray,
+        labels: np.ndarray,
+        config: Optional[TimesNetConfig] = None,
+        epochs: int = 100,
+        batch_size: int = 32,
+        learning_rate: float = 0.001,
+        test_size: float = 0.2,
+        project_id: Optional[int] = None,
+        user_id: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """
+        Direct training (legacy method, kept for reference).
+        Uses subprocess now instead.
+        """
         if not self.torch_available:
             return self._train_fallback_classification(windows, labels, config, epochs, test_size)
 
@@ -271,6 +575,10 @@ class TimesNetTrainer:
         from torch.utils.data import DataLoader, TensorDataset
         from sklearn.model_selection import train_test_split
         from sklearn.preprocessing import LabelEncoder
+
+        # Set device
+        device = torch.device(self.device)
+        print(f"[TimesNet] Training on device: {device}")
 
         # Encode labels
         le = LabelEncoder()
@@ -301,8 +609,9 @@ class TimesNetTrainer:
         train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
         test_loader = DataLoader(test_dataset, batch_size=batch_size)
 
-        # Build model
+        # Build model and move to device
         model = self._build_timesnet_classifier(config)
+        model = model.to(device)
         optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
         criterion = nn.CrossEntropyLoss()
 
@@ -313,6 +622,8 @@ class TimesNetTrainer:
         for epoch in range(epochs):
             epoch_loss = 0.0
             for batch_x, batch_y in train_loader:
+                batch_x = batch_x.to(device)
+                batch_y = batch_y.to(device)
                 optimizer.zero_grad()
 
                 output = model(batch_x)
@@ -333,12 +644,13 @@ class TimesNetTrainer:
 
         with torch.no_grad():
             for batch_x, batch_y in test_loader:
+                batch_x = batch_x.to(device)
                 output = model(batch_x)
                 probs = torch.softmax(output, dim=1)
                 preds = torch.argmax(output, dim=1)
 
-                all_preds.extend(preds.numpy())
-                all_probs.extend(probs.numpy())
+                all_preds.extend(preds.cpu().numpy())
+                all_probs.extend(probs.cpu().numpy())
 
         y_pred = np.array(all_preds)
         y_probs = np.array(all_probs)
@@ -395,7 +707,8 @@ class TimesNetTrainer:
             'mode': 'classification',
             'metrics': metrics,
             'config': config.to_dict(),
-            'model_path': model_path
+            'model_path': model_path,
+            'device': self.device
         }
 
     def _build_timesnet_model(self, config: TimesNetConfig):

@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 class LLMConfig:
     """Configuration for Ollama LLM service."""
     base_url: str = os.environ.get('OLLAMA_BASE_URL', 'http://localhost:11434')
-    model: str = os.environ.get('OLLAMA_MODEL', 'llama3.2')
+    model: str = os.environ.get('OLLAMA_MODEL', 'llama3.1:8b')
     timeout: int = 120  # seconds
     temperature: float = 0.7
     max_tokens: int = 1024
@@ -68,11 +68,19 @@ class LLMService:
                 }
 
             models = response.json().get('models', [])
-            model_names = [m.get('name', '').split(':')[0] for m in models]
+            # Get both full names and base names for matching
+            model_names_full = [m.get('name', '') for m in models]
+            model_names_base = [m.get('name', '').split(':')[0] for m in models]
 
-            # Check if our target model is available
-            target_model = self.config.model.split(':')[0]
-            model_available = target_model in model_names
+            logger.info(f"Ollama models found: {model_names_full}")
+            logger.info(f"Target model: {self.config.model}")
+
+            # Check if our target model is available (match full name or base name)
+            target_model_base = self.config.model.split(':')[0]
+            model_available = (
+                self.config.model in model_names_full or
+                target_model_base in model_names_base
+            )
 
             # Get running model info (GPU status)
             ps_response = requests.get(
@@ -85,10 +93,12 @@ class LLMService:
 
             if ps_response.status_code == 200:
                 running_models = ps_response.json().get('models', [])
+                logger.info(f"Running models from /api/ps: {running_models}")
                 for model in running_models:
-                    if target_model in model.get('name', ''):
+                    if target_model_base in model.get('name', ''):
                         # Check if model is using GPU
                         size_vram = model.get('size_vram', 0)
+                        logger.info(f"Model {model.get('name')} size_vram: {size_vram}")
                         gpu_loaded = size_vram > 0
                         gpu_info = {
                             'vram_used_mb': size_vram / (1024 * 1024) if size_vram else 0,
@@ -103,7 +113,7 @@ class LLMService:
                 'model_installed': model_available,
                 'gpu_loaded': gpu_loaded,
                 'gpu_info': gpu_info,
-                'available_models': model_names
+                'available_models': model_names_full
             }
 
             self._status_cache = status

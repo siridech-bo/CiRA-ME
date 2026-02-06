@@ -26,6 +26,12 @@ class DataLoader:
 
     def _store_session(self, session_id: str, data: pd.DataFrame, metadata: Dict) -> None:
         """Store loaded data in session."""
+        # Compute min sample length for windowing guidance
+        if 'sample_id' in data.columns:
+            metadata['min_sample_length'] = int(data.groupby('sample_id').size().min())
+        else:
+            metadata['min_sample_length'] = len(data)
+
         _data_sessions[session_id] = {
             'data': data,
             'metadata': metadata
@@ -563,8 +569,39 @@ class DataLoader:
                     with open(cbor_file_path, 'rb') as f:
                         data = cbor2.load(f)
 
-                    if is_cira and 'metadata' in data and 'data' in data:
-                        # CiRA format
+                    if 'samples' in data:
+                        # CiRA sample-based format
+                        parsed_rows, n_samples = self._parse_cira_samples(
+                            data, file_label,
+                            sample_id_offset=total_samples,
+                            category=cat
+                        )
+                        all_rows.extend(parsed_rows)
+                        total_samples += n_samples
+                        if sensor_names is None and rows:
+                            sensor_names = ['value']
+                    elif 'payload' in data or 'sensors' in data or 'values' in data:
+                        # Edge Impulse format
+                        payload = data.get('payload', data)
+                        sensors = payload.get('sensors', [])
+                        values = payload.get('values', [])
+                        interval_ms = payload.get('interval_ms', 1)
+                        if sensor_names is None and sensors:
+                            sensor_names = [s['name'] for s in sensors]
+                        for i, row in enumerate(values):
+                            row_dict = {
+                                'timestamp': i * interval_ms / 1000.0,
+                                'label': file_label,
+                                'sample_id': total_samples,
+                                'category': cat
+                            }
+                            for j, sn in enumerate(sensor_names or []):
+                                if j < len(row):
+                                    row_dict[sn] = row[j]
+                            all_rows.append(row_dict)
+                        total_samples += 1
+                    else:
+                        # Legacy CiRA format: {'metadata': {...}, 'data': {'ch': [...]}}
                         meta = data.get('metadata', {})
                         raw_data = data.get('data', {})
                         if sensor_names is None:
@@ -584,27 +621,7 @@ class DataLoader:
                                 ch_data = raw_data.get(ch, [])
                                 row_dict[ch] = ch_data[i] if i < len(ch_data) else np.nan
                             all_rows.append(row_dict)
-                    else:
-                        # Edge Impulse format
-                        payload = data.get('payload', data)
-                        sensors = payload.get('sensors', [])
-                        values = payload.get('values', [])
-                        interval_ms = payload.get('interval_ms', 1)
-                        if sensor_names is None and sensors:
-                            sensor_names = [s['name'] for s in sensors]
-                        for i, row in enumerate(values):
-                            row_dict = {
-                                'timestamp': i * interval_ms / 1000.0,
-                                'label': file_label,
-                                'sample_id': total_samples,
-                                'category': cat
-                            }
-                            for j, sn in enumerate(sensor_names or []):
-                                if j < len(row):
-                                    row_dict[sn] = row[j]
-                            all_rows.append(row_dict)
-
-                    total_samples += 1
+                        total_samples += 1
                 except Exception as e:
                     print(f"Warning: Failed to load {cbor_file_path}: {e}")
                     continue
@@ -642,12 +659,12 @@ class DataLoader:
         if 'timestamp' in df.columns:
             sort_cols.append('timestamp')
         if sort_cols:
-            df = df.sort_values(sort_cols)
+            df = df.sort_values(sort_cols).reset_index(drop=True)
 
         return {
             'session_id': session_id,
             'metadata': metadata,
-            'preview': df.head(rows).to_dict(orient='records')
+            'preview': df.iloc[:rows].to_dict(orient='records')
         }
 
     def load_full_dataset(self, folder_path: str, format_hint: str = None, preview_session_id: str = None) -> Dict[str, Any]:
@@ -685,10 +702,42 @@ class DataLoader:
         if session_id in _data_sessions:
             del _data_sessions[session_id]
 
+    def _parse_cira_samples(self, cbor_data: Dict, file_label: str,
+                             sample_id_offset: int = 0,
+                             category: str = None) -> tuple:
+        """
+        Parse CiRA CBOR sample-based format.
+        Returns (rows_list, num_samples).
+        """
+        samples = cbor_data.get('samples', [])
+        if not samples:
+            return [], 0
+
+        rows = []
+        for idx, sample in enumerate(samples):
+            sample_data = sample.get('data', [])
+            label = sample.get('class_name', file_label)
+            sid = sample_id_offset + idx
+
+            for i, val in enumerate(sample_data):
+                row = {
+                    'timestamp': i,
+                    'value': val,
+                    'label': label,
+                    'sample_id': sid
+                }
+                if category is not None:
+                    row['category'] = category
+                rows.append(row)
+
+        return rows, len(samples)
+
     def load_cira_cbor(self, file_path: str) -> Dict[str, Any]:
         """
         Load data from CiRA CBOR format.
         Supports both single file and folder-based loading.
+
+        CiRA CBOR format: {'samples': [{'class_id', 'class_name', 'data': [...], 'timestamp'}, ...]}
         """
         # Check if it's a folder (dataset root)
         if os.path.isdir(file_path):
@@ -705,52 +754,53 @@ class DataLoader:
         with open(file_path, 'rb') as f:
             data = cbor2.load(f)
 
-        # Handle CiRA CBOR structure
-        meta = data.get('metadata', {})
-        raw_data = data.get('data', {})
+        if 'samples' in data:
+            # CiRA CBOR format: {'samples': [{'class_id', 'class_name', 'data', 'timestamp'}, ...]}
+            label = os.path.splitext(os.path.basename(file_path))[0].split('.')[0]
+            parsed_rows, num_samples = self._parse_cira_samples(data, label)
 
-        sampling_rate = meta.get('sampling_rate', 100)
-        channels = meta.get('channels', list(raw_data.keys()))
-        label = meta.get('label', 'unknown')
+            if not parsed_rows:
+                raise ValueError("No sample data found in CiRA CBOR file")
 
-        # Build DataFrame
-        df_dict = {}
+            df = pd.DataFrame(parsed_rows)
+            sensor_cols = ['value']
+            labels = df['label'].unique().tolist()
+        else:
+            # Legacy format: {'metadata': {...}, 'data': {'ch1': [...], ...}}
+            meta = data.get('metadata', {})
+            raw_data = data.get('data', {})
 
-        # Find max length
-        max_len = max(len(raw_data.get(ch, [])) for ch in channels) if channels else 0
+            sampling_rate = meta.get('sampling_rate', 100)
+            channels = meta.get('channels', list(raw_data.keys()))
+            label = meta.get('label', 'unknown')
 
-        # Generate timestamps
-        df_dict['timestamp'] = [i / sampling_rate for i in range(max_len)]
+            max_len = max(len(raw_data.get(ch, [])) for ch in channels) if channels else 0
 
-        # Add channel data
-        for ch in channels:
-            ch_data = raw_data.get(ch, [])
-            # Pad with NaN if needed
-            if len(ch_data) < max_len:
-                ch_data = list(ch_data) + [np.nan] * (max_len - len(ch_data))
-            df_dict[ch] = ch_data
+            df_dict = {'timestamp': [i / sampling_rate for i in range(max_len)]}
+            for ch in channels:
+                ch_data = raw_data.get(ch, [])
+                if len(ch_data) < max_len:
+                    ch_data = list(ch_data) + [np.nan] * (max_len - len(ch_data))
+                df_dict[ch] = ch_data
+            df_dict['label'] = [label] * max_len
 
-        # Add label
-        df_dict['label'] = [label] * max_len
-
-        df = pd.DataFrame(df_dict)
+            df = pd.DataFrame(df_dict)
+            sensor_cols = channels
+            labels = [label]
 
         session_id = self._generate_session_id()
         columns = df.columns.tolist()
-        sensor_cols = channels
 
         metadata = {
             'format': 'cira_cbor',
             'file_path': file_path,
             'total_rows': len(df),
+            'total_samples': num_samples if 'samples' in data else 1,
             'columns': columns,
             'sensor_columns': sensor_cols,
             'label_column': 'label',
             'timestamp_column': 'timestamp',
-            'labels': [label],
-            'sampling_rate': sampling_rate,
-            'device_id': meta.get('device_id'),
-            'recording_date': meta.get('recording_date')
+            'labels': labels,
         }
 
         self._store_session(session_id, df, metadata)
@@ -771,6 +821,8 @@ class DataLoader:
         OR
         - train/ (folder with .cbor files)
         - test/ (folder with .cbor files)
+
+        CiRA CBOR format: {'samples': [{'class_id', 'class_name', 'data': [...], 'timestamp'}, ...]}
         """
         try:
             import cbor2
@@ -785,11 +837,8 @@ class DataLoader:
         if os.path.exists(dataset_path):
             folder_path = dataset_path
 
-        # Find all CBOR files in train and test folders
         all_rows = []
         total_samples = 0
-        channels = None
-        sampling_rate = 100
         categories = {'train': 0, 'test': 0}
 
         for category in ['train', 'test', 'training', 'testing']:
@@ -797,7 +846,6 @@ class DataLoader:
             if not os.path.exists(category_path):
                 continue
 
-            # Normalize category name
             cat_key = 'train' if category in ['train', 'training'] else 'test'
 
             for filename in os.listdir(category_path):
@@ -805,43 +853,46 @@ class DataLoader:
                     continue
 
                 cbor_file_path = os.path.join(category_path, filename)
-
-                # Extract label from filename prefix (e.g., "sine.1.cbor..." -> "sine")
-                label = filename.split('.')[0]
+                file_label = filename.split('.')[0]
 
                 try:
                     with open(cbor_file_path, 'rb') as f:
                         data = cbor2.load(f)
 
-                    meta = data.get('metadata', {})
-                    raw_data = data.get('data', {})
-
-                    # Get channels from first file
-                    if channels is None:
+                    if 'samples' in data:
+                        # CiRA sample-based format
+                        parsed_rows, n_samples = self._parse_cira_samples(
+                            data, file_label,
+                            sample_id_offset=total_samples,
+                            category=cat_key
+                        )
+                        all_rows.extend(parsed_rows)
+                        total_samples += n_samples
+                        categories[cat_key] += n_samples
+                    else:
+                        # Legacy format: {'metadata': {...}, 'data': {'ch': [...]}}
+                        meta = data.get('metadata', {})
+                        raw_data = data.get('data', {})
                         channels = meta.get('channels', list(raw_data.keys()))
                         sampling_rate = meta.get('sampling_rate', 100)
 
-                    # Use label from metadata if available, otherwise from filename
-                    if meta.get('label'):
-                        label = meta['label']
+                        if meta.get('label'):
+                            file_label = meta['label']
 
-                    # Build rows for this sample
-                    max_len = max(len(raw_data.get(ch, [])) for ch in channels) if channels else 0
-
-                    for i in range(max_len):
-                        row_dict = {
-                            'timestamp': i / sampling_rate,
-                            'label': label,
-                            'sample_id': total_samples,
-                            'category': cat_key
-                        }
-                        for ch in channels:
-                            ch_data = raw_data.get(ch, [])
-                            row_dict[ch] = ch_data[i] if i < len(ch_data) else np.nan
-                        all_rows.append(row_dict)
-
-                    total_samples += 1
-                    categories[cat_key] += 1
+                        max_len = max(len(raw_data.get(ch, [])) for ch in channels) if channels else 0
+                        for i in range(max_len):
+                            row_dict = {
+                                'timestamp': i / sampling_rate,
+                                'label': file_label,
+                                'sample_id': total_samples,
+                                'category': cat_key
+                            }
+                            for ch in channels:
+                                ch_data = raw_data.get(ch, [])
+                                row_dict[ch] = ch_data[i] if i < len(ch_data) else np.nan
+                            all_rows.append(row_dict)
+                        total_samples += 1
+                        categories[cat_key] += 1
 
                 except Exception as e:
                     print(f"Warning: Failed to load {cbor_file_path}: {e}")
@@ -854,7 +905,7 @@ class DataLoader:
 
         session_id = self._generate_session_id()
         columns = df.columns.tolist()
-        sensor_cols = channels or [col for col in columns if col not in ['label', 'timestamp', 'sample_id', 'category']]
+        sensor_cols = [col for col in columns if col not in ['label', 'timestamp', 'sample_id', 'category']]
 
         metadata = {
             'format': 'cira_cbor',
@@ -869,7 +920,6 @@ class DataLoader:
             'label_column': 'label',
             'timestamp_column': 'timestamp',
             'labels': df['label'].unique().tolist(),
-            'sampling_rate': sampling_rate
         }
 
         self._store_session(session_id, df, metadata)
@@ -1061,7 +1111,7 @@ class DataLoader:
         else:
             # No sample_id - fall back to sequential windowing
             num_samples = len(df)
-            n_windows = (num_samples - window_size) // stride + 1
+            n_windows = max(0, (num_samples - window_size) // stride + 1)
 
             for i in range(n_windows):
                 start = i * stride

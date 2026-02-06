@@ -189,6 +189,104 @@
 
       <!-- Deep Learning (TimesNet) Section -->
       <template v-else>
+        <!-- GPU Status Card -->
+        <v-col cols="12">
+          <v-card class="pa-4 mb-4">
+            <div class="d-flex align-center justify-space-between">
+              <div class="d-flex align-center">
+                <v-icon
+                  :color="gpuStatus.available ? 'success' : 'warning'"
+                  class="mr-2"
+                >
+                  {{ gpuStatus.available ? 'mdi-chip' : 'mdi-cpu-64-bit' }}
+                </v-icon>
+                <div>
+                  <h3 class="text-subtitle-1 font-weight-bold">
+                    {{ gpuStatus.available ? 'GPU Available' : 'GPU Not Available' }}
+                  </h3>
+                  <div class="text-caption text-medium-emphasis">
+                    <template v-if="gpuStatus.available">
+                      {{ gpuStatus.device_name }} -
+                      {{ gpuStatus.memory_free_gb }}GB free / {{ gpuStatus.memory_total_gb }}GB total
+                    </template>
+                    <template v-else-if="gpuStatus.error">
+                      {{ gpuStatus.error }}
+                    </template>
+                    <template v-else>
+                      {{ gpuStatus.info || 'CUDA not available' }}
+                    </template>
+                  </div>
+                </div>
+              </div>
+
+              <div class="d-flex align-center">
+                <span class="text-body-2 mr-3">Training Device:</span>
+                <v-btn-toggle
+                  v-model="selectedDevice"
+                  mandatory
+                  color="primary"
+                  density="compact"
+                >
+                  <v-btn value="cpu" size="small">
+                    <v-icon start size="small">mdi-cpu-64-bit</v-icon>
+                    CPU
+                  </v-btn>
+                  <v-btn
+                    value="cuda"
+                    size="small"
+                    :disabled="!gpuStatus.available"
+                  >
+                    <v-icon start size="small">mdi-chip</v-icon>
+                    GPU
+                  </v-btn>
+                </v-btn-toggle>
+              </div>
+            </div>
+
+            <v-alert
+              v-if="gpuStatus.warning"
+              type="warning"
+              variant="tonal"
+              density="compact"
+              class="mt-3"
+            >
+              {{ gpuStatus.warning }}
+            </v-alert>
+
+            <v-alert
+              v-if="gpuStatus.dll_error"
+              type="warning"
+              variant="tonal"
+              density="compact"
+              class="mt-3"
+            >
+              <strong>PyTorch DLL Conflict:</strong> Another GPU application is running.
+              TimesNet deep learning is unavailable. You can still train using traditional ML algorithms
+              which don't require PyTorch.
+            </v-alert>
+
+            <v-alert
+              v-if="!gpuStatus.torch_available && !gpuStatus.dll_error"
+              type="info"
+              variant="tonal"
+              density="compact"
+              class="mt-3"
+            >
+              {{ gpuStatus.info || 'PyTorch not available. Using fallback ML methods.' }}
+            </v-alert>
+
+            <v-alert
+              v-if="selectedDevice === 'cpu' && gpuStatus.available"
+              type="info"
+              variant="tonal"
+              density="compact"
+              class="mt-3"
+            >
+              Training on CPU will be slower but avoids GPU memory conflicts with other applications.
+            </v-alert>
+          </v-card>
+        </v-col>
+
         <v-col cols="12" md="6">
           <v-card class="pa-4">
             <div class="d-flex align-center mb-4">
@@ -328,27 +426,39 @@
 
       <!-- Split method info -->
       <v-alert
-        v-if="trainingResult.metrics.split_method"
-        :type="trainingResult.metrics.split_method === 'category' ? 'info' : 'warning'"
+        v-if="trainingResult.metrics.split_method || trainingResult.metrics.train_samples"
+        type="info"
         variant="tonal"
         density="compact"
         class="mb-4"
       >
+        <v-icon size="small" class="mr-1">mdi-chart-pie</v-icon>
         <template v-if="trainingResult.metrics.split_method === 'category'">
-          <v-icon size="small" class="mr-1">mdi-shield-check</v-icon>
           Using dataset's built-in train/test split
-          ({{ trainingResult.metrics.train_samples }} train / {{ trainingResult.metrics.test_samples }} test)
         </template>
         <template v-else>
-          <v-icon size="small" class="mr-1">mdi-shuffle-variant</v-icon>
-          Random 80/20 split (no category column detected)
-          ({{ trainingResult.metrics.train_samples }} train / {{ trainingResult.metrics.test_samples }} test)
+          Train/Test split
         </template>
+        <span v-if="trainingResult.metrics.train_samples">
+          ({{ trainingResult.metrics.train_samples }} train / {{ trainingResult.metrics.test_samples || 0 }} test)
+        </span>
       </v-alert>
 
-      <!-- Metrics -->
+      <!-- Metrics info message (when labels are missing/incomplete) -->
+      <v-alert
+        v-if="trainingResult.metrics.metrics_info"
+        type="warning"
+        variant="tonal"
+        density="compact"
+        class="mb-4"
+      >
+        <v-icon size="small" class="mr-1">mdi-alert-circle</v-icon>
+        {{ trainingResult.metrics.metrics_info }}
+      </v-alert>
+
+      <!-- Primary Metrics Row -->
       <v-row dense>
-        <v-col cols="6" md="3">
+        <v-col cols="6" md="2">
           <v-card variant="tonal" class="pa-3 text-center">
             <div class="text-caption text-medium-emphasis">Accuracy</div>
             <div class="text-h5 text-success">
@@ -356,7 +466,7 @@
             </div>
           </v-card>
         </v-col>
-        <v-col cols="6" md="3">
+        <v-col cols="6" md="2">
           <v-card variant="tonal" class="pa-3 text-center">
             <div class="text-caption text-medium-emphasis">F1 Score</div>
             <div class="text-h5 text-info">
@@ -364,7 +474,7 @@
             </div>
           </v-card>
         </v-col>
-        <v-col cols="6" md="3">
+        <v-col cols="6" md="2">
           <v-card variant="tonal" class="pa-3 text-center">
             <div class="text-caption text-medium-emphasis">Precision</div>
             <div class="text-h6">
@@ -372,7 +482,7 @@
             </div>
           </v-card>
         </v-col>
-        <v-col cols="6" md="3">
+        <v-col cols="6" md="2">
           <v-card variant="tonal" class="pa-3 text-center">
             <div class="text-caption text-medium-emphasis">Recall</div>
             <div class="text-h6">
@@ -380,25 +490,149 @@
             </div>
           </v-card>
         </v-col>
+        <v-col cols="6" md="2" v-if="trainingResult.metrics.roc_auc">
+          <v-card variant="tonal" class="pa-3 text-center">
+            <div class="text-caption text-medium-emphasis">ROC-AUC</div>
+            <div class="text-h6 text-purple">
+              {{ (trainingResult.metrics.roc_auc || 0).toFixed(3) }}
+            </div>
+          </v-card>
+        </v-col>
+        <v-col cols="6" md="2" v-if="trainingResult.metrics.specificity !== undefined">
+          <v-card variant="tonal" class="pa-3 text-center">
+            <div class="text-caption text-medium-emphasis">Specificity</div>
+            <div class="text-h6">
+              {{ ((trainingResult.metrics.specificity || 0) * 100).toFixed(1) }}%
+            </div>
+          </v-card>
+        </v-col>
       </v-row>
 
-      <!-- Confusion Matrix -->
-      <div v-if="trainingResult.metrics.confusion_matrix" class="mt-4">
-        <h4 class="text-subtitle-2 mb-2">Confusion Matrix</h4>
-        <div class="confusion-matrix">
-          <table>
-            <tr v-for="(row, i) in trainingResult.metrics.confusion_matrix" :key="i">
-              <td
-                v-for="(cell, j) in row"
-                :key="j"
-                :class="{ 'diagonal': i === j }"
-              >
-                {{ cell }}
-              </td>
-            </tr>
-          </table>
-        </div>
-      </div>
+      <!-- Evaluation Charts Row -->
+      <v-row class="mt-4">
+        <!-- Confusion Matrix -->
+        <v-col cols="12" md="6" v-if="trainingResult.metrics.confusion_matrix">
+          <v-card variant="outlined" class="pa-4">
+            <h4 class="text-subtitle-2 font-weight-bold mb-3">
+              <v-icon size="small" class="mr-1">mdi-grid</v-icon>
+              Confusion Matrix
+            </h4>
+            <div class="confusion-matrix-container">
+              <table class="confusion-matrix-table">
+                <thead>
+                  <tr>
+                    <th></th>
+                    <th v-for="(label, j) in confusionMatrixLabels" :key="'h'+j" class="header-cell">
+                      {{ label }}
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(row, i) in trainingResult.metrics.confusion_matrix" :key="'r'+i">
+                    <th class="row-header">{{ confusionMatrixLabels[i] || 'Class ' + i }}</th>
+                    <td
+                      v-for="(cell, j) in row"
+                      :key="'c'+j"
+                      :class="getCellClass(i, j, cell)"
+                      :style="getCellStyle(cell)"
+                    >
+                      <div class="cell-value">{{ cell }}</div>
+                      <div class="cell-percent">{{ getCellPercent(i, j, cell) }}</div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+              <div class="matrix-legend mt-2">
+                <span class="legend-item">
+                  <span class="legend-color diagonal"></span> Correct (TP/TN)
+                </span>
+                <span class="legend-item">
+                  <span class="legend-color off-diagonal"></span> Errors (FP/FN)
+                </span>
+              </div>
+            </div>
+          </v-card>
+        </v-col>
+
+        <!-- ROC Curve -->
+        <v-col cols="12" md="6" v-if="trainingResult.metrics.roc_curve">
+          <v-card variant="outlined" class="pa-4">
+            <h4 class="text-subtitle-2 font-weight-bold mb-3">
+              <v-icon size="small" class="mr-1">mdi-chart-line</v-icon>
+              ROC Curve (AUC = {{ (trainingResult.metrics.roc_auc || 0).toFixed(3) }})
+            </h4>
+            <div class="roc-chart-container">
+              <svg viewBox="0 0 300 300" class="roc-chart">
+                <!-- Grid lines -->
+                <g class="grid-lines">
+                  <line v-for="i in 5" :key="'hg'+i" :x1="50" :x2="290" :y1="50 + (i-1)*50" :y2="50 + (i-1)*50" />
+                  <line v-for="i in 5" :key="'vg'+i" :x1="50 + (i-1)*60" :x2="50 + (i-1)*60" :y1="10" :y2="250" />
+                </g>
+
+                <!-- Diagonal line (random classifier) -->
+                <line x1="50" y1="250" x2="290" y2="10" class="diagonal-line" />
+
+                <!-- ROC curve -->
+                <polyline
+                  :points="rocCurvePoints"
+                  class="roc-line"
+                  fill="none"
+                />
+
+                <!-- Fill area under curve -->
+                <polygon
+                  :points="rocAreaPoints"
+                  class="roc-area"
+                />
+
+                <!-- Axes -->
+                <line x1="50" y1="250" x2="290" y2="250" class="axis" />
+                <line x1="50" y1="10" x2="50" y2="250" class="axis" />
+
+                <!-- Labels -->
+                <text x="170" y="280" class="axis-label">False Positive Rate</text>
+                <text x="15" y="130" class="axis-label" transform="rotate(-90, 15, 130)">True Positive Rate</text>
+
+                <!-- Tick labels -->
+                <text x="50" y="265" class="tick-label">0</text>
+                <text x="170" y="265" class="tick-label">0.5</text>
+                <text x="285" y="265" class="tick-label">1</text>
+                <text x="40" y="255" class="tick-label">0</text>
+                <text x="40" y="135" class="tick-label">0.5</text>
+                <text x="40" y="15" class="tick-label">1</text>
+              </svg>
+            </div>
+          </v-card>
+        </v-col>
+      </v-row>
+
+      <!-- Detailed Stats for Anomaly Detection -->
+      <v-row class="mt-2" v-if="trainingResult.metrics.true_positives !== undefined">
+        <v-col cols="6" md="3">
+          <v-card variant="tonal" color="success" class="pa-2 text-center">
+            <div class="text-caption">True Positives</div>
+            <div class="text-h6">{{ trainingResult.metrics.true_positives }}</div>
+          </v-card>
+        </v-col>
+        <v-col cols="6" md="3">
+          <v-card variant="tonal" color="success" class="pa-2 text-center">
+            <div class="text-caption">True Negatives</div>
+            <div class="text-h6">{{ trainingResult.metrics.true_negatives }}</div>
+          </v-card>
+        </v-col>
+        <v-col cols="6" md="3">
+          <v-card variant="tonal" color="error" class="pa-2 text-center">
+            <div class="text-caption">False Positives</div>
+            <div class="text-h6">{{ trainingResult.metrics.false_positives }}</div>
+          </v-card>
+        </v-col>
+        <v-col cols="6" md="3">
+          <v-card variant="tonal" color="error" class="pa-2 text-center">
+            <div class="text-caption">False Negatives</div>
+            <div class="text-h6">{{ trainingResult.metrics.false_negatives }}</div>
+          </v-card>
+        </v-col>
+      </v-row>
 
       <!-- TimesNet specific info -->
       <div v-if="trainingApproach === 'dl' && trainingResult.config" class="mt-4">
@@ -406,6 +640,15 @@
         <v-chip size="small" class="mr-2 mb-2">d_model: {{ trainingResult.config.d_model }}</v-chip>
         <v-chip size="small" class="mr-2 mb-2">layers: {{ trainingResult.config.e_layers }}</v-chip>
         <v-chip size="small" class="mr-2 mb-2">top_k: {{ trainingResult.config.top_k }}</v-chip>
+        <v-chip
+          v-if="trainingResult.device"
+          size="small"
+          :color="trainingResult.device === 'cuda' ? 'success' : 'info'"
+          class="mr-2 mb-2"
+        >
+          <v-icon start size="small">{{ trainingResult.device === 'cuda' ? 'mdi-chip' : 'mdi-cpu-64-bit' }}</v-icon>
+          {{ trainingResult.device === 'cuda' ? 'GPU' : 'CPU' }}
+        </v-chip>
       </div>
     </v-card>
 
@@ -489,6 +732,24 @@ const timesnetConfig = reactive({
   learning_rate: 0.001
 })
 
+// GPU status
+const gpuStatus = reactive({
+  available: false,
+  cuda_available: false,
+  torch_available: false,
+  dll_error: false,
+  device_name: null as string | null,
+  memory_total_gb: null as number | null,
+  memory_used_gb: null as number | null,
+  memory_free_gb: null as number | null,
+  error: null as string | null,
+  warning: null as string | null,
+  info: null as string | null,
+  recommendation: 'cpu' as 'cpu' | 'cuda'
+})
+
+const selectedDevice = ref<'cpu' | 'cuda'>('cpu')
+
 const availablePeriods = [4, 8, 12, 16, 24, 32, 48, 64, 96, 128]
 const selectedPeriods = ref([8, 16, 32, 64])
 
@@ -520,6 +781,69 @@ const canTrain = computed(() => {
   } else {
     return !!pipelineStore.windowedSession
   }
+})
+
+// Confusion matrix helpers
+const confusionMatrixLabels = computed(() => {
+  if (!trainingResult.value?.metrics) return ['Class 0', 'Class 1']
+  return trainingResult.value.metrics.confusion_matrix_labels ||
+         trainingResult.value.metrics.class_names ||
+         ['Normal', 'Anomaly']
+})
+
+const confusionMatrixTotal = computed(() => {
+  if (!trainingResult.value?.metrics?.confusion_matrix) return 0
+  return trainingResult.value.metrics.confusion_matrix.flat().reduce((a: number, b: number) => a + b, 0)
+})
+
+function getCellClass(i: number, j: number, value: number): string {
+  const classes = ['matrix-cell']
+  if (i === j) {
+    classes.push('diagonal')
+  } else {
+    classes.push('off-diagonal')
+  }
+  return classes.join(' ')
+}
+
+function getCellStyle(value: number): Record<string, string> {
+  const total = confusionMatrixTotal.value
+  if (total === 0) return {}
+  const intensity = Math.min(value / total * 3, 1) // Scale for visibility
+  return {
+    '--cell-intensity': intensity.toString()
+  }
+}
+
+function getCellPercent(i: number, j: number, value: number): string {
+  const total = confusionMatrixTotal.value
+  if (total === 0) return ''
+  return `${((value / total) * 100).toFixed(1)}%`
+}
+
+// ROC curve helpers
+const rocCurvePoints = computed(() => {
+  if (!trainingResult.value?.metrics?.roc_curve) return ''
+  const roc = trainingResult.value.metrics.roc_curve
+  return roc.fpr.map((fpr: number, i: number) => {
+    const x = 50 + fpr * 240  // Scale to SVG coordinates
+    const y = 250 - roc.tpr[i] * 240
+    return `${x},${y}`
+  }).join(' ')
+})
+
+const rocAreaPoints = computed(() => {
+  if (!trainingResult.value?.metrics?.roc_curve) return ''
+  const roc = trainingResult.value.metrics.roc_curve
+  const points = roc.fpr.map((fpr: number, i: number) => {
+    const x = 50 + fpr * 240
+    const y = 250 - roc.tpr[i] * 240
+    return `${x},${y}`
+  })
+  // Close the polygon
+  points.push('290,250')  // Bottom right
+  points.push('50,250')   // Bottom left
+  return points.join(' ')
 })
 
 function goBack() {
@@ -590,7 +914,8 @@ async function trainTimesNetModel() {
     epochs: timesnetConfig.epochs,
     batch_size: timesnetConfig.batch_size,
     learning_rate: timesnetConfig.learning_rate,
-    test_size: mlHyperparameters.test_size
+    test_size: mlHyperparameters.test_size,
+    device: selectedDevice.value  // CPU or CUDA
   })
 
   trainingResult.value = response.data
@@ -598,9 +923,27 @@ async function trainTimesNetModel() {
   notificationStore.showSuccess('TimesNet model trained successfully!')
 }
 
+// Fetch GPU status
+async function fetchGpuStatus() {
+  try {
+    const response = await api.get('/api/training/gpu-status')
+    Object.assign(gpuStatus, response.data)
+    // Set recommended device
+    selectedDevice.value = gpuStatus.recommendation
+  } catch (e: any) {
+    gpuStatus.error = 'Failed to check GPU status'
+    gpuStatus.available = false
+    selectedDevice.value = 'cpu'
+  }
+}
+
 // Watch for approach changes
 watch(trainingApproach, (newVal) => {
   trainingResult.value = null
+  // Fetch GPU status when switching to deep learning
+  if (newVal === 'dl') {
+    fetchGpuStatus()
+  }
 })
 
 onMounted(() => {
@@ -609,10 +952,152 @@ onMounted(() => {
   } else {
     selectedAlgorithm.value = 'rf'
   }
+
+  // Fetch GPU status if starting with deep learning approach
+  if (trainingApproach.value === 'dl') {
+    fetchGpuStatus()
+  }
 })
 </script>
 
 <style scoped lang="scss">
+// Confusion Matrix Styles
+.confusion-matrix-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.confusion-matrix-table {
+  border-collapse: collapse;
+  width: 100%;
+  max-width: 400px;
+
+  th, td {
+    border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+    padding: 8px 12px;
+    text-align: center;
+  }
+
+  th {
+    background: rgba(var(--v-theme-surface-variant), 0.5);
+    font-weight: 600;
+    font-size: 0.85rem;
+  }
+
+  .header-cell {
+    min-width: 80px;
+  }
+
+  .row-header {
+    text-align: right;
+    font-weight: 600;
+    background: rgba(var(--v-theme-surface-variant), 0.3);
+  }
+
+  .matrix-cell {
+    position: relative;
+    min-width: 80px;
+    min-height: 60px;
+
+    .cell-value {
+      font-size: 1.25rem;
+      font-weight: 700;
+    }
+
+    .cell-percent {
+      font-size: 0.75rem;
+      opacity: 0.7;
+    }
+
+    &.diagonal {
+      background: rgba(16, 185, 129, calc(0.15 + var(--cell-intensity, 0) * 0.4));
+      color: #10B981;
+    }
+
+    &.off-diagonal {
+      background: rgba(239, 68, 68, calc(0.1 + var(--cell-intensity, 0) * 0.3));
+      color: #EF4444;
+    }
+  }
+}
+
+.matrix-legend {
+  display: flex;
+  gap: 16px;
+  font-size: 0.8rem;
+
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .legend-color {
+    width: 16px;
+    height: 16px;
+    border-radius: 3px;
+
+    &.diagonal {
+      background: rgba(16, 185, 129, 0.4);
+    }
+
+    &.off-diagonal {
+      background: rgba(239, 68, 68, 0.3);
+    }
+  }
+}
+
+// ROC Curve Styles
+.roc-chart-container {
+  display: flex;
+  justify-content: center;
+}
+
+.roc-chart {
+  width: 100%;
+  max-width: 350px;
+  height: auto;
+
+  .grid-lines line {
+    stroke: rgba(var(--v-border-color), 0.2);
+    stroke-width: 0.5;
+  }
+
+  .diagonal-line {
+    stroke: rgba(var(--v-theme-on-surface), 0.3);
+    stroke-width: 1;
+    stroke-dasharray: 5, 5;
+  }
+
+  .roc-line {
+    stroke: #8B5CF6;
+    stroke-width: 2.5;
+  }
+
+  .roc-area {
+    fill: rgba(139, 92, 246, 0.15);
+  }
+
+  .axis {
+    stroke: rgba(var(--v-theme-on-surface), 0.5);
+    stroke-width: 1.5;
+  }
+
+  .axis-label {
+    font-size: 11px;
+    fill: rgba(var(--v-theme-on-surface), 0.7);
+    text-anchor: middle;
+  }
+
+  .tick-label {
+    font-size: 9px;
+    fill: rgba(var(--v-theme-on-surface), 0.6);
+    text-anchor: middle;
+  }
+}
+
+// Legacy confusion matrix (keep for backwards compatibility)
 .confusion-matrix {
   table {
     border-collapse: collapse;

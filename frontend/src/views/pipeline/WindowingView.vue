@@ -22,13 +22,28 @@
             </div>
             <v-slider
               v-model="windowingConfig.window_size"
-              :min="32"
-              :max="512"
+              :min="16"
+              :max="sliderMaxWindowSize"
               :step="16"
               color="primary"
               hide-details
             />
+            <div v-if="minSampleLength > 0" class="text-caption text-medium-emphasis mt-1">
+              Max: {{ minSampleLength.toLocaleString() }} (smallest sample in dataset)
+            </div>
           </div>
+
+          <!-- Warning if no windows possible -->
+          <v-alert
+            v-if="estimatedWindows === 0 && totalSamples > 0"
+            type="warning"
+            variant="tonal"
+            density="compact"
+            class="mb-4"
+          >
+            Window size ({{ windowingConfig.window_size }}) exceeds data length ({{ minSampleLength }}).
+            Try {{ recommendedWindowSize }} or smaller.
+          </v-alert>
 
           <!-- Stride -->
           <div class="mb-6">
@@ -614,9 +629,27 @@ const totalSamples = computed(() =>
   pipelineStore.dataSession?.metadata?.total_rows || 0
 )
 
+const minSampleLength = computed(() =>
+  pipelineStore.dataSession?.metadata?.min_sample_length || totalSamples.value
+)
+
 const sensorColumns = computed(() =>
   pipelineStore.dataSession?.metadata?.sensor_columns?.length || 0
 )
+
+const sliderMaxWindowSize = computed(() => {
+  if (minSampleLength.value <= 0) return 512
+  // Round down to nearest step of 16, minimum 16
+  return Math.max(16, Math.floor(minSampleLength.value / 16) * 16)
+})
+
+const recommendedWindowSize = computed(() => {
+  const maxValid = minSampleLength.value
+  // Largest power of 2 that fits
+  let size = 16
+  while (size * 2 <= maxValid) size *= 2
+  return size
+})
 
 const overlapPercent = computed(() => {
   const overlap = windowingConfig.window_size - windowingConfig.stride
@@ -625,7 +658,11 @@ const overlapPercent = computed(() => {
 
 const estimatedWindows = computed(() => {
   if (totalSamples.value === 0) return 0
-  return Math.floor((totalSamples.value - windowingConfig.window_size) / windowingConfig.stride) + 1
+  const sampleLen = minSampleLength.value
+  if (sampleLen < windowingConfig.window_size) return 0
+  const numSamples = pipelineStore.dataSession?.metadata?.total_samples || 1
+  const windowsPerSample = Math.floor((sampleLen - windowingConfig.window_size) / windowingConfig.stride) + 1
+  return windowsPerSample * numSamples
 })
 
 const previewWindows = computed(() => {
@@ -646,6 +683,16 @@ const previewWindows = computed(() => {
   }
 
   return windows
+})
+
+// Clamp window size when data changes and current size exceeds max
+watch(sliderMaxWindowSize, (newMax) => {
+  if (windowingConfig.window_size > newMax) {
+    windowingConfig.window_size = newMax
+  }
+  if (windowingConfig.stride > windowingConfig.window_size) {
+    windowingConfig.stride = windowingConfig.window_size
+  }
 })
 
 async function applyWindowing() {

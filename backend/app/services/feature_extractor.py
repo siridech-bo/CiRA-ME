@@ -2,20 +2,26 @@
 CiRA ME - Feature Extraction Service
 Handles TSFresh and Custom DSP feature extraction
 Provides 40+ features for comprehensive signal analysis
+Includes intelligent feature selection with statistical and LLM-powered methods
 """
 
 import numpy as np
 import pandas as pd
 import uuid
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
 from scipy import stats
 from scipy.fft import fft, fftfreq
+from sklearn.feature_selection import VarianceThreshold, mutual_info_classif, SelectKBest, f_classif
+from sklearn.preprocessing import StandardScaler
 
 # Import data loader to access session data
 from .data_loader import _data_sessions
 
 # Global storage for extracted features
 _feature_sessions: Dict[str, Dict] = {}
+
+# Global storage for feature selection results
+_selection_sessions: Dict[str, Dict] = {}
 
 
 def _autocorr(x, lag):
@@ -476,4 +482,249 @@ class FeatureExtractor:
                 'median': float(np.median(values)),
                 'count': len(values)
             }
+        }
+
+    def select_features(
+        self,
+        feature_session_id: str,
+        method: str = 'combined',
+        n_features: int = 15,
+        variance_threshold: float = 0.01,
+        correlation_threshold: float = 0.95
+    ) -> Dict[str, Any]:
+        """
+        Intelligent feature selection from extracted features.
+
+        Methods:
+        - 'variance': Remove low-variance features
+        - 'correlation': Remove highly correlated features
+        - 'mutual_info': Select by mutual information with labels
+        - 'anova': Select by ANOVA F-score
+        - 'combined': Apply all methods in sequence (recommended)
+
+        Args:
+            feature_session_id: Session ID with extracted features
+            method: Selection method
+            n_features: Target number of features to select
+            variance_threshold: Minimum variance threshold
+            correlation_threshold: Maximum correlation to allow
+
+        Returns:
+            Selection results with selected features and reasoning
+        """
+        session = _feature_sessions.get(feature_session_id)
+        if not session:
+            raise ValueError(f"Feature session not found: {feature_session_id}")
+
+        features_df = session['features'].copy()
+        labels = session['labels']
+        original_features = list(features_df.columns)
+
+        selection_log = []
+        removed_features = {}
+
+        # Step 1: Remove constant/near-constant features (variance filter)
+        if method in ['variance', 'combined']:
+            # Normalize first for fair variance comparison
+            scaler = StandardScaler()
+            scaled_features = scaler.fit_transform(features_df)
+            variances = np.var(scaled_features, axis=0)
+
+            low_variance_mask = variances < variance_threshold
+            low_var_features = [f for f, m in zip(features_df.columns, low_variance_mask) if m]
+
+            if low_var_features:
+                features_df = features_df.drop(columns=low_var_features)
+                removed_features['low_variance'] = low_var_features
+                selection_log.append(f"Removed {len(low_var_features)} low-variance features")
+
+        # Step 2: Remove highly correlated features
+        if method in ['correlation', 'combined'] and len(features_df.columns) > 1:
+            corr_matrix = features_df.corr().abs()
+
+            # Find highly correlated pairs
+            upper_tri = corr_matrix.where(
+                np.triu(np.ones(corr_matrix.shape), k=1).astype(bool)
+            )
+
+            high_corr_features = []
+            for col in upper_tri.columns:
+                if any(upper_tri[col] > correlation_threshold):
+                    # Keep the feature with higher variance
+                    correlated_with = upper_tri.index[upper_tri[col] > correlation_threshold].tolist()
+                    for corr_feature in correlated_with:
+                        if corr_feature not in high_corr_features:
+                            # Compare variances
+                            if features_df[col].var() >= features_df[corr_feature].var():
+                                high_corr_features.append(corr_feature)
+                            else:
+                                high_corr_features.append(col)
+                                break
+
+            high_corr_features = list(set(high_corr_features))
+            if high_corr_features:
+                features_df = features_df.drop(columns=high_corr_features)
+                removed_features['high_correlation'] = high_corr_features
+                selection_log.append(f"Removed {len(high_corr_features)} highly correlated features")
+
+        # Step 3: Score remaining features by importance
+        feature_scores = {}
+
+        if labels is not None and len(np.unique(labels)) > 1:
+            # Use mutual information for scoring
+            if method in ['mutual_info', 'combined']:
+                try:
+                    mi_scores = mutual_info_classif(
+                        features_df.values,
+                        labels,
+                        random_state=42,
+                        n_neighbors=5
+                    )
+                    for feat, score in zip(features_df.columns, mi_scores):
+                        feature_scores[feat] = feature_scores.get(feat, 0) + score
+                    selection_log.append("Computed mutual information scores")
+                except Exception as e:
+                    selection_log.append(f"MI scoring failed: {str(e)}")
+
+            # Use ANOVA F-score
+            if method in ['anova', 'combined']:
+                try:
+                    f_scores, _ = f_classif(features_df.values, labels)
+                    # Normalize scores
+                    f_scores = np.nan_to_num(f_scores, nan=0.0)
+                    if f_scores.max() > 0:
+                        f_scores = f_scores / f_scores.max()
+                    for feat, score in zip(features_df.columns, f_scores):
+                        feature_scores[feat] = feature_scores.get(feat, 0) + score
+                    selection_log.append("Computed ANOVA F-scores")
+                except Exception as e:
+                    selection_log.append(f"ANOVA scoring failed: {str(e)}")
+        else:
+            # No labels - use variance as importance
+            for col in features_df.columns:
+                feature_scores[col] = float(features_df[col].var())
+            selection_log.append("Using variance as importance (no labels)")
+
+        # Step 4: Select top N features
+        if feature_scores:
+            sorted_features = sorted(feature_scores.items(), key=lambda x: x[1], reverse=True)
+            selected_features = [f for f, _ in sorted_features[:n_features]]
+        else:
+            selected_features = list(features_df.columns[:n_features])
+
+        # Compute feature importance relative scores
+        max_score = max(feature_scores.values()) if feature_scores else 1.0
+        importance_scores = {
+            feat: float(score / max_score) if max_score > 0 else 0.0
+            for feat, score in feature_scores.items()
+        }
+
+        # Store selection session
+        selection_session_id = f"selection_{feature_session_id}"
+        _selection_sessions[selection_session_id] = {
+            'feature_session_id': feature_session_id,
+            'selected_features': selected_features,
+            'importance_scores': importance_scores,
+            'removed_features': removed_features,
+            'method': method,
+            'original_count': len(original_features),
+            'final_count': len(selected_features)
+        }
+
+        return {
+            'session_id': selection_session_id,
+            'selected_features': selected_features,
+            'importance_scores': {f: importance_scores.get(f, 0) for f in selected_features},
+            'all_scores': importance_scores,
+            'removed_features': removed_features,
+            'selection_log': selection_log,
+            'original_count': len(original_features),
+            'after_filtering': len(features_df.columns),
+            'final_count': len(selected_features),
+            'method': method
+        }
+
+    def get_feature_correlations(
+        self,
+        feature_session_id: str,
+        features: Optional[List[str]] = None
+    ) -> Dict[str, Any]:
+        """
+        Get correlation matrix for features (for visualization).
+
+        Args:
+            feature_session_id: Feature session ID
+            features: Optional list of features to include
+
+        Returns:
+            Correlation matrix data
+        """
+        session = _feature_sessions.get(feature_session_id)
+        if not session:
+            raise ValueError(f"Feature session not found: {feature_session_id}")
+
+        features_df = session['features']
+
+        if features:
+            features_df = features_df[[f for f in features if f in features_df.columns]]
+
+        corr_matrix = features_df.corr()
+
+        return {
+            'features': list(corr_matrix.columns),
+            'correlations': corr_matrix.values.tolist(),
+            'num_features': len(corr_matrix.columns)
+        }
+
+    def apply_selection(
+        self,
+        feature_session_id: str,
+        selected_features: List[str]
+    ) -> Dict[str, Any]:
+        """
+        Apply feature selection and create a new reduced feature session.
+
+        Args:
+            feature_session_id: Original feature session ID
+            selected_features: List of features to keep
+
+        Returns:
+            New feature session with reduced features
+        """
+        session = _feature_sessions.get(feature_session_id)
+        if not session:
+            raise ValueError(f"Feature session not found: {feature_session_id}")
+
+        features_df = session['features']
+        labels = session['labels']
+        categories = session.get('categories')
+
+        # Validate selected features exist
+        valid_features = [f for f in selected_features if f in features_df.columns]
+        if not valid_features:
+            raise ValueError("No valid features selected")
+
+        # Create reduced dataframe
+        reduced_df = features_df[valid_features].copy()
+
+        # Create new session
+        new_session_id = f"selected_{feature_session_id}"
+        _feature_sessions[new_session_id] = {
+            'features': reduced_df,
+            'labels': labels,
+            'categories': categories,
+            'feature_names': valid_features,
+            'metadata': {
+                **session.get('metadata', {}),
+                'num_features': len(valid_features),
+                'original_session': feature_session_id,
+                'selection_applied': True
+            }
+        }
+
+        return {
+            'session_id': new_session_id,
+            'num_features': len(valid_features),
+            'selected_features': valid_features,
+            'num_windows': len(reduced_df)
         }
