@@ -43,6 +43,28 @@ interface FeatureSession {
   feature_names: string[]
 }
 
+interface FeatureSelectionState {
+  // Extraction result
+  extractionResult: {
+    session_id: string
+    num_features: number
+    num_windows: number
+    feature_set?: string
+  } | null
+  // Selection result (before applying)
+  selectionResult: {
+    session_id: string
+    selected_features: string[]
+    original_count: number
+    final_count: number
+    method?: string
+    fdr_level?: number
+    after_fresh_count?: number
+  } | null
+  // Whether selection has been applied
+  selectionApplied: boolean
+}
+
 interface TrainingSession {
   training_session_id: string
   algorithm: string
@@ -75,6 +97,13 @@ export const usePipelineStore = defineStore('pipeline', () => {
   // Features
   const selectedFeatures = ref<string[]>([])
   const featureSession = ref<FeatureSession | null>(null)
+
+  // Feature selection state (for persistence between steps)
+  const featureSelectionState = ref<FeatureSelectionState>({
+    extractionResult: null,
+    selectionResult: null,
+    selectionApplied: false
+  })
 
   // Training
   const selectedAlgorithm = ref<string>('')
@@ -287,6 +316,12 @@ export const usePipelineStore = defineStore('pipeline', () => {
     hyperparameters.value = {}
     currentStep.value = 'data'
     error.value = null
+    // Reset feature selection state
+    featureSelectionState.value = {
+      extractionResult: null,
+      selectionResult: null,
+      selectionApplied: false
+    }
     // Keep trainingApproach on reset - user preference
   }
 
@@ -302,6 +337,54 @@ export const usePipelineStore = defineStore('pipeline', () => {
     // Reset training session when approach changes
     trainingSession.value = null
   }
+
+  // Feature selection state management
+  function setExtractionResult(result: FeatureSelectionState['extractionResult']) {
+    featureSelectionState.value.extractionResult = result
+    // Reset selection when new extraction is done
+    featureSelectionState.value.selectionResult = null
+    featureSelectionState.value.selectionApplied = false
+  }
+
+  function setSelectionResult(result: FeatureSelectionState['selectionResult']) {
+    featureSelectionState.value.selectionResult = result
+    featureSelectionState.value.selectionApplied = false
+  }
+
+  function markSelectionApplied() {
+    featureSelectionState.value.selectionApplied = true
+  }
+
+  // Computed: check if there's an unapplied selection
+  const hasUnappliedSelection = computed(() => {
+    return featureSelectionState.value.selectionResult !== null &&
+           !featureSelectionState.value.selectionApplied
+  })
+
+  // Get the active feature count (selected if applied, otherwise extracted)
+  const activeFeatureCount = computed(() => {
+    if (featureSelectionState.value.selectionApplied && featureSelectionState.value.selectionResult) {
+      return featureSelectionState.value.selectionResult.final_count
+    }
+    if (featureSelectionState.value.extractionResult) {
+      return featureSelectionState.value.extractionResult.num_features
+    }
+    if (featureSession.value) {
+      return featureSession.value.num_features
+    }
+    return 0
+  })
+
+  // Get the list of selected feature names (for display in training)
+  const selectedFeatureNames = computed(() => {
+    if (featureSelectionState.value.selectionApplied && featureSelectionState.value.selectionResult) {
+      return featureSelectionState.value.selectionResult.selected_features
+    }
+    if (featureSession.value) {
+      return featureSession.value.feature_names
+    }
+    return []
+  })
 
   return {
     mode,
@@ -329,6 +412,14 @@ export const usePipelineStore = defineStore('pipeline', () => {
     trainTimesNet,
     reset,
     setMode,
-    setTrainingApproach
+    setTrainingApproach,
+    // Feature selection state
+    featureSelectionState,
+    setExtractionResult,
+    setSelectionResult,
+    markSelectionApplied,
+    hasUnappliedSelection,
+    activeFeatureCount,
+    selectedFeatureNames
   }
 })

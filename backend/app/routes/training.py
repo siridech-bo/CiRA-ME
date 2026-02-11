@@ -195,6 +195,107 @@ def train_classification_model():
         return jsonify({'error': str(e)}), 400
 
 
+@training_bp.route('/train/anomaly/compare', methods=['POST'])
+@login_required
+def train_anomaly_compare():
+    """
+    Train multiple anomaly detection algorithms and compare their performance.
+
+    Request body:
+    {
+        "feature_session_id": "session_id",
+        "algorithms": ["iforest", "lof", "hbos", "knn"],
+        "hyperparameters": {"contamination": 0.1, "n_estimators": 100}
+    }
+    """
+    data = request.get_json()
+
+    if not data:
+        return jsonify({'error': 'No data provided'}), 400
+
+    feature_session_id = data.get('feature_session_id')
+    algorithms = data.get('algorithms', [])
+    hyperparameters = data.get('hyperparameters', {})
+    project_id = data.get('project_id')
+
+    if not feature_session_id:
+        return jsonify({'error': 'Feature session ID required'}), 400
+
+    if not algorithms or not isinstance(algorithms, list):
+        return jsonify({'error': 'algorithms must be a non-empty list'}), 400
+
+    # Validate algorithms
+    invalid_algos = [a for a in algorithms if a not in ANOMALY_ALGORITHMS]
+    if invalid_algos:
+        return jsonify({'error': f'Unknown algorithms: {invalid_algos}'}), 400
+
+    try:
+        trainer = MLTrainer()
+        result = trainer.train_anomaly_compare(
+            feature_session_id,
+            algorithms,
+            hyperparameters,
+            project_id=project_id,
+            user_id=request.current_user['id']
+        )
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"Anomaly comparison training error: {e}")
+        return jsonify({'error': str(e)}), 400
+
+
+@training_bp.route('/train/classification/compare', methods=['POST'])
+@login_required
+def train_classification_compare():
+    """
+    Train multiple classification algorithms and compare their performance.
+
+    Request body:
+    {
+        "feature_session_id": "session_id",
+        "algorithms": ["rf", "gb", "svm", "knn"],
+        "hyperparameters": {"n_estimators": 100},
+        "test_size": 0.2
+    }
+    """
+    data = request.get_json()
+
+    if not data:
+        return jsonify({'error': 'No data provided'}), 400
+
+    feature_session_id = data.get('feature_session_id')
+    algorithms = data.get('algorithms', [])
+    hyperparameters = data.get('hyperparameters', {})
+    project_id = data.get('project_id')
+    test_size = data.get('test_size', 0.2)
+
+    if not feature_session_id:
+        return jsonify({'error': 'Feature session ID required'}), 400
+
+    if not algorithms or not isinstance(algorithms, list):
+        return jsonify({'error': 'algorithms must be a non-empty list'}), 400
+
+    # Validate algorithms
+    invalid_algos = [a for a in algorithms if a not in CLASSIFICATION_ALGORITHMS]
+    if invalid_algos:
+        return jsonify({'error': f'Unknown algorithms: {invalid_algos}'}), 400
+
+    try:
+        trainer = MLTrainer()
+        result = trainer.train_classification_compare(
+            feature_session_id,
+            algorithms,
+            hyperparameters,
+            test_size=test_size,
+            project_id=project_id,
+            user_id=request.current_user['id']
+        )
+        return jsonify(result)
+    except Exception as e:
+        logger.error(f"Classification comparison training error: {e}")
+        return jsonify({'error': str(e)}), 400
+
+
 @training_bp.route('/predict', methods=['POST'])
 @login_required
 def predict():

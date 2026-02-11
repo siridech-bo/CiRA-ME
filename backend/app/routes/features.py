@@ -18,14 +18,175 @@ features_bp = Blueprint('features', __name__)
 @features_bp.route('/available', methods=['GET'])
 @login_required
 def get_available_features():
-    """Get list of all available features."""
+    """Get list of all available features and extraction methods."""
     config = Config()
+
+    # Get available feature sets info
+    extractor = FeatureExtractor()
+    feature_sets = extractor.get_available_feature_sets()
 
     return jsonify({
         'tsfresh_features': config.TSFRESH_FEATURES,
         'dsp_features': config.CUSTOM_DSP_FEATURES,
-        'total_features': len(config.TSFRESH_FEATURES) + len(config.CUSTOM_DSP_FEATURES)
+        'total_lightweight_features': len(config.TSFRESH_FEATURES) + len(config.CUSTOM_DSP_FEATURES),
+        **feature_sets
     })
+
+
+@features_bp.route('/extract-tsfresh', methods=['POST'])
+@login_required
+def extract_tsfresh_features():
+    """
+    Extract features using the REAL tsfresh library.
+
+    Provides comprehensive feature extraction with 800+ features including:
+    - Statistical features
+    - Autocorrelation at multiple lags
+    - FFT coefficients
+    - AR model coefficients
+    - Wavelet coefficients
+    - And many more...
+
+    Request body:
+    {
+        "session_id": "windowed_session_id",
+        "feature_set": "efficient",  // "minimal", "efficient", "comprehensive"
+        "n_jobs": 1  // Number of parallel jobs
+    }
+    """
+    data = request.get_json()
+
+    if not data:
+        return jsonify({'error': 'No data provided'}), 400
+
+    session_id = data.get('session_id')
+    feature_set = data.get('feature_set', 'efficient')
+    n_jobs = data.get('n_jobs', 1)
+
+    if not session_id:
+        return jsonify({'error': 'Session ID required'}), 400
+
+    if feature_set not in ['minimal', 'efficient', 'comprehensive']:
+        return jsonify({'error': 'feature_set must be: minimal, efficient, or comprehensive'}), 400
+
+    try:
+        extractor = FeatureExtractor()
+        result = extractor.extract_tsfresh(
+            session_id,
+            feature_set=feature_set,
+            n_jobs=n_jobs
+        )
+        return jsonify(result)
+    except ImportError as e:
+        return jsonify({
+            'error': str(e),
+            'suggestion': 'Use /extract endpoint for lightweight features instead'
+        }), 400
+    except Exception as e:
+        logger.error(f"tsfresh extraction error: {e}")
+        return jsonify({'error': str(e)}), 400
+
+
+@features_bp.route('/select-fresh', methods=['POST'])
+@login_required
+def select_features_fresh():
+    """
+    Select features using tsfresh's FRESH algorithm.
+
+    FRESH = FeatuRe Extraction based on Scalable Hypothesis tests
+
+    Uses hypothesis testing with Benjamini-Hochberg FDR correction to select
+    statistically significant features.
+
+    Request body:
+    {
+        "session_id": "feature_session_id",
+        "fdr_level": 0.05,  // False Discovery Rate threshold
+        "multiclass": true,
+        "ml_task": "classification"  // or "regression"
+    }
+    """
+    data = request.get_json()
+
+    if not data:
+        return jsonify({'error': 'No data provided'}), 400
+
+    session_id = data.get('session_id')
+    fdr_level = data.get('fdr_level', 0.05)
+    multiclass = data.get('multiclass', True)
+    n_significant = data.get('n_significant', 1)
+    ml_task = data.get('ml_task', 'classification')
+
+    if not session_id:
+        return jsonify({'error': 'Session ID required'}), 400
+
+    try:
+        extractor = FeatureExtractor()
+        result = extractor.select_features_fresh(
+            session_id,
+            fdr_level=fdr_level,
+            multiclass=multiclass,
+            n_significant=n_significant,
+            ml_task=ml_task
+        )
+        return jsonify(result)
+    except ImportError as e:
+        return jsonify({
+            'error': str(e),
+            'suggestion': 'Use /select endpoint for sklearn-based selection instead'
+        }), 400
+    except Exception as e:
+        logger.error(f"FRESH selection error: {e}")
+        return jsonify({'error': str(e)}), 400
+
+
+@features_bp.route('/select-fresh-combined', methods=['POST'])
+@login_required
+def select_features_fresh_combined():
+    """
+    Chained feature selection: FRESH + target count.
+
+    First applies FRESH algorithm to get statistically significant features,
+    then reduces to target count using mutual information ranking.
+
+    Request body:
+    {
+        "session_id": "feature_session_id",
+        "fdr_level": 0.05,
+        "n_features": 20,
+        "ml_task": "classification"
+    }
+    """
+    data = request.get_json()
+
+    if not data:
+        return jsonify({'error': 'No data provided'}), 400
+
+    session_id = data.get('session_id')
+    fdr_level = data.get('fdr_level', 0.05)
+    n_features = data.get('n_features', 20)
+    ml_task = data.get('ml_task', 'classification')
+
+    if not session_id:
+        return jsonify({'error': 'Session ID required'}), 400
+
+    try:
+        extractor = FeatureExtractor()
+        result = extractor.select_features_fresh_combined(
+            session_id,
+            fdr_level=fdr_level,
+            n_features=n_features,
+            ml_task=ml_task
+        )
+        return jsonify(result)
+    except ImportError as e:
+        return jsonify({
+            'error': str(e),
+            'suggestion': 'Use /select endpoint for sklearn-based selection instead'
+        }), 400
+    except Exception as e:
+        logger.error(f"FRESH combined selection error: {e}")
+        return jsonify({'error': str(e)}), 400
 
 
 @features_bp.route('/llm-status', methods=['GET'])

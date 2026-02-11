@@ -22,16 +22,78 @@
           <!-- Feature Selection -->
           <v-col cols="12" md="8">
             <v-card class="pa-4">
+              <!-- Extraction Mode Toggle -->
               <div class="d-flex align-center mb-4">
-                <h3 class="text-subtitle-1 font-weight-bold">Available Features (40+)</h3>
-                <v-spacer />
-                <v-btn-group density="compact">
-                  <v-btn size="small" @click="selectAll">Select All</v-btn>
-                  <v-btn size="small" @click="clearSelection">Clear</v-btn>
-                  <v-btn size="small" @click="selectTSFresh">TSFresh</v-btn>
-                  <v-btn size="small" @click="selectDSP">DSP</v-btn>
-                </v-btn-group>
+                <v-btn-toggle
+                  v-model="extractionMode"
+                  mandatory
+                  density="compact"
+                  color="primary"
+                >
+                  <v-btn value="lightweight" size="small">
+                    <v-icon start size="small">mdi-lightning-bolt</v-icon>
+                    Lightweight (44 features)
+                  </v-btn>
+                  <v-btn value="tsfresh" size="small">
+                    <v-icon start size="small">mdi-atom</v-icon>
+                    TSFresh Library (800+)
+                  </v-btn>
+                </v-btn-toggle>
               </div>
+
+              <!-- TSFresh Library Mode -->
+              <div v-if="extractionMode === 'tsfresh'" class="mb-4">
+                <v-alert type="info" variant="tonal" class="mb-4">
+                  <strong>TSFresh Library</strong> - Extract comprehensive time-series features using the real tsfresh library with hypothesis-tested feature extraction.
+                </v-alert>
+
+                <v-select
+                  v-model="tsfreshFeatureSet"
+                  :items="tsfreshFeatureSets"
+                  item-title="name"
+                  item-value="value"
+                  label="Feature Set"
+                  density="compact"
+                  class="mb-4"
+                >
+                  <template #item="{ item, props }">
+                    <v-list-item v-bind="props">
+                      <template #subtitle>
+                        {{ item.raw.description }}
+                      </template>
+                    </v-list-item>
+                  </template>
+                </v-select>
+
+                <v-alert
+                  :type="tsfreshFeatureSet === 'comprehensive' ? 'warning' : 'info'"
+                  variant="tonal"
+                  density="compact"
+                >
+                  <template v-if="tsfreshFeatureSet === 'minimal'">
+                    ~10 features per sensor - Fast extraction with essential statistics
+                  </template>
+                  <template v-else-if="tsfreshFeatureSet === 'efficient'">
+                    ~100 features per sensor - Balanced extraction without slow calculators
+                  </template>
+                  <template v-else>
+                    ~800 features per sensor - Full comprehensive extraction (may take longer)
+                  </template>
+                </v-alert>
+              </div>
+
+              <!-- Lightweight Mode (Original) -->
+              <div v-else>
+                <div class="d-flex align-center mb-4">
+                  <h3 class="text-subtitle-1 font-weight-bold">Available Features (44)</h3>
+                  <v-spacer />
+                  <v-btn-group density="compact">
+                    <v-btn size="small" @click="selectAll">Select All</v-btn>
+                    <v-btn size="small" @click="clearSelection">Clear</v-btn>
+                    <v-btn size="small" @click="selectTSFresh">TSFresh</v-btn>
+                    <v-btn size="small" @click="selectDSP">DSP</v-btn>
+                  </v-btn-group>
+                </div>
 
               <!-- Search -->
               <v-text-field
@@ -95,11 +157,12 @@
                 </v-list-item>
               </v-list>
 
-              <!-- Selection Summary -->
-              <v-alert type="info" variant="tonal" class="mt-4">
-                <strong>{{ selectedFeatures.length }}</strong> features selected
-                ({{ selectedFeatures.length * sensorColumns }} total with {{ sensorColumns }} sensor channels)
-              </v-alert>
+                <!-- Selection Summary -->
+                <v-alert type="info" variant="tonal" class="mt-4">
+                  <strong>{{ selectedFeatures.length }}</strong> features selected
+                  ({{ selectedFeatures.length * sensorColumns }} total with {{ sensorColumns }} sensor channels)
+                </v-alert>
+              </div>
             </v-card>
           </v-col>
 
@@ -209,13 +272,90 @@
               </v-btn>
             </v-card>
 
-            <!-- Extraction Progress -->
-            <v-card v-if="extractionResult" class="pa-4 mt-4">
-              <h3 class="text-subtitle-1 font-weight-bold mb-4">Extraction Complete</h3>
+            <!-- Feature Count Summary Card -->
+            <v-card v-if="extractionResult" class="pa-4 mt-4 feature-count-card">
+              <h3 class="text-subtitle-1 font-weight-bold mb-4">
+                <v-icon color="success" class="mr-2">mdi-check-circle</v-icon>
+                Feature Status
+              </h3>
 
-              <v-alert type="success" variant="tonal" class="mb-4">
+              <!-- Feature Count Display -->
+              <div class="feature-counts mb-4">
+                <div class="count-item">
+                  <div class="count-label">Extracted</div>
+                  <div class="count-value text-info">{{ extractionResult.num_features }}</div>
+                </div>
+                <v-icon class="mx-2">mdi-arrow-right</v-icon>
+                <div class="count-item">
+                  <div class="count-label">Selected</div>
+                  <div class="count-value" :class="selectionResult ? 'text-success' : 'text-medium-emphasis'">
+                    {{ selectionResult ? selectionResult.final_count : '-' }}
+                  </div>
+                </div>
+                <v-icon class="mx-2">mdi-arrow-right</v-icon>
+                <div class="count-item">
+                  <div class="count-label">For Training</div>
+                  <div class="count-value" :class="appliedSelection ? 'text-primary font-weight-bold' : 'text-medium-emphasis'">
+                    {{ appliedSelection ? appliedSelection.num_features : (selectionResult ? 'Not Applied' : extractionResult.num_features) }}
+                  </div>
+                </div>
+              </div>
+
+              <!-- Status Alert -->
+              <v-alert
+                v-if="selectionResult && !appliedSelection"
+                type="warning"
+                variant="tonal"
+                density="compact"
+                class="mb-4"
+              >
+                <v-icon size="small" class="mr-1">mdi-alert</v-icon>
+                Selection not applied yet. Click "Apply Selection" to use selected features for training.
+              </v-alert>
+
+              <v-alert
+                v-else-if="appliedSelection"
+                type="success"
+                variant="tonal"
+                density="compact"
+                class="mb-4"
+              >
+                <v-icon size="small" class="mr-1">mdi-check</v-icon>
+                <strong>{{ appliedSelection.num_features }}</strong> features ready for training.
+              </v-alert>
+
+              <v-alert
+                v-else
+                type="info"
+                variant="tonal"
+                density="compact"
+                class="mb-4"
+              >
                 <strong>{{ extractionResult.num_features }}</strong> features extracted
-                from <strong>{{ extractionResult.num_windows }}</strong> windows
+                from <strong>{{ extractionResult.num_windows }}</strong> windows.
+                Proceed to selection or use all features for training.
+              </v-alert>
+
+              <!-- TSFresh-specific info -->
+              <div v-if="extractionResult.feature_set" class="mb-4">
+                <v-chip size="small" color="secondary" variant="tonal" class="mr-2">
+                  <v-icon start size="small">mdi-atom</v-icon>
+                  TSFresh {{ extractionResult.feature_set }}
+                </v-chip>
+                <span class="text-caption text-medium-emphasis">
+                  {{ extractionResult.num_features }} features across {{ sensorColumns }} sensors
+                </span>
+              </div>
+
+              <!-- Recommendation for FRESH selection when using tsfresh -->
+              <v-alert
+                v-if="extractionResult.feature_set && extractionResult.num_features > 100"
+                type="info"
+                variant="tonal"
+                density="compact"
+                class="mb-4"
+              >
+                <strong>Tip:</strong> Use FRESH selection to automatically identify statistically significant features.
               </v-alert>
 
               <v-btn
@@ -255,13 +395,62 @@
                 label="Selection Method"
                 density="compact"
                 class="mb-4"
-              />
+              >
+                <template #item="{ item, props }">
+                  <v-list-item v-bind="props">
+                    <template #subtitle>
+                      {{ item.raw.description }}
+                    </template>
+                  </v-list-item>
+                </template>
+              </v-select>
 
-              <!-- Target Features -->
+              <!-- FRESH-specific options -->
+              <div v-if="selectionMethod === 'fresh' || selectionMethod === 'fresh_combined'" class="mb-4">
+                <v-alert type="info" variant="tonal" density="compact" class="mb-4">
+                  <strong>FRESH Algorithm</strong> - Feature Extraction based on Scalable Hypothesis tests.
+                  Uses statistical hypothesis testing with Benjamini-Hochberg FDR correction.
+                  <template v-if="selectionMethod === 'fresh_combined'">
+                    <br><strong>+ Target Count</strong> - Then reduces to your specified target using mutual information ranking.
+                  </template>
+                </v-alert>
+
+                <v-slider
+                  v-model="fdrLevel"
+                  :min="0.01"
+                  :max="0.20"
+                  :step="0.01"
+                  label="FDR Level"
+                  thumb-label
+                  :thumb-size="24"
+                >
+                  <template #thumb-label="{ modelValue }">
+                    {{ (modelValue * 100).toFixed(0) }}%
+                  </template>
+                </v-slider>
+                <p class="text-caption text-medium-emphasis mt-n2 mb-4">
+                  False Discovery Rate level (default 5%). Lower values are more conservative.
+                </p>
+
+                <!-- Target count for chained selection -->
+                <v-slider
+                  v-if="selectionMethod === 'fresh_combined'"
+                  v-model="targetFeatures"
+                  :min="5"
+                  :max="Math.min(100, extractionResult?.num_features || 100)"
+                  :step="1"
+                  label="Target Features"
+                  thumb-label
+                  class="mb-4"
+                />
+              </div>
+
+              <!-- Target Features (for non-FRESH methods) -->
               <v-slider
+                v-if="selectionMethod !== 'fresh' && selectionMethod !== 'fresh_combined'"
                 v-model="targetFeatures"
                 :min="5"
-                :max="Math.min(30, extractionResult?.num_features || 30)"
+                :max="Math.min(50, extractionResult?.num_features || 50)"
                 :step="1"
                 label="Target Features"
                 thumb-label
@@ -270,6 +459,27 @@
 
               <!-- Run Selection Button -->
               <v-btn
+                v-if="selectionMethod === 'fresh'"
+                color="secondary"
+                :loading="selectingFeatures"
+                @click="runFRESHSelection"
+              >
+                <v-icon start>mdi-flask</v-icon>
+                Run FRESH Selection
+              </v-btn>
+
+              <v-btn
+                v-else-if="selectionMethod === 'fresh_combined'"
+                color="secondary"
+                :loading="selectingFeatures"
+                @click="runFRESHCombinedSelection"
+              >
+                <v-icon start>mdi-flask-plus</v-icon>
+                Run FRESH + Target
+              </v-btn>
+
+              <v-btn
+                v-else
                 color="secondary"
                 :loading="selectingFeatures"
                 @click="runFeatureSelection"
@@ -279,7 +489,7 @@
               </v-btn>
 
               <v-btn
-                v-if="llmStatus?.available"
+                v-if="llmStatus?.available && selectionMethod !== 'fresh' && selectionMethod !== 'fresh_combined'"
                 color="primary"
                 class="ml-2"
                 :loading="selectingFeatures"
@@ -331,6 +541,33 @@
                   class="text-caption text-medium-emphasis mb-1"
                 >
                   • {{ reason }}
+                </p>
+              </div>
+
+              <!-- FRESH-specific results -->
+              <div v-if="selectionResult.fdr_level !== undefined" class="mb-4">
+                <h4 class="text-subtitle-2 mb-2">
+                  {{ selectionResult.method === 'fresh_combined' ? 'FRESH + Target Selection Details:' : 'FRESH Selection Details:' }}
+                </h4>
+                <div class="d-flex flex-wrap gap-2 mb-2">
+                  <v-chip size="small" color="info" variant="tonal">
+                    FDR: {{ (selectionResult.fdr_level * 100).toFixed(0) }}%
+                  </v-chip>
+                  <v-chip v-if="selectionResult.after_fresh_count" size="small" color="secondary" variant="tonal">
+                    After FRESH: {{ selectionResult.after_fresh_count }}
+                  </v-chip>
+                  <v-chip v-if="selectionResult.target_features" size="small" color="primary" variant="tonal">
+                    Target: {{ selectionResult.target_features }}
+                  </v-chip>
+                </div>
+                <p class="text-caption text-medium-emphasis">
+                  <template v-if="selectionResult.method === 'fresh_combined'">
+                    Step 1: FRESH hypothesis testing with Benjamini-Hochberg FDR correction.
+                    Step 2: Mutual information ranking to reach target count.
+                  </template>
+                  <template v-else>
+                    Features selected based on statistical significance using Benjamini-Hochberg procedure.
+                  </template>
                 </p>
               </div>
 
@@ -540,10 +777,11 @@
           size="large"
           class="mr-2"
           :loading="extracting"
-          :disabled="selectedFeatures.length === 0"
-          @click="extractFeatures"
+          :disabled="extractionMode === 'lightweight' && selectedFeatures.length === 0"
+          @click="extractionMode === 'tsfresh' ? extractTSFreshFeatures() : extractFeatures()"
         >
-          Extract Features
+          <v-icon start>{{ extractionMode === 'tsfresh' ? 'mdi-atom' : 'mdi-lightning-bolt' }}</v-icon>
+          {{ extractionMode === 'tsfresh' ? 'Extract TSFresh Features' : 'Extract Features' }}
         </v-btn>
 
         <v-btn
@@ -587,6 +825,15 @@ const notificationStore = useNotificationStore()
 // Tab state
 const activeTab = ref('extract')
 
+// Extraction mode
+const extractionMode = ref<'lightweight' | 'tsfresh'>('lightweight')
+const tsfreshFeatureSet = ref('efficient')
+const tsfreshFeatureSets = [
+  { name: 'Minimal (~10 features/sensor)', value: 'minimal', description: 'Fast extraction with essential statistics only' },
+  { name: 'Efficient (~100 features/sensor)', value: 'efficient', description: 'Balanced extraction without slow calculators' },
+  { name: 'Comprehensive (~800 features/sensor)', value: 'comprehensive', description: 'Full tsfresh extraction with all features' }
+]
+
 const searchQuery = ref('')
 const selectedFeatures = ref<string[]>([])
 const recommendations = ref<any>(null)
@@ -597,17 +844,20 @@ const extracting = ref(false)
 // Feature selection state
 const selectionMethod = ref('combined')
 const targetFeatures = ref(15)
+const fdrLevel = ref(0.05)
 const selectionResult = ref<any>(null)
 const selectingFeatures = ref(false)
 const applyingSelection = ref(false)
 const appliedSelection = ref<any>(null)
 
 const selectionMethods = [
-  { name: 'Combined (Recommended)', value: 'combined' },
-  { name: 'Variance Filter', value: 'variance' },
-  { name: 'Correlation Filter', value: 'correlation' },
-  { name: 'Mutual Information', value: 'mutual_info' },
-  { name: 'ANOVA F-Score', value: 'anova' }
+  { name: 'Combined (Recommended)', value: 'combined', description: 'Variance + Correlation + Mutual Information filters' },
+  { name: 'FRESH (tsfresh)', value: 'fresh', description: 'Hypothesis testing with Benjamini-Hochberg FDR correction' },
+  { name: 'FRESH + Target Count', value: 'fresh_combined', description: 'FRESH filtering then reduce to target count' },
+  { name: 'Variance Filter', value: 'variance', description: 'Remove low-variance features' },
+  { name: 'Correlation Filter', value: 'correlation', description: 'Remove highly correlated redundant features' },
+  { name: 'Mutual Information', value: 'mutual_info', description: 'Rank features by mutual information with target' },
+  { name: 'ANOVA F-Score', value: 'anova', description: 'Select features by ANOVA F-value' }
 ]
 
 // Feature visualization state
@@ -799,6 +1049,13 @@ async function extractFeatures() {
 
   if (result.success) {
     extractionResult.value = result.data
+    // Store extraction result in pipeline store for persistence
+    pipelineStore.setExtractionResult({
+      session_id: result.data.session_id,
+      num_features: result.data.num_features,
+      num_windows: result.data.num_windows,
+      feature_set: result.data.feature_set
+    })
     notificationStore.showSuccess('Features extracted successfully')
     await fetchFeaturePreview()
     activeTab.value = 'select'
@@ -807,6 +1064,39 @@ async function extractFeatures() {
   }
 
   extracting.value = false
+}
+
+async function extractTSFreshFeatures() {
+  if (!pipelineStore.windowedSession) {
+    notificationStore.showError('No windowed data available')
+    return
+  }
+
+  extracting.value = true
+
+  try {
+    const response = await api.post('/api/features/extract-tsfresh', {
+      session_id: pipelineStore.windowedSession.session_id,
+      feature_set: tsfreshFeatureSet.value
+    })
+
+    extractionResult.value = response.data
+    pipelineStore.featureSession = response.data
+    // Store extraction result in pipeline store for persistence
+    pipelineStore.setExtractionResult({
+      session_id: response.data.session_id,
+      num_features: response.data.num_features,
+      num_windows: response.data.num_windows,
+      feature_set: response.data.feature_set
+    })
+    notificationStore.showSuccess(`TSFresh extraction complete: ${response.data.num_features} features`)
+    await fetchFeaturePreview()
+    activeTab.value = 'select'
+  } catch (e: any) {
+    notificationStore.showError(e.response?.data?.error || 'TSFresh extraction failed')
+  } finally {
+    extracting.value = false
+  }
 }
 
 async function runFeatureSelection() {
@@ -821,9 +1111,89 @@ async function runFeatureSelection() {
     })
 
     selectionResult.value = response.data
+    // Store selection result in pipeline store
+    pipelineStore.setSelectionResult({
+      session_id: response.data.session_id,
+      selected_features: response.data.selected_features,
+      original_count: response.data.original_count,
+      final_count: response.data.final_count,
+      method: selectionMethod.value
+    })
     notificationStore.showSuccess(`Selected ${response.data.final_count} features`)
   } catch (e: any) {
     notificationStore.showError(e.response?.data?.error || 'Selection failed')
+  } finally {
+    selectingFeatures.value = false
+  }
+}
+
+async function runFRESHSelection() {
+  if (!extractionResult.value?.session_id) return
+
+  try {
+    selectingFeatures.value = true
+    const response = await api.post('/api/features/select-fresh', {
+      session_id: extractionResult.value.session_id,
+      fdr_level: fdrLevel.value
+    })
+
+    selectionResult.value = {
+      ...response.data,
+      selection_log: [
+        `Applied FRESH algorithm with FDR level: ${(fdrLevel.value * 100).toFixed(0)}%`,
+        `Performed ${response.data.num_hypothesis_tests || 'N/A'} hypothesis tests`,
+        `Selected ${response.data.final_count} statistically significant features`
+      ]
+    }
+    // Store selection result in pipeline store
+    pipelineStore.setSelectionResult({
+      session_id: response.data.session_id,
+      selected_features: response.data.selected_features,
+      original_count: response.data.original_count,
+      final_count: response.data.final_count,
+      method: 'fresh',
+      fdr_level: fdrLevel.value
+    })
+    notificationStore.showSuccess(`FRESH selected ${response.data.final_count} significant features`)
+  } catch (e: any) {
+    notificationStore.showError(e.response?.data?.error || 'FRESH selection failed')
+  } finally {
+    selectingFeatures.value = false
+  }
+}
+
+async function runFRESHCombinedSelection() {
+  if (!extractionResult.value?.session_id) return
+
+  try {
+    selectingFeatures.value = true
+    const response = await api.post('/api/features/select-fresh-combined', {
+      session_id: extractionResult.value.session_id,
+      fdr_level: fdrLevel.value,
+      n_features: targetFeatures.value
+    })
+
+    selectionResult.value = {
+      ...response.data,
+      selection_log: response.data.selection_log || [
+        `Step 1: FRESH with FDR level ${(fdrLevel.value * 100).toFixed(0)}%`,
+        `Step 2: Reduced to ${targetFeatures.value} features using mutual information`,
+        `Final: ${response.data.final_count} features selected`
+      ]
+    }
+    // Store selection result in pipeline store
+    pipelineStore.setSelectionResult({
+      session_id: response.data.session_id,
+      selected_features: response.data.selected_features,
+      original_count: response.data.original_count,
+      final_count: response.data.final_count,
+      method: 'fresh_combined',
+      fdr_level: fdrLevel.value,
+      after_fresh_count: response.data.after_fresh_count
+    })
+    notificationStore.showSuccess(`FRESH + Target: ${response.data.final_count} features selected`)
+  } catch (e: any) {
+    notificationStore.showError(e.response?.data?.error || 'Chained selection failed')
   } finally {
     selectingFeatures.value = false
   }
@@ -841,6 +1211,14 @@ async function runLLMSelection() {
     })
 
     selectionResult.value = response.data
+    // Store selection result in pipeline store
+    pipelineStore.setSelectionResult({
+      session_id: response.data.session_id,
+      selected_features: response.data.selected_features,
+      original_count: response.data.original_count,
+      final_count: response.data.final_count,
+      method: 'llm'
+    })
     const source = response.data.llm_used ? 'LLM-powered' : 'statistical'
     notificationStore.showSuccess(`${source} selection: ${response.data.final_count} features`)
   } catch (e: any) {
@@ -862,6 +1240,8 @@ async function applyFeatureSelection() {
 
     appliedSelection.value = response.data
     pipelineStore.featureSession = response.data
+    // Mark selection as applied in pipeline store
+    pipelineStore.markSelectionApplied()
     notificationStore.showSuccess('Feature selection applied')
   } catch (e: any) {
     notificationStore.showError(e.response?.data?.error || 'Failed to apply selection')
@@ -939,12 +1319,26 @@ async function fetchLLMStatus() {
   }
 }
 
-onMounted(() => {
+onMounted(async () => {
   if (pipelineStore.selectedFeatures.length > 0) {
     selectedFeatures.value = [...pipelineStore.selectedFeatures]
   } else {
     selectedFeatures.value = ['mean', 'std', 'rms', 'kurtosis', 'spectral_entropy']
   }
+
+  // Restore state from pipeline store when coming back
+  const storedState = pipelineStore.featureSelectionState
+  if (storedState.extractionResult) {
+    extractionResult.value = storedState.extractionResult
+    await fetchFeaturePreview()
+  }
+  if (storedState.selectionResult) {
+    selectionResult.value = storedState.selectionResult
+  }
+  if (storedState.selectionApplied && pipelineStore.featureSession) {
+    appliedSelection.value = pipelineStore.featureSession
+  }
+
   fetchLLMStatus()
 })
 </script>
@@ -979,5 +1373,35 @@ onMounted(() => {
 
 .gap-2 {
   gap: 8px;
+}
+
+// Feature count card styles
+.feature-count-card {
+  border-left: 4px solid rgb(var(--v-theme-success));
+}
+
+.feature-counts {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(var(--v-theme-surface-variant), 0.3);
+  border-radius: 8px;
+
+  .count-item {
+    text-align: center;
+    min-width: 80px;
+
+    .count-label {
+      font-size: 0.75rem;
+      color: rgba(var(--v-theme-on-surface), 0.6);
+      margin-bottom: 4px;
+    }
+
+    .count-value {
+      font-size: 1.5rem;
+      font-weight: 700;
+    }
+  }
 }
 </style>

@@ -8,6 +8,96 @@
       Train a {{ pipelineStore.mode === 'anomaly' ? 'anomaly detection' : 'classification' }} model
     </p>
 
+    <!-- Feature Status Warning -->
+    <v-alert
+      v-if="trainingApproach === 'ml' && pipelineStore.hasUnappliedSelection"
+      type="warning"
+      variant="tonal"
+      class="mb-4"
+      prominent
+    >
+      <div class="d-flex align-center">
+        <v-icon class="mr-3">mdi-alert</v-icon>
+        <div>
+          <div class="font-weight-bold">Feature Selection Not Applied</div>
+          <div class="text-body-2">
+            You ran feature selection ({{ pipelineStore.featureSelectionState.selectionResult?.final_count }} features selected)
+            but didn't apply it. Training will use all
+            <strong>{{ pipelineStore.featureSelectionState.extractionResult?.num_features }}</strong> extracted features.
+          </div>
+        </div>
+        <v-spacer />
+        <v-btn
+          color="warning"
+          variant="flat"
+          @click="goBackToApplySelection"
+        >
+          Go Back to Apply
+        </v-btn>
+      </div>
+    </v-alert>
+
+    <!-- Feature Summary Card (for ML approach) -->
+    <v-card v-if="trainingApproach === 'ml' && pipelineStore.featureSession" class="pa-4 mb-6">
+      <div class="d-flex align-center mb-3">
+        <v-icon color="primary" class="mr-2">mdi-feature-search</v-icon>
+        <h3 class="text-subtitle-1 font-weight-bold">Features for Training</h3>
+        <v-spacer />
+        <v-chip
+          :color="pipelineStore.featureSelectionState.selectionApplied ? 'success' : 'info'"
+          size="small"
+          variant="flat"
+        >
+          {{ pipelineStore.activeFeatureCount }} features
+        </v-chip>
+      </div>
+
+      <v-alert
+        v-if="pipelineStore.featureSelectionState.selectionApplied"
+        type="success"
+        variant="tonal"
+        density="compact"
+        class="mb-3"
+      >
+        Using <strong>{{ pipelineStore.activeFeatureCount }}</strong> selected features
+        (reduced from {{ pipelineStore.featureSelectionState.extractionResult?.num_features }})
+      </v-alert>
+
+      <v-alert
+        v-else
+        type="info"
+        variant="tonal"
+        density="compact"
+        class="mb-3"
+      >
+        Using all <strong>{{ pipelineStore.activeFeatureCount }}</strong> extracted features
+      </v-alert>
+
+      <!-- Expandable Feature List -->
+      <v-expansion-panels variant="accordion">
+        <v-expansion-panel>
+          <v-expansion-panel-title>
+            <v-icon size="small" class="mr-2">mdi-format-list-bulleted</v-icon>
+            View Feature List ({{ pipelineStore.selectedFeatureNames.length }})
+          </v-expansion-panel-title>
+          <v-expansion-panel-text>
+            <div class="feature-list-container">
+              <v-chip
+                v-for="(feat, idx) in pipelineStore.selectedFeatureNames"
+                :key="idx"
+                size="x-small"
+                :color="getFeatureTypeColor(feat)"
+                variant="tonal"
+                class="ma-1"
+              >
+                {{ feat }}
+              </v-chip>
+            </div>
+          </v-expansion-panel-text>
+        </v-expansion-panel>
+      </v-expansion-panels>
+    </v-card>
+
     <!-- ML vs DL Toggle -->
     <v-card class="pa-4 mb-6">
       <div class="d-flex align-center">
@@ -53,7 +143,7 @@
         <v-col cols="12" md="6">
           <v-card class="pa-4">
             <div class="d-flex align-center mb-4">
-              <h3 class="text-subtitle-1 font-weight-bold">Algorithm</h3>
+              <h3 class="text-subtitle-1 font-weight-bold">Algorithms</h3>
               <v-spacer />
               <v-chip
                 :color="pipelineStore.mode === 'anomaly' ? 'error' : 'success'"
@@ -64,16 +154,34 @@
               </v-chip>
             </div>
 
-            <!-- Anomaly Algorithms -->
-            <v-radio-group v-if="pipelineStore.mode === 'anomaly'" v-model="selectedAlgorithm">
-              <v-radio
-                v-for="algo in anomalyAlgorithms"
+            <!-- Selection Actions -->
+            <div class="d-flex align-center mb-3 gap-2">
+              <v-btn size="small" variant="tonal" @click="selectAllAlgorithms">
+                Select All
+              </v-btn>
+              <v-btn size="small" variant="tonal" @click="clearAlgorithmSelection">
+                Clear
+              </v-btn>
+              <v-spacer />
+              <v-chip size="small" color="primary" variant="flat">
+                {{ selectedAlgorithms.length }} selected
+              </v-chip>
+            </div>
+
+            <!-- Anomaly Algorithms (Checkboxes) -->
+            <div v-if="pipelineStore.mode === 'anomaly'" class="algorithm-list">
+              <v-checkbox
+                v-for="algo in availableAnomalyAlgorithms"
                 :key="algo.id"
+                v-model="selectedAlgorithms"
                 :value="algo.id"
+                density="compact"
+                hide-details
+                class="algorithm-checkbox"
               >
                 <template #label>
-                  <div class="d-flex align-center">
-                    <div>
+                  <div class="d-flex align-center flex-grow-1">
+                    <div class="flex-grow-1">
                       <div class="font-weight-medium">{{ algo.name }}</div>
                       <div class="text-caption text-medium-emphasis">{{ algo.description }}</div>
                     </div>
@@ -88,19 +196,23 @@
                     </v-chip>
                   </div>
                 </template>
-              </v-radio>
-            </v-radio-group>
+              </v-checkbox>
+            </div>
 
-            <!-- Classification Algorithms -->
-            <v-radio-group v-else v-model="selectedAlgorithm">
-              <v-radio
+            <!-- Classification Algorithms (Checkboxes) -->
+            <div v-else class="algorithm-list">
+              <v-checkbox
                 v-for="algo in classificationAlgorithms"
                 :key="algo.id"
+                v-model="selectedAlgorithms"
                 :value="algo.id"
+                density="compact"
+                hide-details
+                class="algorithm-checkbox"
               >
                 <template #label>
-                  <div class="d-flex align-center">
-                    <div>
+                  <div class="d-flex align-center flex-grow-1">
+                    <div class="flex-grow-1">
                       <div class="font-weight-medium">{{ algo.name }}</div>
                       <div class="text-caption text-medium-emphasis">{{ algo.description }}</div>
                     </div>
@@ -115,8 +227,8 @@
                     </v-chip>
                   </div>
                 </template>
-              </v-radio>
-            </v-radio-group>
+              </v-checkbox>
+            </div>
           </v-card>
         </v-col>
 
@@ -414,9 +526,121 @@
       </template>
     </v-row>
 
-    <!-- Training Results -->
+    <!-- Comparison Results -->
+    <v-card v-if="comparisonResult" class="pa-4 mt-6">
+      <div class="d-flex align-center mb-4">
+        <v-icon color="primary" class="mr-2">mdi-compare</v-icon>
+        <h3 class="text-subtitle-1 font-weight-bold">Algorithm Comparison</h3>
+        <v-spacer />
+        <v-chip color="success" size="small" variant="flat" class="mr-2">
+          {{ comparisonResult.successful }} successful
+        </v-chip>
+        <v-chip v-if="comparisonResult.failed > 0" color="error" size="small" variant="flat">
+          {{ comparisonResult.failed }} failed
+        </v-chip>
+      </div>
+
+      <!-- Best Algorithm Banner -->
+      <v-alert
+        v-if="comparisonResult.best_algorithm"
+        type="success"
+        variant="tonal"
+        class="mb-4"
+      >
+        <div class="d-flex align-center">
+          <v-icon class="mr-2">mdi-trophy</v-icon>
+          <div>
+            <strong>Best Performer:</strong> {{ comparisonResult.best_algorithm.algorithm_name }}
+            <span class="text-medium-emphasis ml-2">
+              ({{ comparisonResult.best_algorithm.metric }}: {{ (comparisonResult.best_algorithm.score * 100).toFixed(1) }}%)
+            </span>
+          </div>
+        </div>
+      </v-alert>
+
+      <!-- Comparison Table -->
+      <v-table density="comfortable" class="comparison-table">
+        <thead>
+          <tr>
+            <th class="text-left">Algorithm</th>
+            <th class="text-center">Accuracy</th>
+            <th class="text-center">Precision</th>
+            <th class="text-center">Recall</th>
+            <th class="text-center">F1 Score</th>
+            <th class="text-center">ROC-AUC</th>
+            <th class="text-center">Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr
+            v-for="result in comparisonResult.comparison?.rows || []"
+            :key="result.algorithm"
+            :class="{ 'best-row': comparisonResult.best_algorithm?.algorithm === result.algorithm }"
+          >
+            <td class="font-weight-medium">
+              {{ result.algorithm_name }}
+              <v-icon
+                v-if="comparisonResult.best_algorithm?.algorithm === result.algorithm"
+                size="small"
+                color="warning"
+                class="ml-1"
+              >
+                mdi-star
+              </v-icon>
+            </td>
+            <td class="text-center">
+              {{ result.values.accuracy != null ? (result.values.accuracy * 100).toFixed(1) + '%' : '-' }}
+            </td>
+            <td class="text-center">
+              {{ result.values.precision != null ? (result.values.precision * 100).toFixed(1) + '%' : '-' }}
+            </td>
+            <td class="text-center">
+              {{ result.values.recall != null ? (result.values.recall * 100).toFixed(1) + '%' : '-' }}
+            </td>
+            <td class="text-center">
+              <span :class="getF1Class(result.values.f1)">
+                {{ result.values.f1 != null ? (result.values.f1 * 100).toFixed(1) + '%' : '-' }}
+              </span>
+            </td>
+            <td class="text-center">
+              {{ result.values.roc_auc != null ? result.values.roc_auc.toFixed(3) : '-' }}
+            </td>
+            <td class="text-center">
+              <v-chip size="x-small" color="success" variant="flat">OK</v-chip>
+            </td>
+          </tr>
+          <tr v-for="error in comparisonResult.errors || []" :key="'err-'+error.algorithm" class="error-row">
+            <td class="font-weight-medium text-error">{{ error.algorithm_name }}</td>
+            <td colspan="5" class="text-center text-caption text-error">
+              <v-tooltip location="top" max-width="400">
+                <template #activator="{ props }">
+                  <span v-bind="props" class="error-message-truncate">
+                    {{ truncateError(error.error) }}
+                  </span>
+                </template>
+                <span>{{ error.error }}</span>
+              </v-tooltip>
+            </td>
+            <td class="text-center">
+              <v-chip size="x-small" color="error" variant="flat">Failed</v-chip>
+            </td>
+          </tr>
+        </tbody>
+      </v-table>
+
+      <v-divider class="my-4" />
+
+      <p class="text-caption text-medium-emphasis">
+        The best performing model ({{ comparisonResult.best_algorithm?.algorithm_name }})
+        has been selected for deployment. You can view detailed metrics below.
+      </p>
+    </v-card>
+
+    <!-- Training Results (Single Algorithm or Best from Comparison) -->
     <v-card v-if="trainingResult" class="pa-4 mt-6">
-      <h3 class="text-subtitle-1 font-weight-bold mb-4">Training Complete</h3>
+      <h3 class="text-subtitle-1 font-weight-bold mb-4">
+        {{ comparisonResult ? 'Best Model Details' : 'Training Complete' }}
+      </h3>
 
       <v-alert type="success" variant="tonal" class="mb-4">
         Model trained successfully using
@@ -709,9 +933,11 @@ const trainingApproach = computed({
 })
 
 // ML state
-const selectedAlgorithm = ref('')
+const selectedAlgorithms = ref<string[]>([])
 const training = ref(false)
 const trainingResult = ref<any>(null)
+const comparisonResult = ref<any>(null)
+const pytorchAvailable = ref(true)  // Assume available, check on mount
 
 const mlHyperparameters = reactive({
   n_estimators: 100,
@@ -761,7 +987,8 @@ const anomalyAlgorithms = [
   { id: 'knn', name: 'KNN', description: 'K-nearest neighbors based' },
   { id: 'copod', name: 'COPOD', description: 'Copula-based outlier detection' },
   { id: 'ecod', name: 'ECOD', description: 'Empirical cumulative distribution' },
-  { id: 'autoencoder', name: 'AutoEncoder', description: 'Neural network reconstruction' },
+  { id: 'autoencoder', name: 'AutoEncoder', description: 'Neural network reconstruction', requiresPytorch: true },
+  { id: 'deep_svdd', name: 'Deep SVDD', description: 'Deep support vector data description', requiresPytorch: true },
 ]
 
 const classificationAlgorithms = [
@@ -777,11 +1004,26 @@ const classificationAlgorithms = [
 
 const canTrain = computed(() => {
   if (trainingApproach.value === 'ml') {
-    return !!selectedAlgorithm.value && !!pipelineStore.featureSession
+    return selectedAlgorithms.value.length > 0 && !!pipelineStore.featureSession
   } else {
     return !!pipelineStore.windowedSession
   }
 })
+
+// Filter out PyTorch-dependent algorithms when PyTorch is unavailable
+const availableAnomalyAlgorithms = computed(() => {
+  return anomalyAlgorithms.filter(algo => !algo.requiresPytorch || pytorchAvailable.value)
+})
+
+// Algorithm selection helpers
+function selectAllAlgorithms() {
+  const algorithms = pipelineStore.mode === 'anomaly' ? availableAnomalyAlgorithms.value : classificationAlgorithms
+  selectedAlgorithms.value = algorithms.map(a => a.id)
+}
+
+function clearAlgorithmSelection() {
+  selectedAlgorithms.value = []
+}
 
 // Confusion matrix helpers
 const confusionMatrixLabels = computed(() => {
@@ -855,6 +1097,64 @@ function goBack() {
   }
 }
 
+function goBackToApplySelection() {
+  router.push({ name: 'pipeline-features' })
+}
+
+// TSFresh statistical features for type detection
+const tsfreshFeatures = [
+  'mean', 'std', 'min', 'max', 'median', 'sum', 'variance',
+  'skewness', 'kurtosis', 'abs_energy', 'root_mean_square',
+  'mean_abs_change', 'mean_change', 'count_above_mean', 'count_below_mean',
+  'first_location_of_maximum', 'first_location_of_minimum',
+  'last_location_of_maximum', 'last_location_of_minimum',
+  'percentage_of_reoccurring_values', 'sum_of_reoccurring_values',
+  'abs_sum_of_changes', 'range', 'interquartile_range', 'mean_second_derivative'
+]
+
+// Custom DSP features
+const dspFeatures = [
+  'rms', 'peak_to_peak', 'crest_factor', 'shape_factor',
+  'impulse_factor', 'margin_factor', 'zero_crossing_rate',
+  'autocorr_lag1', 'autocorr_lag5', 'binned_entropy',
+  'spectral_centroid', 'spectral_bandwidth', 'spectral_rolloff',
+  'spectral_flatness', 'spectral_entropy', 'peak_frequency',
+  'spectral_skewness', 'spectral_kurtosis',
+  'band_power_low', 'band_power_mid', 'band_power_high'
+]
+
+function getFeatureType(featureName: string): string {
+  // Extract base name (remove sensor suffix like _acc_x)
+  const parts = featureName.split('__')
+  const baseName = parts.length > 1 ? parts[0] : featureName.split('_').slice(0, -1).join('_')
+  if (tsfreshFeatures.includes(baseName)) return 'TSFresh'
+  if (dspFeatures.includes(baseName)) return 'DSP'
+  return 'Other'
+}
+
+function getFeatureTypeColor(featureName: string): string {
+  const type = getFeatureType(featureName)
+  if (type === 'TSFresh') return 'info'
+  if (type === 'DSP') return 'secondary'
+  return 'default'
+}
+
+// Get F1 score color class based on value
+function getF1Class(f1: number | null): string {
+  if (f1 == null) return ''
+  if (f1 >= 0.9) return 'text-success font-weight-bold'
+  if (f1 >= 0.7) return 'text-info font-weight-medium'
+  if (f1 >= 0.5) return 'text-warning'
+  return 'text-error'
+}
+
+// Truncate error messages for display in comparison table
+function truncateError(error: string, maxLength: number = 60): string {
+  if (!error) return 'Unknown error'
+  if (error.length <= maxLength) return error
+  return error.substring(0, maxLength) + '...'
+}
+
 async function trainModel() {
   training.value = true
   trainingResult.value = null
@@ -878,16 +1178,71 @@ async function trainMLModel() {
     return
   }
 
-  pipelineStore.selectedAlgorithm = selectedAlgorithm.value
-  pipelineStore.hyperparameters = { ...mlHyperparameters }
+  if (selectedAlgorithms.value.length === 0) {
+    notificationStore.showError('Please select at least one algorithm.')
+    return
+  }
 
-  const result = await pipelineStore.trainModel()
+  // Reset previous results
+  trainingResult.value = null
+  comparisonResult.value = null
 
-  if (result.success) {
-    trainingResult.value = result.data
-    notificationStore.showSuccess('Model trained successfully!')
+  // Decide whether to do single or comparison training
+  if (selectedAlgorithms.value.length === 1) {
+    // Single algorithm training
+    pipelineStore.selectedAlgorithm = selectedAlgorithms.value[0]
+    pipelineStore.hyperparameters = { ...mlHyperparameters }
+
+    const result = await pipelineStore.trainModel()
+
+    if (result.success) {
+      trainingResult.value = result.data
+      notificationStore.showSuccess('Model trained successfully!')
+    } else {
+      notificationStore.showError(result.error || 'Training failed')
+    }
   } else {
-    notificationStore.showError(result.error || 'Training failed')
+    // Multi-algorithm comparison training
+    try {
+      const endpoint = pipelineStore.mode === 'anomaly'
+        ? '/api/training/train/anomaly/compare'
+        : '/api/training/train/classification/compare'
+
+      const response = await api.post(endpoint, {
+        feature_session_id: pipelineStore.featureSession.session_id,
+        algorithms: selectedAlgorithms.value,
+        hyperparameters: { ...mlHyperparameters },
+        test_size: mlHyperparameters.test_size
+      })
+
+      comparisonResult.value = response.data
+
+      // Set the best algorithm's result as the main training result
+      if (response.data.best_algorithm) {
+        const bestResult = response.data.results.find(
+          (r: any) => r.algorithm === response.data.best_algorithm.algorithm
+        )
+        if (bestResult) {
+          trainingResult.value = {
+            training_session_id: bestResult.training_session_id,
+            algorithm: bestResult.algorithm_name,
+            mode: pipelineStore.mode,
+            metrics: bestResult.metrics
+          }
+          pipelineStore.trainingSession = trainingResult.value
+        }
+      }
+
+      const successCount = response.data.successful
+      const failCount = response.data.failed
+      if (failCount > 0) {
+        notificationStore.showWarning(`Trained ${successCount} algorithms successfully, ${failCount} failed.`)
+      } else {
+        notificationStore.showSuccess(`Trained ${successCount} algorithms successfully!`)
+      }
+    } catch (e: any) {
+      notificationStore.showError(e.response?.data?.error || 'Comparison training failed')
+    }
   }
 }
 
@@ -940,17 +1295,41 @@ async function fetchGpuStatus() {
 // Watch for approach changes
 watch(trainingApproach, (newVal) => {
   trainingResult.value = null
+  comparisonResult.value = null
   // Fetch GPU status when switching to deep learning
   if (newVal === 'dl') {
     fetchGpuStatus()
   }
 })
 
-onMounted(() => {
-  if (pipelineStore.mode === 'anomaly') {
-    selectedAlgorithm.value = 'iforest'
+// Watch for mode changes to reset algorithm selection
+watch(() => pipelineStore.mode, (newMode) => {
+  if (newMode === 'anomaly') {
+    selectedAlgorithms.value = ['iforest']
   } else {
-    selectedAlgorithm.value = 'rf'
+    selectedAlgorithms.value = ['rf']
+  }
+  trainingResult.value = null
+  comparisonResult.value = null
+})
+
+onMounted(async () => {
+  // Set default algorithm selection (recommended ones)
+  if (pipelineStore.mode === 'anomaly') {
+    selectedAlgorithms.value = ['iforest']  // Default to recommended
+  } else {
+    selectedAlgorithms.value = ['rf']  // Default to recommended
+  }
+
+  // Check GPU/PyTorch availability
+  try {
+    const gpuResponse = await api.get('/api/training/gpu-status')
+    pytorchAvailable.value = gpuResponse.data.torch_available !== false
+    if (gpuResponse.data.dll_error) {
+      pytorchAvailable.value = false
+    }
+  } catch {
+    pytorchAvailable.value = false
   }
 
   // Fetch GPU status if starting with deep learning approach
@@ -1116,5 +1495,68 @@ onMounted(() => {
       }
     }
   }
+}
+
+// Feature list container
+.feature-list-container {
+  max-height: 200px;
+  overflow-y: auto;
+  padding: 8px;
+  background: rgba(var(--v-theme-surface-variant), 0.2);
+  border-radius: 8px;
+}
+
+// Algorithm selection list
+.algorithm-list {
+  max-height: 400px;
+  overflow-y: auto;
+  border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+  border-radius: 8px;
+  padding: 8px;
+
+  .algorithm-checkbox {
+    padding: 8px 4px;
+    border-bottom: 1px solid rgba(var(--v-border-color), 0.1);
+
+    &:last-child {
+      border-bottom: none;
+    }
+
+    &:hover {
+      background: rgba(var(--v-theme-surface-variant), 0.3);
+      border-radius: 4px;
+    }
+  }
+}
+
+// Comparison table styles
+.comparison-table {
+  .best-row {
+    background: rgba(16, 185, 129, 0.1);
+  }
+
+  .error-row {
+    background: rgba(239, 68, 68, 0.05);
+  }
+
+  th {
+    background: rgba(var(--v-theme-surface-variant), 0.5);
+    font-weight: 600;
+  }
+}
+
+// Error message truncation in comparison table
+.error-message-truncate {
+  display: inline-block;
+  max-width: 400px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: help;
+  vertical-align: middle;
+}
+
+.gap-2 {
+  gap: 8px;
 }
 </style>

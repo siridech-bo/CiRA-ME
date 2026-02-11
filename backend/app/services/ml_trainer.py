@@ -83,6 +83,18 @@ class MLTrainer:
                     contamination=hyperparameters.get('contamination', 0.1)
                 )
             elif algorithm == 'autoencoder':
+                # AutoEncoder requires PyTorch - check if it's available
+                try:
+                    import torch
+                    # Quick sanity check to ensure PyTorch works
+                    _ = torch.tensor([1.0])
+                except (ImportError, OSError) as torch_err:
+                    raise RuntimeError(
+                        f"AutoEncoder requires PyTorch which is unavailable or has a DLL conflict. "
+                        f"Try closing other GPU applications (like AI assistants or games) and restart. "
+                        f"Alternatively, use non-neural algorithms like Isolation Forest or HBOS. "
+                        f"Error: {torch_err}"
+                    )
                 from pyod.models.auto_encoder import AutoEncoder
                 return AutoEncoder(
                     hidden_neurons=hyperparameters.get('hidden_neurons', [64, 32, 32, 64]),
@@ -90,6 +102,16 @@ class MLTrainer:
                     epochs=hyperparameters.get('epochs', 100)
                 )
             elif algorithm == 'deep_svdd':
+                # DeepSVDD requires PyTorch - check if it's available
+                try:
+                    import torch
+                    _ = torch.tensor([1.0])
+                except (ImportError, OSError) as torch_err:
+                    raise RuntimeError(
+                        f"Deep SVDD requires PyTorch which is unavailable or has a DLL conflict. "
+                        f"Try closing other GPU applications and restart. "
+                        f"Error: {torch_err}"
+                    )
                 from pyod.models.deep_svdd import DeepSVDD
                 return DeepSVDD(
                     n_features=hyperparameters.get('n_features', 10),
@@ -99,6 +121,13 @@ class MLTrainer:
                 raise ValueError(f"Unknown PyOD algorithm: {algorithm}")
         except ImportError as e:
             raise ImportError(f"PyOD library required. Install with: pip install pyod. Error: {e}")
+        except OSError as e:
+            # Handle DLL loading errors (PyTorch CUDA conflicts)
+            raise RuntimeError(
+                f"Failed to load algorithm '{algorithm}' due to a system error. "
+                f"This often happens when another application is using GPU resources. "
+                f"Try closing GPU-intensive applications and restart. Error: {e}"
+            )
 
     def _get_sklearn_model(self, algorithm: str, hyperparameters: Dict):
         """Get Scikit-learn model instance."""
@@ -858,3 +887,221 @@ class MLTrainer:
                 raise ImportError("skl2onnx required for ONNX export. Install with: pip install skl2onnx")
         else:
             raise ValueError(f"Unsupported export format: {export_format}")
+
+    def train_anomaly_compare(
+        self,
+        feature_session_id: str,
+        algorithms: list,
+        hyperparameters: Dict = None,
+        project_id: Optional[int] = None,
+        user_id: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """
+        Train multiple anomaly detection algorithms and compare their performance.
+
+        Args:
+            feature_session_id: Session ID containing extracted features
+            algorithms: List of algorithm IDs to train (e.g., ['iforest', 'lof', 'hbos'])
+            hyperparameters: Dict of hyperparameters (applied to all algorithms)
+            project_id: Optional project ID
+            user_id: Optional user ID
+
+        Returns:
+            Comparison results with metrics for each algorithm
+        """
+        hyperparameters = hyperparameters or {}
+        results = []
+        errors = []
+
+        for algorithm in algorithms:
+            try:
+                result = self.train_anomaly(
+                    feature_session_id,
+                    algorithm,
+                    hyperparameters.copy(),
+                    project_id=project_id,
+                    user_id=user_id
+                )
+                results.append({
+                    'algorithm': algorithm,
+                    'algorithm_name': self._get_algorithm_name(algorithm, 'anomaly'),
+                    'training_session_id': result['training_session_id'],
+                    'metrics': result['metrics'],
+                    'status': 'success'
+                })
+            except Exception as e:
+                errors.append({
+                    'algorithm': algorithm,
+                    'algorithm_name': self._get_algorithm_name(algorithm, 'anomaly'),
+                    'error': str(e),
+                    'status': 'failed'
+                })
+
+        # Build comparison table
+        comparison = self._build_comparison_table(results, 'anomaly')
+
+        return {
+            'mode': 'anomaly',
+            'total_algorithms': len(algorithms),
+            'successful': len(results),
+            'failed': len(errors),
+            'results': results,
+            'errors': errors,
+            'comparison': comparison,
+            'best_algorithm': self._get_best_algorithm(results, 'anomaly')
+        }
+
+    def train_classification_compare(
+        self,
+        feature_session_id: str,
+        algorithms: list,
+        hyperparameters: Dict = None,
+        test_size: float = 0.2,
+        project_id: Optional[int] = None,
+        user_id: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """
+        Train multiple classification algorithms and compare their performance.
+
+        Args:
+            feature_session_id: Session ID containing extracted features
+            algorithms: List of algorithm IDs to train (e.g., ['rf', 'gb', 'svm'])
+            hyperparameters: Dict of hyperparameters (applied to all algorithms)
+            test_size: Fraction of data to use for testing
+            project_id: Optional project ID
+            user_id: Optional user ID
+
+        Returns:
+            Comparison results with metrics for each algorithm
+        """
+        hyperparameters = hyperparameters or {}
+        results = []
+        errors = []
+
+        for algorithm in algorithms:
+            try:
+                result = self.train_classification(
+                    feature_session_id,
+                    algorithm,
+                    hyperparameters.copy(),
+                    test_size=test_size,
+                    project_id=project_id,
+                    user_id=user_id
+                )
+                results.append({
+                    'algorithm': algorithm,
+                    'algorithm_name': self._get_algorithm_name(algorithm, 'classification'),
+                    'training_session_id': result['training_session_id'],
+                    'metrics': result['metrics'],
+                    'status': 'success'
+                })
+            except Exception as e:
+                errors.append({
+                    'algorithm': algorithm,
+                    'algorithm_name': self._get_algorithm_name(algorithm, 'classification'),
+                    'error': str(e),
+                    'status': 'failed'
+                })
+
+        # Build comparison table
+        comparison = self._build_comparison_table(results, 'classification')
+
+        return {
+            'mode': 'classification',
+            'total_algorithms': len(algorithms),
+            'successful': len(results),
+            'failed': len(errors),
+            'results': results,
+            'errors': errors,
+            'comparison': comparison,
+            'best_algorithm': self._get_best_algorithm(results, 'classification')
+        }
+
+    def _get_algorithm_name(self, algorithm_id: str, mode: str) -> str:
+        """Get human-readable algorithm name."""
+        anomaly_names = {
+            'iforest': 'Isolation Forest',
+            'lof': 'Local Outlier Factor',
+            'ocsvm': 'One-Class SVM',
+            'hbos': 'HBOS',
+            'knn': 'KNN',
+            'copod': 'COPOD',
+            'ecod': 'ECOD',
+            'suod': 'SUOD',
+            'autoencoder': 'AutoEncoder',
+            'deep_svdd': 'Deep SVDD'
+        }
+        classification_names = {
+            'rf': 'Random Forest',
+            'gb': 'Gradient Boosting',
+            'svm': 'Support Vector Machine',
+            'mlp': 'Multi-Layer Perceptron',
+            'knn': 'K-Nearest Neighbors',
+            'dt': 'Decision Tree',
+            'nb': 'Naive Bayes',
+            'lr': 'Logistic Regression'
+        }
+        names = anomaly_names if mode == 'anomaly' else classification_names
+        return names.get(algorithm_id, algorithm_id)
+
+    def _build_comparison_table(self, results: list, mode: str) -> Dict[str, Any]:
+        """Build a comparison table from training results."""
+        if not results:
+            return {'headers': [], 'rows': []}
+
+        # Define metrics to compare
+        if mode == 'anomaly':
+            metric_keys = ['accuracy', 'precision', 'recall', 'f1', 'roc_auc']
+        else:
+            metric_keys = ['accuracy', 'precision', 'recall', 'f1', 'roc_auc']
+
+        headers = ['Algorithm'] + [k.replace('_', ' ').title() for k in metric_keys]
+        rows = []
+
+        for r in results:
+            metrics = r.get('metrics', {})
+            row = {
+                'algorithm': r['algorithm'],
+                'algorithm_name': r['algorithm_name'],
+                'values': {}
+            }
+            for key in metric_keys:
+                value = metrics.get(key)
+                if value is not None:
+                    row['values'][key] = round(float(value), 4) if isinstance(value, (int, float)) else value
+                else:
+                    row['values'][key] = None
+            rows.append(row)
+
+        # Sort by F1 score (or accuracy if F1 not available)
+        rows.sort(key=lambda x: x['values'].get('f1') or x['values'].get('accuracy') or 0, reverse=True)
+
+        return {
+            'headers': headers,
+            'metric_keys': metric_keys,
+            'rows': rows
+        }
+
+    def _get_best_algorithm(self, results: list, mode: str) -> Optional[Dict[str, Any]]:
+        """Determine the best performing algorithm based on F1 score."""
+        if not results:
+            return None
+
+        best = None
+        best_score = -1
+
+        for r in results:
+            metrics = r.get('metrics', {})
+            # Use F1 as primary metric, fallback to accuracy
+            score = metrics.get('f1') or metrics.get('accuracy') or 0
+            if score > best_score:
+                best_score = score
+                best = {
+                    'algorithm': r['algorithm'],
+                    'algorithm_name': r['algorithm_name'],
+                    'training_session_id': r['training_session_id'],
+                    'score': score,
+                    'metric': 'f1' if metrics.get('f1') else 'accuracy'
+                }
+
+        return best

@@ -1,18 +1,32 @@
 """
 CiRA ME - Feature Extraction Service
 Handles TSFresh and Custom DSP feature extraction
-Provides 40+ features for comprehensive signal analysis
-Includes intelligent feature selection with statistical and LLM-powered methods
+Supports both:
+- Real tsfresh library (800+ features with FRESH feature selection)
+- Lightweight custom implementation (44 features for edge deployment)
+Includes intelligent feature selection with statistical and hypothesis testing methods
 """
 
 import numpy as np
 import pandas as pd
 import uuid
+import warnings
 from typing import Dict, List, Any, Optional, Tuple
 from scipy import stats
 from scipy.fft import fft, fftfreq
 from sklearn.feature_selection import VarianceThreshold, mutual_info_classif, SelectKBest, f_classif
 from sklearn.preprocessing import StandardScaler
+
+# Real tsfresh imports
+try:
+    from tsfresh import extract_features as tsfresh_extract_features
+    from tsfresh import select_features as tsfresh_select_features
+    from tsfresh.utilities.dataframe_functions import impute
+    from tsfresh.feature_extraction import ComprehensiveFCParameters, MinimalFCParameters, EfficientFCParameters
+    TSFRESH_AVAILABLE = True
+except ImportError:
+    TSFRESH_AVAILABLE = False
+    warnings.warn("tsfresh not installed. Only lightweight features available. Install with: pip install tsfresh")
 
 # Import data loader to access session data
 from .data_loader import _data_sessions
@@ -288,6 +302,457 @@ class FeatureExtractor:
             'num_features': len(feature_names),
             'feature_names': feature_names,
             'preview': features_df.head(5).to_dict(orient='records')
+        }
+
+    def extract_tsfresh(
+        self,
+        session_id: str,
+        feature_set: str = 'efficient',  # 'minimal', 'efficient', 'comprehensive'
+        n_jobs: int = 1,
+        chunksize: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """
+        Extract features using the REAL tsfresh library.
+
+        This provides 800+ features with the comprehensive set, including:
+        - Statistical features (mean, std, skewness, kurtosis, etc.)
+        - Autocorrelation at multiple lags
+        - Partial autocorrelation
+        - FFT coefficients (multiple)
+        - AR model coefficients
+        - Wavelet coefficients (CWT)
+        - Change quantiles
+        - Energy ratio by chunks
+        - Linear trend features
+        - Number of peaks/crossings
+        - And many more...
+
+        Args:
+            session_id: Session ID containing windowed data
+            feature_set: Feature extraction configuration
+                - 'minimal': ~10 features per column (fast)
+                - 'efficient': ~100 features per column (balanced)
+                - 'comprehensive': ~800 features per column (thorough)
+            n_jobs: Number of parallel jobs (-1 for all cores)
+            chunksize: Chunk size for parallel processing
+
+        Returns:
+            Feature extraction results with session ID
+        """
+        if not TSFRESH_AVAILABLE:
+            raise ImportError(
+                "tsfresh library not installed. Install with: pip install tsfresh\n"
+                "Or use the lightweight 'extract' method instead."
+            )
+
+        session = _data_sessions.get(session_id)
+        if not session:
+            raise ValueError(f"Session not found: {session_id}")
+
+        if 'windows' not in session:
+            raise ValueError("Session does not contain windowed data. Apply windowing first.")
+
+        windows = session['windows']
+        labels = session.get('labels')
+        categories = session.get('categories')
+        metadata = session['metadata']
+
+        num_windows = len(windows)
+        num_channels = windows[0].shape[1]
+        window_size = windows[0].shape[0]
+        sensor_columns = metadata.get('sensor_columns', [f'ch_{i}' for i in range(num_channels)])
+
+        print(f"[tsfresh] Extracting features from {num_windows} windows, {num_channels} channels")
+        print(f"[tsfresh] Feature set: {feature_set}")
+
+        # Select feature calculation settings
+        if feature_set == 'minimal':
+            fc_parameters = MinimalFCParameters()
+            expected_features = "~10 per column"
+        elif feature_set == 'efficient':
+            fc_parameters = EfficientFCParameters()
+            expected_features = "~100 per column"
+        else:  # comprehensive
+            fc_parameters = ComprehensiveFCParameters()
+            expected_features = "~800 per column"
+
+        print(f"[tsfresh] Expected features: {expected_features}")
+
+        # Convert windows to tsfresh format (long format DataFrame)
+        # tsfresh expects: id, time, value columns
+        records = []
+        for window_idx, window in enumerate(windows):
+            for time_idx in range(window_size):
+                for ch_idx in range(num_channels):
+                    records.append({
+                        'id': window_idx,
+                        'time': time_idx,
+                        'kind': sensor_columns[ch_idx],
+                        'value': float(window[time_idx, ch_idx])
+                    })
+
+        df_long = pd.DataFrame(records)
+
+        print(f"[tsfresh] Data prepared: {len(df_long)} rows")
+
+        # Extract features using tsfresh
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            features_df = tsfresh_extract_features(
+                df_long,
+                column_id='id',
+                column_sort='time',
+                column_kind='kind',
+                column_value='value',
+                default_fc_parameters=fc_parameters,
+                n_jobs=n_jobs,
+                chunksize=chunksize,
+                disable_progressbar=True
+            )
+
+        # Handle NaN/Inf values
+        features_df = impute(features_df)
+
+        # Get feature names
+        feature_names = list(features_df.columns)
+
+        print(f"[tsfresh] Extracted {len(feature_names)} features")
+
+        # Store in session
+        feature_session_id = f"tsfresh_{session_id}"
+        _feature_sessions[feature_session_id] = {
+            'features': features_df,
+            'labels': labels,
+            'categories': categories,
+            'feature_names': feature_names,
+            'metadata': {
+                **metadata,
+                'num_features': len(feature_names),
+                'extraction_method': 'tsfresh',
+                'feature_set': feature_set,
+                'feature_categories': {
+                    'tsfresh_real': True,
+                    'feature_set': feature_set
+                }
+            }
+        }
+
+        return {
+            'session_id': feature_session_id,
+            'num_windows': num_windows,
+            'num_features': len(feature_names),
+            'feature_names': feature_names,
+            'feature_set': feature_set,
+            'extraction_method': 'tsfresh',
+            'preview': features_df.head(5).to_dict(orient='records')
+        }
+
+    def select_features_fresh(
+        self,
+        feature_session_id: str,
+        fdr_level: float = 0.05,
+        multiclass: bool = True,
+        n_significant: int = 1,
+        ml_task: str = 'classification'
+    ) -> Dict[str, Any]:
+        """
+        Select features using tsfresh's FRESH algorithm.
+
+        FRESH = FeatuRe Extraction based on Scalable Hypothesis tests
+
+        This method:
+        1. Performs appropriate statistical tests for each feature based on its type
+        2. Applies Benjamini-Hochberg procedure for multiple testing correction
+        3. Returns features with p-value below the FDR threshold
+
+        Statistical tests used (automatically selected):
+        - Kolmogorov-Smirnov test (for continuous features)
+        - Mann-Whitney U test
+        - Fisher's exact test (for binary features)
+        - Welch's t-test
+        - Chi-squared test
+
+        Args:
+            feature_session_id: Session ID with extracted features
+            fdr_level: False Discovery Rate threshold (default 0.05)
+            multiclass: Whether to handle multiclass targets
+            n_significant: Minimum number of significant features to keep
+            ml_task: 'classification' or 'regression'
+
+        Returns:
+            Selection results with selected features, p-values, and relevance table
+        """
+        if not TSFRESH_AVAILABLE:
+            raise ImportError(
+                "tsfresh library not installed. Install with: pip install tsfresh\n"
+                "Use 'select_features' method for sklearn-based selection instead."
+            )
+
+        session = _feature_sessions.get(feature_session_id)
+        if not session:
+            raise ValueError(f"Feature session not found: {feature_session_id}")
+
+        features_df = session['features'].copy()
+        labels = session['labels']
+
+        if labels is None:
+            raise ValueError("Labels required for FRESH feature selection")
+
+        original_features = list(features_df.columns)
+        y = pd.Series(labels)
+
+        print(f"[FRESH] Starting feature selection on {len(original_features)} features")
+        print(f"[FRESH] FDR level: {fdr_level}, ML task: {ml_task}")
+        print(f"[FRESH] Labels: {len(y)} samples, {len(y.unique())} unique classes")
+
+        # Apply tsfresh's FRESH feature selection
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+
+            # Select features using hypothesis testing with FDR correction
+            features_filtered = tsfresh_select_features(
+                features_df,
+                y,
+                ml_task=ml_task,
+                multiclass=multiclass,
+                n_significant=n_significant,
+                fdr_level=fdr_level
+            )
+
+        selected_features = list(features_filtered.columns)
+
+        print(f"[FRESH] Selected {len(selected_features)} features (from {len(original_features)})")
+
+        # Compute feature relevance scores (using correlation as proxy since tsfresh
+        # doesn't expose p-values directly in the simple API)
+        relevance_scores = {}
+        for feat in selected_features:
+            if feat in features_df.columns:
+                # Use absolute correlation with encoded labels as relevance proxy
+                y_encoded = pd.factorize(y)[0]
+                corr = abs(features_df[feat].corr(pd.Series(y_encoded)))
+                relevance_scores[feat] = float(corr) if not np.isnan(corr) else 0.0
+
+        # Normalize scores
+        max_score = max(relevance_scores.values()) if relevance_scores else 1.0
+        if max_score > 0:
+            relevance_scores = {k: v / max_score for k, v in relevance_scores.items()}
+
+        # Sort by relevance
+        sorted_features = sorted(relevance_scores.items(), key=lambda x: x[1], reverse=True)
+
+        # Store selection session
+        selection_session_id = f"fresh_{feature_session_id}"
+        _selection_sessions[selection_session_id] = {
+            'feature_session_id': feature_session_id,
+            'selected_features': selected_features,
+            'relevance_scores': relevance_scores,
+            'method': 'fresh',
+            'fdr_level': fdr_level,
+            'original_count': len(original_features),
+            'final_count': len(selected_features)
+        }
+
+        return {
+            'session_id': selection_session_id,
+            'selected_features': selected_features,
+            'relevance_scores': {f: relevance_scores.get(f, 0) for f in selected_features},
+            'all_scores': dict(sorted_features),
+            'selection_log': [
+                f"Applied FRESH algorithm with FDR level {fdr_level}",
+                f"Performed hypothesis testing with Benjamini-Hochberg correction",
+                f"Selected {len(selected_features)} statistically significant features",
+                f"Reduction: {len(original_features)} → {len(selected_features)} ({100 * len(selected_features) / len(original_features):.1f}%)"
+            ],
+            'original_count': len(original_features),
+            'final_count': len(selected_features),
+            'method': 'fresh',
+            'fdr_level': fdr_level
+        }
+
+    def select_features_fresh_combined(
+        self,
+        feature_session_id: str,
+        fdr_level: float = 0.05,
+        n_features: int = 20,
+        ml_task: str = 'classification'
+    ) -> Dict[str, Any]:
+        """
+        Chained feature selection: FRESH + target count.
+
+        Step 1: Apply FRESH to get statistically significant features
+        Step 2: If more than n_features remain, reduce using mutual information ranking
+
+        Args:
+            feature_session_id: Session ID with extracted features
+            fdr_level: False Discovery Rate threshold for FRESH
+            n_features: Target number of features after second selection
+            ml_task: 'classification' or 'regression'
+
+        Returns:
+            Selection results with selected features and selection log
+        """
+        if not TSFRESH_AVAILABLE:
+            raise ImportError(
+                "tsfresh library not installed. Install with: pip install tsfresh\n"
+                "Use 'select_features' method for sklearn-based selection instead."
+            )
+
+        session = _feature_sessions.get(feature_session_id)
+        if not session:
+            raise ValueError(f"Feature session not found: {feature_session_id}")
+
+        features_df = session['features'].copy()
+        labels = session['labels']
+
+        if labels is None:
+            raise ValueError("Labels required for feature selection")
+
+        original_features = list(features_df.columns)
+        y = pd.Series(labels)
+
+        print(f"[FRESH+Combined] Starting chained selection on {len(original_features)} features")
+        print(f"[FRESH+Combined] Step 1: FRESH with FDR level {fdr_level}")
+        print(f"[FRESH+Combined] Step 2: Reduce to {n_features} features")
+
+        selection_log = []
+
+        # Step 1: Apply FRESH
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            features_after_fresh = tsfresh_select_features(
+                features_df,
+                y,
+                ml_task=ml_task,
+                multiclass=True,
+                n_significant=1,
+                fdr_level=fdr_level
+            )
+
+        fresh_features = list(features_after_fresh.columns)
+        selection_log.append(f"Step 1 (FRESH): {len(original_features)} → {len(fresh_features)} features (FDR={fdr_level})")
+        print(f"[FRESH+Combined] After FRESH: {len(fresh_features)} features")
+
+        # Step 2: If we have more features than target, reduce using mutual information
+        if len(fresh_features) <= n_features:
+            # Already at or below target, no further reduction needed
+            final_features = fresh_features
+            selection_log.append(f"Step 2: No reduction needed (already at {len(fresh_features)} ≤ {n_features})")
+        else:
+            # Use mutual information to rank and select top n_features
+            X_fresh = features_after_fresh.values
+            y_encoded = pd.factorize(y)[0]
+
+            # Compute mutual information scores
+            mi_scores = mutual_info_classif(X_fresh, y_encoded, random_state=42)
+            mi_ranking = sorted(zip(fresh_features, mi_scores), key=lambda x: x[1], reverse=True)
+
+            # Select top n_features
+            final_features = [f for f, _ in mi_ranking[:n_features]]
+            selection_log.append(f"Step 2 (MI ranking): {len(fresh_features)} → {n_features} features")
+            print(f"[FRESH+Combined] After MI ranking: {len(final_features)} features")
+
+        # Compute relevance scores for final features
+        relevance_scores = {}
+        y_encoded = pd.factorize(y)[0]
+        for feat in final_features:
+            if feat in features_df.columns:
+                corr = abs(features_df[feat].corr(pd.Series(y_encoded)))
+                relevance_scores[feat] = float(corr) if not np.isnan(corr) else 0.0
+
+        # Normalize scores
+        max_score = max(relevance_scores.values()) if relevance_scores else 1.0
+        if max_score > 0:
+            relevance_scores = {k: v / max_score for k, v in relevance_scores.items()}
+
+        # Sort by relevance
+        sorted_features = sorted(relevance_scores.items(), key=lambda x: x[1], reverse=True)
+
+        selection_log.append(f"Final: {len(final_features)} features selected")
+
+        # Store selection session
+        selection_session_id = f"fresh_combined_{feature_session_id}"
+        _selection_sessions[selection_session_id] = {
+            'feature_session_id': feature_session_id,
+            'selected_features': final_features,
+            'relevance_scores': relevance_scores,
+            'method': 'fresh_combined',
+            'fdr_level': fdr_level,
+            'target_features': n_features,
+            'original_count': len(original_features),
+            'after_fresh_count': len(fresh_features),
+            'final_count': len(final_features)
+        }
+
+        return {
+            'session_id': selection_session_id,
+            'selected_features': final_features,
+            'importance_scores': relevance_scores,
+            'relevance_scores': {f: relevance_scores.get(f, 0) for f in final_features},
+            'all_scores': dict(sorted_features),
+            'selection_log': selection_log,
+            'original_count': len(original_features),
+            'after_fresh_count': len(fresh_features),
+            'final_count': len(final_features),
+            'method': 'fresh_combined',
+            'fdr_level': fdr_level,
+            'target_features': n_features
+        }
+
+    @staticmethod
+    def get_available_feature_sets() -> Dict[str, Any]:
+        """Get information about available feature extraction options."""
+        return {
+            'tsfresh_available': TSFRESH_AVAILABLE,
+            'extraction_methods': {
+                'lightweight': {
+                    'name': 'Lightweight (Custom)',
+                    'description': '44 curated features optimized for edge deployment',
+                    'features_per_channel': 44,
+                    'speed': 'fast',
+                    'includes': ['statistical', 'dsp', 'spectral']
+                },
+                'tsfresh_minimal': {
+                    'name': 'tsfresh Minimal',
+                    'description': '~10 basic statistical features per column',
+                    'features_per_channel': 10,
+                    'speed': 'fast',
+                    'requires': 'tsfresh'
+                },
+                'tsfresh_efficient': {
+                    'name': 'tsfresh Efficient',
+                    'description': '~100 features per column (balanced)',
+                    'features_per_channel': 100,
+                    'speed': 'medium',
+                    'requires': 'tsfresh'
+                },
+                'tsfresh_comprehensive': {
+                    'name': 'tsfresh Comprehensive',
+                    'description': '~800 features per column including FFT, wavelets, AR models',
+                    'features_per_channel': 800,
+                    'speed': 'slow',
+                    'requires': 'tsfresh'
+                }
+            },
+            'selection_methods': {
+                'combined': {
+                    'name': 'Combined (sklearn)',
+                    'description': 'Variance + correlation + mutual info + ANOVA',
+                    'hypothesis_testing': False
+                },
+                'fresh': {
+                    'name': 'FRESH (tsfresh)',
+                    'description': 'Hypothesis testing with Benjamini-Hochberg FDR correction',
+                    'hypothesis_testing': True,
+                    'requires': 'tsfresh'
+                },
+                'fresh_combined': {
+                    'name': 'FRESH + Target Count',
+                    'description': 'FRESH filtering then reduce to target count using MI ranking',
+                    'hypothesis_testing': True,
+                    'requires': 'tsfresh'
+                }
+            }
         }
 
     def recommend_features(self, session_id: str, mode: str = 'anomaly') -> Dict[str, Any]:
