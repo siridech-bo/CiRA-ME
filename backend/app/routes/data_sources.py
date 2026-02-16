@@ -4,11 +4,22 @@ Handles CSV, Edge Impulse JSON, Edge Impulse CBOR, and CiRA CBOR formats
 """
 
 import os
+import uuid
 from flask import Blueprint, request, jsonify, current_app
+from werkzeug.utils import secure_filename
 from ..auth import login_required, validate_path, get_user_folders
 from ..services.data_loader import DataLoader
 
 data_sources_bp = Blueprint('data_sources', __name__)
+
+# Allowed file extensions for upload
+ALLOWED_EXTENSIONS = {'csv', 'json', 'cbor'}
+MAX_FILE_SIZE = 100 * 1024 * 1024  # 100 MB
+
+
+def allowed_file(filename):
+    """Check if file extension is allowed."""
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 
 @data_sources_bp.route('/datasets-root', methods=['GET'])
@@ -110,6 +121,220 @@ def browse_directory():
         'current_path': path,
         'items': items
     })
+
+
+@data_sources_bp.route('/upload', methods=['POST'])
+@login_required
+def upload_file():
+    """
+    Upload a dataset file from the user's local machine.
+
+    Files are saved to the shared folder for processing.
+    Supports CSV, JSON (Edge Impulse), and CBOR formats.
+    """
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file provided'}), 400
+
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'error': 'No file selected'}), 400
+
+    if not allowed_file(file.filename):
+        return jsonify({
+            'error': f'File type not allowed. Supported: {", ".join(ALLOWED_EXTENSIONS)}'
+        }), 400
+
+    # Check file size (read content length from headers if available)
+    file.seek(0, 2)  # Seek to end
+    file_size = file.tell()
+    file.seek(0)  # Reset to beginning
+
+    if file_size > MAX_FILE_SIZE:
+        return jsonify({
+            'error': f'File too large. Maximum size: {MAX_FILE_SIZE // (1024*1024)} MB'
+        }), 400
+
+    # Get target folder from form data (optional)
+    target_folder = request.form.get('folder', '')
+    shared_folder = current_app.config['SHARED_FOLDER_PATH']
+    datasets_root = current_app.config['DATASETS_ROOT_PATH']
+
+    # Determine upload directory
+    if target_folder:
+        # Validate target folder access
+        if not validate_path(target_folder, request.current_user, datasets_root, shared_folder):
+            return jsonify({'error': 'Access denied to target folder'}), 403
+        upload_dir = target_folder
+    else:
+        # Default to shared folder with user's uploads subdirectory
+        user = request.current_user
+        user_upload_dir = os.path.join(shared_folder, 'uploads', f"user_{user['id']}")
+        os.makedirs(user_upload_dir, exist_ok=True)
+        upload_dir = user_upload_dir
+
+    # Secure the filename and handle duplicates
+    original_filename = secure_filename(file.filename)
+    if not original_filename:
+        original_filename = f"upload_{uuid.uuid4().hex[:8]}.csv"
+
+    # Check for existing file and add suffix if needed
+    base_name, extension = os.path.splitext(original_filename)
+    final_filename = original_filename
+    counter = 1
+
+    while os.path.exists(os.path.join(upload_dir, final_filename)):
+        final_filename = f"{base_name}_{counter}{extension}"
+        counter += 1
+
+    # Save the file
+    file_path = os.path.join(upload_dir, final_filename)
+    try:
+        file.save(file_path)
+    except Exception as e:
+        return jsonify({'error': f'Failed to save file: {str(e)}'}), 500
+
+    # Determine file type
+    ext = extension.lower().lstrip('.')
+    file_type = {
+        'csv': 'csv',
+        'json': 'json',
+        'cbor': 'cbor'
+    }.get(ext, 'unknown')
+
+    return jsonify({
+        'success': True,
+        'filename': final_filename,
+        'path': file_path,
+        'size': file_size,
+        'file_type': file_type,
+        'upload_dir': upload_dir
+    })
+
+
+@data_sources_bp.route('/upload-multiple', methods=['POST'])
+@login_required
+def upload_multiple_files():
+    """
+    Upload multiple dataset files at once.
+
+    Files are saved to a new folder in shared/uploads.
+    Useful for Edge Impulse format which has training/testing folders.
+    """
+    if 'files' not in request.files:
+        return jsonify({'error': 'No files provided'}), 400
+
+    files = request.files.getlist('files')
+    if not files or all(f.filename == '' for f in files):
+        return jsonify({'error': 'No files selected'}), 400
+
+    # Get folder name from form data
+    folder_name = request.form.get('folder_name', '')
+    if not folder_name:
+        folder_name = f"upload_{uuid.uuid4().hex[:8]}"
+    folder_name = secure_filename(folder_name)
+
+    shared_folder = current_app.config['SHARED_FOLDER_PATH']
+    user = request.current_user
+
+    # Create upload directory
+    upload_dir = os.path.join(shared_folder, 'uploads', f"user_{user['id']}", folder_name)
+    os.makedirs(upload_dir, exist_ok=True)
+
+    uploaded_files = []
+    errors = []
+    total_size = 0
+
+    for file in files:
+        if file.filename == '':
+            continue
+
+        if not allowed_file(file.filename):
+            errors.append(f'{file.filename}: File type not allowed')
+            continue
+
+        # Check file size
+        file.seek(0, 2)
+        file_size = file.tell()
+        file.seek(0)
+
+        if file_size > MAX_FILE_SIZE:
+            errors.append(f'{file.filename}: File too large')
+            continue
+
+        # Preserve relative path structure if provided (for folder uploads)
+        relative_path = request.form.get(f'path_{file.filename}', '')
+        if relative_path:
+            # Create subdirectories if needed (e.g., training/testing)
+            subdir = os.path.dirname(secure_filename(relative_path.replace('\\', '/')))
+            if subdir:
+                target_dir = os.path.join(upload_dir, subdir)
+                os.makedirs(target_dir, exist_ok=True)
+            else:
+                target_dir = upload_dir
+        else:
+            target_dir = upload_dir
+
+        filename = secure_filename(file.filename)
+        file_path = os.path.join(target_dir, filename)
+
+        try:
+            file.save(file_path)
+            total_size += file_size
+            uploaded_files.append({
+                'filename': filename,
+                'path': file_path,
+                'size': file_size
+            })
+        except Exception as e:
+            errors.append(f'{file.filename}: {str(e)}')
+
+    return jsonify({
+        'success': len(uploaded_files) > 0,
+        'uploaded_count': len(uploaded_files),
+        'uploaded_files': uploaded_files,
+        'errors': errors,
+        'total_size': total_size,
+        'upload_dir': upload_dir
+    })
+
+
+@data_sources_bp.route('/delete-upload', methods=['POST'])
+@login_required
+def delete_uploaded_file():
+    """Delete an uploaded file."""
+    data = request.get_json()
+
+    if not data:
+        return jsonify({'error': 'No data provided'}), 400
+
+    file_path = data.get('file_path')
+    if not file_path:
+        return jsonify({'error': 'File path required'}), 400
+
+    shared_folder = current_app.config['SHARED_FOLDER_PATH']
+    datasets_root = current_app.config['DATASETS_ROOT_PATH']
+
+    # Validate path access
+    if not validate_path(file_path, request.current_user, datasets_root, shared_folder):
+        return jsonify({'error': 'Access denied'}), 403
+
+    # Only allow deletion from uploads folder for safety
+    if 'uploads' not in file_path:
+        return jsonify({'error': 'Can only delete files from uploads folder'}), 403
+
+    if not os.path.exists(file_path):
+        return jsonify({'error': 'File not found'}), 404
+
+    try:
+        if os.path.isfile(file_path):
+            os.remove(file_path)
+        elif os.path.isdir(file_path):
+            import shutil
+            shutil.rmtree(file_path)
+
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 @data_sources_bp.route('/scan', methods=['POST'])

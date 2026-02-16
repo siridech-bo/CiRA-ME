@@ -80,6 +80,16 @@
             <h3 class="text-subtitle-1 font-weight-bold">Browse Files</h3>
             <v-spacer />
             <v-btn
+              variant="tonal"
+              size="small"
+              color="primary"
+              prepend-icon="mdi-upload"
+              class="mr-2"
+              @click="showUploadDialog = true"
+            >
+              Upload
+            </v-btn>
+            <v-btn
               variant="text"
               size="small"
               prepend-icon="mdi-refresh"
@@ -352,6 +362,143 @@
         </template>
       </v-btn>
     </div>
+
+    <!-- Upload Dialog -->
+    <v-dialog v-model="showUploadDialog" max-width="600" persistent>
+      <v-card>
+        <v-card-title class="d-flex align-center">
+          <v-icon class="mr-2">mdi-upload</v-icon>
+          Upload Dataset
+          <v-spacer />
+          <v-btn icon variant="text" @click="closeUploadDialog">
+            <v-icon>mdi-close</v-icon>
+          </v-btn>
+        </v-card-title>
+
+        <v-card-text>
+          <!-- Drag and Drop Zone -->
+          <div
+            class="upload-dropzone"
+            :class="{ 'drag-over': isDragging, 'has-files': uploadFiles.length > 0 }"
+            @dragover.prevent="isDragging = true"
+            @dragleave.prevent="isDragging = false"
+            @drop.prevent="handleDrop"
+            @click="triggerFileInput"
+          >
+            <input
+              ref="fileInput"
+              type="file"
+              :accept="allowedFileTypes"
+              multiple
+              hidden
+              @change="handleFileSelect"
+            />
+
+            <template v-if="uploadFiles.length === 0">
+              <v-icon size="48" color="primary" class="mb-2">mdi-cloud-upload</v-icon>
+              <div class="text-body-1 font-weight-medium">
+                Drag and drop files here
+              </div>
+              <div class="text-caption text-medium-emphasis">
+                or click to browse
+              </div>
+              <div class="text-caption text-medium-emphasis mt-2">
+                Supported: CSV, JSON, CBOR (max 100 MB)
+              </div>
+            </template>
+
+            <template v-else>
+              <v-icon size="32" color="success" class="mb-2">mdi-check-circle</v-icon>
+              <div class="text-body-1 font-weight-medium">
+                {{ uploadFiles.length }} file(s) selected
+              </div>
+            </template>
+          </div>
+
+          <!-- Selected Files List -->
+          <v-list v-if="uploadFiles.length > 0" density="compact" class="mt-4">
+            <v-list-subheader>Selected Files</v-list-subheader>
+            <v-list-item
+              v-for="(file, index) in uploadFiles"
+              :key="index"
+              class="upload-file-item"
+            >
+              <template #prepend>
+                <v-icon :color="getFileTypeColor(file.name)">
+                  {{ getFileTypeIcon(file.name) }}
+                </v-icon>
+              </template>
+
+              <v-list-item-title>{{ file.name }}</v-list-item-title>
+              <v-list-item-subtitle>{{ formatFileSize(file.size) }}</v-list-item-subtitle>
+
+              <template #append>
+                <v-btn
+                  icon
+                  variant="text"
+                  size="small"
+                  color="error"
+                  @click.stop="removeFile(index)"
+                >
+                  <v-icon>mdi-close</v-icon>
+                </v-btn>
+              </template>
+            </v-list-item>
+          </v-list>
+
+          <!-- Upload Progress -->
+          <v-progress-linear
+            v-if="uploading"
+            :model-value="uploadProgress"
+            color="primary"
+            class="mt-4"
+            height="8"
+            rounded
+          />
+
+          <!-- Upload Error -->
+          <v-alert
+            v-if="uploadError"
+            type="error"
+            variant="tonal"
+            density="compact"
+            class="mt-4"
+            closable
+            @click:close="uploadError = ''"
+          >
+            {{ uploadError }}
+          </v-alert>
+
+          <!-- Upload Success -->
+          <v-alert
+            v-if="uploadSuccess"
+            type="success"
+            variant="tonal"
+            density="compact"
+            class="mt-4"
+          >
+            {{ uploadSuccess }}
+          </v-alert>
+        </v-card-text>
+
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="text" @click="closeUploadDialog">
+            Cancel
+          </v-btn>
+          <v-btn
+            color="primary"
+            variant="flat"
+            :disabled="uploadFiles.length === 0 || uploading"
+            :loading="uploading"
+            @click="uploadSelectedFiles"
+          >
+            <v-icon start>mdi-upload</v-icon>
+            Upload {{ uploadFiles.length }} File(s)
+          </v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
   </v-container>
 </template>
 
@@ -394,6 +541,17 @@ const datasetScan = ref<any>(null)
 const selectedCategory = ref<string | null>(null)
 const selectedLabel = ref<string | null>(null)
 const scanning = ref(false)
+
+// Upload state
+const showUploadDialog = ref(false)
+const uploadFiles = ref<File[]>([])
+const uploading = ref(false)
+const uploadProgress = ref(0)
+const uploadError = ref('')
+const uploadSuccess = ref('')
+const isDragging = ref(false)
+const fileInput = ref<HTMLInputElement | null>(null)
+const allowedFileTypes = '.csv,.json,.cbor'
 
 const formatInfo = computed(() => {
   switch (selectedFormat.value) {
@@ -718,6 +876,128 @@ watch(selectedFormat, () => {
   selectedLabel.value = null
 })
 
+// Upload methods
+function triggerFileInput() {
+  fileInput.value?.click()
+}
+
+function handleFileSelect(event: Event) {
+  const target = event.target as HTMLInputElement
+  if (target.files) {
+    addFiles(Array.from(target.files))
+  }
+}
+
+function handleDrop(event: DragEvent) {
+  isDragging.value = false
+  if (event.dataTransfer?.files) {
+    addFiles(Array.from(event.dataTransfer.files))
+  }
+}
+
+function addFiles(files: File[]) {
+  const validExtensions = ['csv', 'json', 'cbor']
+  const maxSize = 100 * 1024 * 1024 // 100 MB
+
+  for (const file of files) {
+    const ext = file.name.split('.').pop()?.toLowerCase() || ''
+
+    if (!validExtensions.includes(ext)) {
+      uploadError.value = `Invalid file type: ${file.name}. Supported: CSV, JSON, CBOR`
+      continue
+    }
+
+    if (file.size > maxSize) {
+      uploadError.value = `File too large: ${file.name}. Max size: 100 MB`
+      continue
+    }
+
+    // Avoid duplicates
+    if (!uploadFiles.value.find(f => f.name === file.name && f.size === file.size)) {
+      uploadFiles.value.push(file)
+    }
+  }
+}
+
+function removeFile(index: number) {
+  uploadFiles.value.splice(index, 1)
+}
+
+function getFileTypeIcon(filename: string) {
+  const ext = filename.split('.').pop()?.toLowerCase()
+  switch (ext) {
+    case 'csv': return 'mdi-file-delimited'
+    case 'json': return 'mdi-code-json'
+    case 'cbor': return 'mdi-file-code'
+    default: return 'mdi-file'
+  }
+}
+
+function getFileTypeColor(filename: string) {
+  const ext = filename.split('.').pop()?.toLowerCase()
+  switch (ext) {
+    case 'csv': return 'success'
+    case 'json': return 'info'
+    case 'cbor': return 'secondary'
+    default: return 'grey'
+  }
+}
+
+async function uploadSelectedFiles() {
+  if (uploadFiles.value.length === 0) return
+
+  uploading.value = true
+  uploadProgress.value = 0
+  uploadError.value = ''
+  uploadSuccess.value = ''
+
+  try {
+    const totalFiles = uploadFiles.value.length
+    let uploadedCount = 0
+
+    for (const file of uploadFiles.value) {
+      const formData = new FormData()
+      formData.append('file', file)
+
+      // Upload to current folder if we're in a user-accessible directory
+      if (currentPath.value) {
+        formData.append('folder', currentPath.value)
+      }
+
+      await api.post('/api/data/upload', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' }
+      })
+
+      uploadedCount++
+      uploadProgress.value = Math.round((uploadedCount / totalFiles) * 100)
+    }
+
+    uploadSuccess.value = `Successfully uploaded ${uploadedCount} file(s)`
+    uploadFiles.value = []
+
+    // Refresh the file list
+    await loadFolders()
+
+    // Auto close after success
+    setTimeout(() => {
+      closeUploadDialog()
+    }, 1500)
+  } catch (e: any) {
+    uploadError.value = e.response?.data?.error || 'Upload failed'
+  } finally {
+    uploading.value = false
+  }
+}
+
+function closeUploadDialog() {
+  showUploadDialog.value = false
+  uploadFiles.value = []
+  uploadProgress.value = 0
+  uploadError.value = ''
+  uploadSuccess.value = ''
+  isDragging.value = false
+}
+
 onMounted(() => {
   loadFolders()
 })
@@ -753,5 +1033,38 @@ onMounted(() => {
     max-height: 400px;
     overflow-y: auto;
   }
+}
+
+// Upload dropzone styles
+.upload-dropzone {
+  border: 2px dashed rgba(var(--v-border-color), var(--v-border-opacity));
+  border-radius: 12px;
+  padding: 40px 20px;
+  text-align: center;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  background: rgba(var(--v-theme-surface-variant), 0.2);
+
+  &:hover {
+    border-color: rgb(var(--v-theme-primary));
+    background: rgba(var(--v-theme-primary), 0.05);
+  }
+
+  &.drag-over {
+    border-color: rgb(var(--v-theme-primary));
+    background: rgba(var(--v-theme-primary), 0.1);
+    border-style: solid;
+  }
+
+  &.has-files {
+    border-color: rgb(var(--v-theme-success));
+    background: rgba(var(--v-theme-success), 0.05);
+  }
+}
+
+.upload-file-item {
+  border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+  border-radius: 8px;
+  margin-bottom: 4px;
 }
 </style>
