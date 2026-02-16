@@ -236,6 +236,7 @@ def train_timesnet_classification(config: dict, data: dict) -> dict:
     # Load data
     windows = np.array(data['windows'])
     labels = np.array(data['labels'])
+    categories = data.get('categories')  # May be None
 
     # Encode labels
     le = LabelEncoder()
@@ -249,11 +250,50 @@ def train_timesnet_classification(config: dict, data: dict) -> dict:
         X = X.unsqueeze(-1)
     y = torch.LongTensor(y_encoded)
 
-    # Split data
-    test_size = config.get('test_size', 0.2)
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=test_size, random_state=42, stratify=y
-    )
+    # Split data - prefer category-based split to avoid data leakage
+    split_method = 'random'
+    if categories is not None:
+        categories = np.array(categories)
+        train_mask = np.isin(categories, ['training', 'train'])
+        test_mask = np.isin(categories, ['testing', 'test'])
+
+        if np.sum(train_mask) > 0 and np.sum(test_mask) > 0:
+            # Use category-based split (proper separation, no data leakage)
+            split_method = 'category'
+            X_train = X[train_mask]
+            X_test = X[test_mask]
+            y_train = y[train_mask]
+            y_test = y[test_mask]
+            print(f"[TimesNet] Using CATEGORY-based split: {len(X_train)} train, {len(X_test)} test (no data leakage)", file=sys.stderr)
+        else:
+            print(f"[TimesNet] Categories provided but no proper train/test labels found. Falling back to random split.", file=sys.stderr)
+
+    if split_method == 'random':
+        # Fall back to random split (with small dataset handling)
+        test_size = config.get('test_size', 0.2)
+        n_samples = len(X)
+        min_test_samples = num_classes  # Need at least 1 sample per class for stratification
+
+        # Calculate actual test samples
+        test_samples = int(n_samples * test_size) if test_size < 1 else int(test_size)
+
+        # Adjust if dataset is too small for stratified split
+        use_stratify = True
+        if test_samples < min_test_samples:
+            # Try to use minimum viable test_size
+            adjusted_test_size = min_test_samples / n_samples
+            if adjusted_test_size >= 0.5:
+                # Dataset too small for stratified split, disable stratification
+                print(f"[TimesNet] Dataset too small for stratified split ({n_samples} samples, {num_classes} classes). Using random split.", file=sys.stderr)
+                use_stratify = False
+            else:
+                print(f"[TimesNet] Adjusted test_size from {test_size:.2f} to {adjusted_test_size:.2f} to ensure enough samples per class", file=sys.stderr)
+                test_size = adjusted_test_size
+
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=test_size, random_state=42, stratify=y if use_stratify else None
+        )
+        print(f"[TimesNet] Using RANDOM split: {len(X_train)} train, {len(X_test)} test (WARNING: potential data leakage with overlapping windows)", file=sys.stderr)
 
     train_dataset = TensorDataset(X_train, y_train)
     test_dataset = TensorDataset(X_test, y_test)
@@ -330,7 +370,9 @@ def train_timesnet_classification(config: dict, data: dict) -> dict:
         'class_names': class_names,
         'train_samples': len(X_train),
         'test_samples': len(X_test),
-        'final_loss': float(train_losses[-1]) if train_losses else 0
+        'final_loss': float(train_losses[-1]) if train_losses else 0,
+        'split_method': split_method,  # 'category' = proper split, 'random' = potential leakage
+        'metrics_info': 'Category-based split (no data leakage)' if split_method == 'category' else 'Random split (potential data leakage with overlapping windows)'
     }
 
     # Per-class metrics

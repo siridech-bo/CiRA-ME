@@ -378,6 +378,7 @@ const notificationStore = useNotificationStore()
 
 const selectedFormat = ref('csv')
 const currentPath = ref('')
+const basePath = ref<string | null>(null) // The root path user has access to
 const currentItems = ref<FileItem[]>([])
 const selectedFile = ref<FileItem | null>(null)
 const dataPreview = ref<any>(null)
@@ -423,10 +424,21 @@ const isDatasetFolder = computed(() => {
 })
 
 const breadcrumbs = computed(() => {
-  const parts = currentPath.value.split(/[/\\]/).filter(Boolean)
-  const items = [{ title: 'Root', path: '', disabled: false }]
+  // Only show paths relative to the base path (the user's accessible root)
+  const base = basePath.value || ''
+  const current = currentPath.value || ''
 
-  let path = ''
+  // Get the relative path from base
+  let relativePath = current
+  if (base && current.startsWith(base)) {
+    relativePath = current.slice(base.length).replace(/^[/\\]/, '')
+  }
+
+  const parts = relativePath.split(/[/\\]/).filter(Boolean)
+  // Root navigates back to base path (or null for API to resolve)
+  const items = [{ title: 'Root', path: '__ROOT__', disabled: false }]
+
+  let path = base
   for (const part of parts) {
     path += (path ? '/' : '') + part
     items.push({ title: part, path, disabled: false })
@@ -506,6 +518,11 @@ async function loadFolders() {
     const response = await api.post('/api/data/browse', { path: currentPath.value || null })
     currentItems.value = response.data.items
     currentPath.value = response.data.current_path
+
+    // Store the base path on first load (when we send null)
+    if (basePath.value === null) {
+      basePath.value = response.data.current_path || ''
+    }
   } catch (e: any) {
     notificationStore.showError(e.response?.data?.error || 'Failed to load files')
   } finally {
@@ -514,7 +531,12 @@ async function loadFolders() {
 }
 
 function navigateTo(path: string) {
-  currentPath.value = path
+  // Handle special '__ROOT__' path - navigate to base path
+  if (path === '__ROOT__') {
+    currentPath.value = basePath.value || ''
+  } else {
+    currentPath.value = path
+  }
   datasetScan.value = null
   selectedCategory.value = null
   selectedLabel.value = null

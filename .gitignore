@@ -56,3 +56,9 @@ frontend/dist/
 
 # Windows reserved filenames
 nul
+
+# Docker
+docker-volumes/
+backups/
+*.tar.gz
+*.zip

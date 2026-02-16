@@ -221,6 +221,7 @@ class TimesNetTrainer:
         self,
         windows: np.ndarray,
         labels: Optional[np.ndarray] = None,
+        categories: Optional[np.ndarray] = None,
         config: Optional[TimesNetConfig] = None,
         epochs: int = 50,
         batch_size: int = 32,
@@ -235,6 +236,8 @@ class TimesNetTrainer:
         Anomalies are detected when reconstruction error exceeds a threshold.
 
         Uses subprocess isolation to avoid DLL conflicts with other CUDA apps.
+        If categories (training/testing) are provided, trains only on training
+        data and evaluates on testing data to avoid data leakage.
         """
         # Get configuration
         num_channels = windows.shape[2] if len(windows.shape) == 3 else 1
@@ -257,7 +260,8 @@ class TimesNetTrainer:
         # Prepare data (convert to lists for JSON serialization)
         data = {
             'windows': windows.tolist(),
-            'labels': labels.tolist() if labels is not None else None
+            'labels': labels.tolist() if labels is not None else None,
+            'categories': categories.tolist() if categories is not None else None
         }
 
         # Run training in subprocess
@@ -456,6 +460,7 @@ class TimesNetTrainer:
         self,
         windows: np.ndarray,
         labels: np.ndarray,
+        categories: Optional[np.ndarray] = None,
         config: Optional[TimesNetConfig] = None,
         epochs: int = 100,
         batch_size: int = 32,
@@ -468,6 +473,8 @@ class TimesNetTrainer:
         Train TimesNet for multi-class classification.
 
         Uses subprocess isolation to avoid DLL conflicts with other CUDA apps.
+        If categories (training/testing) are provided, uses them for proper
+        train/test splitting to avoid data leakage.
         """
         from sklearn.preprocessing import LabelEncoder
 
@@ -500,7 +507,8 @@ class TimesNetTrainer:
         # Prepare data (convert to lists for JSON serialization)
         data = {
             'windows': windows.tolist(),
-            'labels': labels.tolist()
+            'labels': labels.tolist(),
+            'categories': categories.tolist() if categories is not None else None
         }
 
         # Run training in subprocess

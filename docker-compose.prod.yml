@@ -1,0 +1,52 @@
+version: '3.8'
+
+# CiRA ME - Production Override Configuration
+# Use with: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+
+services:
+  backend:
+    environment:
+      # Force production settings
+      - FLASK_DEBUG=False
+      - PYTHONOPTIMIZE=2
+
+    # Enhanced resource limits for production
+    deploy:
+      resources:
+        limits:
+          cpus: '8.0'
+          memory: 16G
+        reservations:
+          cpus: '4.0'
+          memory: 8G
+
+    # Restart policy for high availability
+    restart: always
+
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "10"
+
+  frontend:
+    # Restart policy
+    restart: always
+
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
+
+    # Production resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1G
+        reservations:
+          cpus: '1.0'
+          memory: 512M

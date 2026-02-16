@@ -10,7 +10,8 @@ Werkzeug>=3.0.0
 # SQLite is built-in to Python
 
 # Data Processing
-pandas>=2.0.0
+# Note: pandas<3.0 required for tsfresh compatibility (pandas 3.0 has breaking changes)
+pandas>=2.0.0,<3.0.0
 numpy>=1.24.0
 scipy>=1.11.0
 
@@ -19,6 +20,11 @@ scikit-learn>=1.3.0
 
 # Machine Learning - Anomaly Detection
 pyod>=1.1.0
+
+# Deep Learning - TimesNet (CPU-only for Docker deployment)
+# For GPU support, install torch with CUDA manually
+torch>=2.0.0
+# torch --index-url https://download.pytorch.org/whl/cpu  # Alternative: explicit CPU-only
 
 # Feature Extraction
 tsfresh>=0.20.0

@@ -376,6 +376,11 @@ class FeatureExtractor:
             fc_parameters = ComprehensiveFCParameters()
             expected_features = "~800 per column"
 
+        # Remove linear_trend_timewise feature - it requires datetime indices
+        # which causes compatibility issues with integer time values
+        if 'linear_trend_timewise' in fc_parameters:
+            del fc_parameters['linear_trend_timewise']
+
         print(f"[tsfresh] Expected features: {expected_features}")
 
         # Convert windows to tsfresh format (long format DataFrame)
@@ -410,8 +415,11 @@ class FeatureExtractor:
                 disable_progressbar=True
             )
 
-        # Handle NaN/Inf values
-        features_df = impute(features_df)
+        # Handle NaN/Inf values - use manual imputation for pandas 2.x compatibility
+        # (tsfresh's impute() has issues with newer pandas versions)
+        features_df = features_df.reset_index(drop=True)
+        features_df = features_df.replace([np.inf, -np.inf], np.nan)
+        features_df = features_df.fillna(0)
 
         # Get feature names
         feature_names = list(features_df.columns)

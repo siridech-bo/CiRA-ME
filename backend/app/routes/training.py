@@ -402,6 +402,7 @@ def train_timesnet_anomaly():
 
     windows = session['windows']
     labels = session.get('labels')
+    categories = session.get('categories')  # For proper train/test split
 
     try:
         trainer = TimesNetTrainer(device=device)
@@ -424,6 +425,7 @@ def train_timesnet_anomaly():
         result = trainer.train_anomaly(
             windows=windows,
             labels=labels,
+            categories=categories,  # Pass categories for proper evaluation
             config=config,
             epochs=epochs,
             batch_size=batch_size,
@@ -464,6 +466,7 @@ def train_timesnet_classification():
 
     windows = session['windows']
     labels = session.get('labels')
+    categories = session.get('categories')  # For proper train/test split
 
     if labels is None:
         return jsonify({'error': 'Labels required for classification'}), 400
@@ -494,6 +497,7 @@ def train_timesnet_classification():
         result = trainer.train_classification(
             windows=windows,
             labels=labels,
+            categories=categories,  # Pass categories for proper splitting
             config=config,
             epochs=epochs,
             batch_size=batch_size,

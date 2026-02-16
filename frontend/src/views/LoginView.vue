@@ -51,11 +51,6 @@
               Sign In
             </v-btn>
           </v-form>
-
-          <!-- Footer -->
-          <div class="text-center mt-6 text-caption text-medium-emphasis">
-            Default: admin / admin123
-          </div>
         </v-card>
       </v-col>
     </v-row>
