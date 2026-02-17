@@ -227,9 +227,21 @@
                 >
                   Dataset
                 </v-chip>
-                <span v-if="!item.is_dir" class="text-caption text-medium-emphasis">
+                <span v-if="!item.is_dir" class="text-caption text-medium-emphasis mr-2">
                   {{ formatFileSize(item.size) }}
                 </span>
+                <!-- Delete Button (admin or user's own folder) -->
+                <v-btn
+                  v-if="canDeleteItem(item)"
+                  icon
+                  variant="text"
+                  size="x-small"
+                  color="error"
+                  @click.stop="confirmDelete(item)"
+                  title="Delete"
+                >
+                  <v-icon size="small">mdi-delete</v-icon>
+                </v-btn>
               </template>
             </v-list-item>
 
@@ -499,6 +511,49 @@
         </v-card-actions>
       </v-card>
     </v-dialog>
+
+    <!-- Delete Confirmation Dialog (Admin only) -->
+    <v-dialog v-model="showDeleteDialog" max-width="450" persistent>
+      <v-card>
+        <v-card-title class="d-flex align-center text-error">
+          <v-icon class="mr-2" color="error">mdi-alert-circle</v-icon>
+          Confirm Delete
+        </v-card-title>
+
+        <v-card-text v-if="itemToDelete">
+          <p class="mb-3">
+            Are you sure you want to delete this {{ itemToDelete.is_dir ? 'folder' : 'file' }}?
+          </p>
+          <v-alert type="warning" variant="tonal" density="compact" class="mb-3">
+            <div class="font-weight-medium">{{ itemToDelete.name }}</div>
+            <div class="text-caption">{{ itemToDelete.path }}</div>
+          </v-alert>
+          <p v-if="itemToDelete.is_dir" class="text-error text-body-2">
+            <v-icon size="small" class="mr-1">mdi-alert</v-icon>
+            This will delete the folder and ALL its contents!
+          </p>
+          <p class="text-body-2 text-medium-emphasis">
+            This action cannot be undone.
+          </p>
+        </v-card-text>
+
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="text" @click="cancelDelete" :disabled="deleting">
+            Cancel
+          </v-btn>
+          <v-btn
+            color="error"
+            variant="flat"
+            :loading="deleting"
+            @click="executeDelete"
+          >
+            <v-icon start>mdi-delete</v-icon>
+            Delete
+          </v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
   </v-container>
 </template>
 
@@ -507,6 +562,7 @@ import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { usePipelineStore } from '@/stores/pipeline'
 import { useNotificationStore } from '@/stores/notification'
+import { useAuthStore } from '@/stores/auth'
 import PipelineStepper from '@/components/PipelineStepper.vue'
 import api from '@/services/api'
 
@@ -522,6 +578,7 @@ interface FileItem {
 const router = useRouter()
 const pipelineStore = usePipelineStore()
 const notificationStore = useNotificationStore()
+const authStore = useAuthStore()
 
 const selectedFormat = ref('csv')
 const currentPath = ref('')
@@ -552,6 +609,11 @@ const uploadSuccess = ref('')
 const isDragging = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
 const allowedFileTypes = '.csv,.json,.cbor'
+
+// Delete state (admin only)
+const showDeleteDialog = ref(false)
+const itemToDelete = ref<FileItem | null>(null)
+const deleting = ref(false)
 
 const formatInfo = computed(() => {
   switch (selectedFormat.value) {
@@ -996,6 +1058,86 @@ function closeUploadDialog() {
   uploadError.value = ''
   uploadSuccess.value = ''
   isDragging.value = false
+}
+
+// Delete methods - users can delete from their own folders
+function canDeleteItem(item: FileItem): boolean {
+  // Admins can delete anything
+  if (authStore.isAdmin) return true
+
+  const user = authStore.user
+  if (!user) return false
+
+  // Normalize paths for comparison
+  const itemPath = item.path.toLowerCase().replace(/\\/g, '/')
+  const currPath = currentPath.value.toLowerCase().replace(/\\/g, '/')
+
+  // User can delete from their private folder
+  if (user.private_folder) {
+    const privateFolderLower = user.private_folder.toLowerCase()
+    // Check if item is inside the private folder
+    if (itemPath.includes(`/${privateFolderLower}/`) || itemPath.endsWith(`/${privateFolderLower}`)) {
+      return true
+    }
+    // Also check if we're currently inside the private folder
+    if (currPath.includes(`/${privateFolderLower}`) || currPath.endsWith(`/${privateFolderLower}`)) {
+      return true
+    }
+  }
+
+  // User can delete from their uploads folder
+  const uploadsPattern = `/uploads/user_${user.id}`
+  if (itemPath.includes(uploadsPattern) || currPath.includes(uploadsPattern)) {
+    return true
+  }
+
+  return false
+}
+
+function confirmDelete(item: FileItem) {
+  itemToDelete.value = item
+  showDeleteDialog.value = true
+}
+
+function cancelDelete() {
+  showDeleteDialog.value = false
+  itemToDelete.value = null
+}
+
+async function executeDelete() {
+  if (!itemToDelete.value) return
+
+  try {
+    deleting.value = true
+
+    // Use the appropriate endpoint based on user role
+    const endpoint = authStore.isAdmin
+      ? '/api/data/admin/delete'
+      : '/api/data/delete-upload'
+
+    await api.post(endpoint, {
+      file_path: itemToDelete.value.path
+    })
+
+    notificationStore.showSuccess(`Deleted: ${itemToDelete.value.name}`)
+
+    // If the deleted item was selected, clear selection
+    if (selectedFile.value?.path === itemToDelete.value.path) {
+      selectedFile.value = null
+      dataPreview.value = null
+    }
+
+    // Refresh the file list
+    await loadFolders()
+
+    // Close dialog
+    showDeleteDialog.value = false
+    itemToDelete.value = null
+  } catch (e: any) {
+    notificationStore.showError(e.response?.data?.error || 'Delete failed')
+  } finally {
+    deleting.value = false
+  }
 }
 
 onMounted(() => {

@@ -74,6 +74,13 @@ def update_user(user_id: int):
     if user['username'] == 'admin' and request.current_user['id'] != user_id:
         return jsonify({'error': 'Cannot modify main admin user'}), 403
 
+    # Create private folder if specified and different from current
+    private_folder = data.get('private_folder')
+    if private_folder and private_folder != user.get('private_folder'):
+        datasets_root = current_app.config['DATASETS_ROOT_PATH']
+        folder_path = os.path.join(datasets_root, private_folder)
+        os.makedirs(folder_path, exist_ok=True)
+
     User.update(user_id, **data)
 
     return jsonify({'message': 'User updated successfully'})

@@ -115,6 +115,12 @@ def get_user_folders(user: dict, datasets_root: str, shared_folder: str) -> list
         private_folder = user.get('private_folder')
         if private_folder:
             private_path = os.path.join(datasets_root, private_folder)
+            # Auto-create user's private folder if it doesn't exist
+            if not os.path.exists(private_path):
+                try:
+                    os.makedirs(private_path, exist_ok=True)
+                except Exception:
+                    pass  # Silently fail if can't create
             if os.path.exists(private_path):
                 folders.append({
                     'name': private_folder,

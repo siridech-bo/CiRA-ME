@@ -48,7 +48,8 @@ def login():
             'id': user['id'],
             'username': user['username'],
             'display_name': user['display_name'],
-            'role': user['role']
+            'role': user['role'],
+            'private_folder': user.get('private_folder')
         }
     })
 

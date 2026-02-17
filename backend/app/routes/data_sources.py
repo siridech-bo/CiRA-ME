@@ -301,7 +301,13 @@ def upload_multiple_files():
 @data_sources_bp.route('/delete-upload', methods=['POST'])
 @login_required
 def delete_uploaded_file():
-    """Delete an uploaded file."""
+    """
+    Delete a file or folder from user's accessible locations.
+
+    Users can delete files from:
+    - Their own uploads folder (shared/uploads/user_{id}/)
+    - Their private folder
+    """
     data = request.get_json()
 
     if not data:
@@ -313,26 +319,133 @@ def delete_uploaded_file():
 
     shared_folder = current_app.config['SHARED_FOLDER_PATH']
     datasets_root = current_app.config['DATASETS_ROOT_PATH']
+    user = request.current_user
 
-    # Validate path access
-    if not validate_path(file_path, request.current_user, datasets_root, shared_folder):
+    # Normalize paths
+    file_path_norm = os.path.normpath(os.path.abspath(file_path))
+    datasets_root_norm = os.path.normpath(os.path.abspath(datasets_root))
+
+    # File must be within datasets root
+    if not file_path_norm.startswith(datasets_root_norm):
         return jsonify({'error': 'Access denied'}), 403
 
-    # Only allow deletion from uploads folder for safety
-    if 'uploads' not in file_path:
-        return jsonify({'error': 'Can only delete files from uploads folder'}), 403
+    # Check if user can delete this file
+    can_delete = False
+    delete_reason = ''
+
+    # Check 1: User's own uploads folder
+    user_uploads_path = os.path.normpath(
+        os.path.join(datasets_root, shared_folder, 'uploads', f"user_{user['id']}")
+    )
+    if file_path_norm.startswith(user_uploads_path):
+        can_delete = True
+        delete_reason = 'user_uploads'
+
+    # Check 2: User's private folder
+    private_folder = user.get('private_folder')
+    if private_folder:
+        private_path = os.path.normpath(os.path.join(datasets_root, private_folder))
+        if file_path_norm.startswith(private_path):
+            can_delete = True
+            delete_reason = 'private_folder'
+
+    # Check 3: Admin can delete from anywhere (except protected folders)
+    if user.get('role') == 'admin':
+        can_delete = True
+        delete_reason = 'admin'
+
+    if not can_delete:
+        return jsonify({'error': 'You can only delete files from your own folders'}), 403
 
     if not os.path.exists(file_path):
         return jsonify({'error': 'File not found'}), 404
 
     try:
-        if os.path.isfile(file_path):
-            os.remove(file_path)
-        elif os.path.isdir(file_path):
-            import shutil
-            shutil.rmtree(file_path)
+        import shutil
 
-        return jsonify({'success': True})
+        is_dir = os.path.isdir(file_path)
+        file_name = os.path.basename(file_path)
+
+        if is_dir:
+            shutil.rmtree(file_path)
+        else:
+            os.remove(file_path)
+
+        return jsonify({
+            'success': True,
+            'deleted': file_path,
+            'type': 'directory' if is_dir else 'file',
+            'name': file_name
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@data_sources_bp.route('/admin/delete', methods=['POST'])
+@login_required
+def admin_delete_file():
+    """
+    Admin-only endpoint to delete any file or folder in the datasets directory.
+
+    This is a powerful operation - use with caution!
+    Only admins can access this endpoint.
+    """
+    user = request.current_user
+
+    # Check admin role
+    if user.get('role') != 'admin':
+        return jsonify({'error': 'Admin access required'}), 403
+
+    data = request.get_json()
+    if not data:
+        return jsonify({'error': 'No data provided'}), 400
+
+    file_path = data.get('file_path')
+    if not file_path:
+        return jsonify({'error': 'File path required'}), 400
+
+    datasets_root = current_app.config['DATASETS_ROOT_PATH']
+    shared_folder = current_app.config['SHARED_FOLDER_PATH']
+
+    # Normalize paths for comparison
+    file_path = os.path.normpath(os.path.abspath(file_path))
+    datasets_root_norm = os.path.normpath(os.path.abspath(datasets_root))
+
+    # Safety check: file must be within datasets root
+    if not file_path.startswith(datasets_root_norm):
+        return jsonify({'error': 'File must be within datasets directory'}), 403
+
+    # Prevent deleting the datasets root itself
+    if file_path == datasets_root_norm:
+        return jsonify({'error': 'Cannot delete the datasets root directory'}), 403
+
+    # Prevent deleting the shared folder root
+    shared_folder_norm = os.path.normpath(os.path.abspath(shared_folder))
+    if file_path == shared_folder_norm:
+        return jsonify({'error': 'Cannot delete the shared folder root'}), 403
+
+    if not os.path.exists(file_path):
+        return jsonify({'error': 'File not found'}), 404
+
+    try:
+        import shutil
+
+        is_dir = os.path.isdir(file_path)
+        file_name = os.path.basename(file_path)
+
+        if is_dir:
+            shutil.rmtree(file_path)
+        else:
+            os.remove(file_path)
+
+        return jsonify({
+            'success': True,
+            'deleted': file_path,
+            'type': 'directory' if is_dir else 'file',
+            'name': file_name
+        })
+    except PermissionError:
+        return jsonify({'error': 'Permission denied - file may be in use'}), 403
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
