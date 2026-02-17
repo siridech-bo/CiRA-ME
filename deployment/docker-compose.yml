@@ -1,0 +1,104 @@
+# CiRA ME - Production Docker Compose Configuration
+# Machine Intelligence for Edge Computing
+# For deployment on customer Windows servers
+
+services:
+  # Backend - Flask Python API
+  backend:
+    image: cirame-backend:latest
+    container_name: cirame-backend
+    restart: unless-stopped
+
+    environment:
+      # Flask configuration
+      - FLASK_APP=run.py
+      - FLASK_HOST=0.0.0.0
+      - FLASK_DEBUG=False
+
+      # Database configuration
+      - DATABASE_PATH=/app/data/cirame.db
+
+      # Python optimizations
+      - PYTHONUNBUFFERED=1
+      - PYTHONOPTIMIZE=1
+
+    volumes:
+      # Persistent data volumes
+      - backend-data:/app/data
+      - backend-models:/app/models
+      # Shared folder - put datasets here for customers to access
+      - ./shared:/app/datasets/shared
+
+    ports:
+      # Expose backend port (optional - frontend proxies through nginx)
+      - "5100:5100"
+
+    networks:
+      - cirame-network
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5100/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+    # Resource limits (adjust based on your server capacity)
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 8G
+        reservations:
+          cpus: '2.0'
+          memory: 4G
+          # NVIDIA GPU support - requires nvidia-container-toolkit on host
+          # Comment out this section if no GPU available
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # Frontend - Vue.js + Nginx
+  frontend:
+    image: cirame-frontend:latest
+    container_name: cirame-frontend
+    restart: unless-stopped
+
+    ports:
+      # Main application port - access at http://localhost:3030
+      - "3030:80"
+
+    networks:
+      - cirame-network
+
+    depends_on:
+      backend:
+        condition: service_healthy
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+          memory: 256M
+
+# Named volumes for persistent data
+volumes:
+  backend-data:
+  backend-models:
+
+# Network for service communication
+networks:
+  cirame-network:
+    driver: bridge
