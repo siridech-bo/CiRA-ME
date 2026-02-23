@@ -41,6 +41,40 @@ class DataLoader:
         """Retrieve session data."""
         return _data_sessions.get(session_id)
 
+    # Patterns to detect time/timestamp columns (case-insensitive)
+    TIME_COLUMN_PATTERNS = [
+        'timestamp', 'time', 'time (s)', 'time(s)', 'time_s',
+        'time (ms)', 'time(ms)', 'time_ms', 'elapsed', 'elapsed_time',
+        't (s)', 't(s)', 't_s', 'datetime', 'date_time'
+    ]
+
+    def _detect_time_column(self, columns: List[str]) -> Optional[str]:
+        """Detect time/timestamp column by matching common naming patterns."""
+        columns_lower = {col.lower().strip(): col for col in columns}
+
+        # Exact match first
+        for pattern in self.TIME_COLUMN_PATTERNS:
+            if pattern in columns_lower:
+                return columns_lower[pattern]
+
+        # Prefix match (e.g. "time" matches "Time (seconds)")
+        for col_lower, col_original in columns_lower.items():
+            if col_lower.startswith('time') or col_lower.startswith('timestamp'):
+                return col_original
+
+        return None
+
+    def _detect_label_column(self, columns: List[str]) -> Optional[str]:
+        """Detect label column by matching common naming patterns."""
+        columns_lower = {col.lower().strip(): col for col in columns}
+        label_patterns = ['label', 'labels', 'class', 'class_name', 'target', 'category']
+
+        for pattern in label_patterns:
+            if pattern in columns_lower:
+                return columns_lower[pattern]
+
+        return None
+
     def load_csv(self, file_path: str) -> Dict[str, Any]:
         """
         Load data from a CSV file.
@@ -48,8 +82,8 @@ class DataLoader:
         Expected format:
         - Headers in first row
         - Numeric sensor columns
-        - Optional 'label' column
-        - Optional 'timestamp' column
+        - Optional label column (e.g. 'label', 'class', 'target')
+        - Optional time column (e.g. 'timestamp', 'Time (s)', 'time', 'elapsed')
         """
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"File not found: {file_path}")
@@ -58,13 +92,24 @@ class DataLoader:
 
         # Identify columns
         columns = df.columns.tolist()
-        label_col = 'label' if 'label' in columns else None
-        timestamp_col = 'timestamp' if 'timestamp' in columns else None
+        label_col = self._detect_label_column(columns)
+        timestamp_col = self._detect_time_column(columns)
 
-        # Get sensor columns (numeric, excluding label and timestamp)
+        # Convention: first column is always time if not detected by name
+        if not timestamp_col and len(columns) > 0 and pd.api.types.is_numeric_dtype(df[columns[0]]):
+            timestamp_col = columns[0]
+
+        # Columns to exclude from sensor data
+        exclude_cols = set()
+        if label_col:
+            exclude_cols.add(label_col)
+        if timestamp_col:
+            exclude_cols.add(timestamp_col)
+
+        # Get sensor columns (numeric, excluding label and time)
         sensor_cols = [
             col for col in columns
-            if col not in ['label', 'timestamp'] and pd.api.types.is_numeric_dtype(df[col])
+            if col not in exclude_cols and pd.api.types.is_numeric_dtype(df[col])
         ]
 
         # Generate session ID and store data
