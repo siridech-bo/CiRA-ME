@@ -549,6 +549,26 @@ class FeatureExtractor:
         # Sort by relevance
         sorted_features = sorted(relevance_scores.items(), key=lambda x: x[1], reverse=True)
 
+        # Hard cap: keep top 10 features max (for edge ML)
+        max_features = 10
+        selection_log = [
+            f"Applied FRESH algorithm with FDR level {fdr_level}",
+            f"Performed hypothesis testing with Benjamini-Hochberg correction",
+            f"Found {len(selected_features)} statistically significant features",
+        ]
+
+        if len(selected_features) > max_features:
+            selected_features = [f for f, _ in sorted_features[:max_features]]
+            relevance_scores = {f: relevance_scores[f] for f in selected_features}
+            sorted_features = sorted_features[:max_features]
+            selection_log.append(
+                f"Capped to top {max_features} features by relevance score"
+            )
+
+        selection_log.append(
+            f"Reduction: {len(original_features)} → {len(selected_features)} ({100 * len(selected_features) / len(original_features):.1f}%)"
+        )
+
         # Store selection session
         selection_session_id = f"fresh_{feature_session_id}"
         _selection_sessions[selection_session_id] = {
@@ -566,12 +586,7 @@ class FeatureExtractor:
             'selected_features': selected_features,
             'relevance_scores': {f: relevance_scores.get(f, 0) for f in selected_features},
             'all_scores': dict(sorted_features),
-            'selection_log': [
-                f"Applied FRESH algorithm with FDR level {fdr_level}",
-                f"Performed hypothesis testing with Benjamini-Hochberg correction",
-                f"Selected {len(selected_features)} statistically significant features",
-                f"Reduction: {len(original_features)} → {len(selected_features)} ({100 * len(selected_features) / len(original_features):.1f}%)"
-            ],
+            'selection_log': selection_log,
             'original_count': len(original_features),
             'final_count': len(selected_features),
             'method': 'fresh',
@@ -582,7 +597,7 @@ class FeatureExtractor:
         self,
         feature_session_id: str,
         fdr_level: float = 0.05,
-        n_features: int = 20,
+        n_features: int = 10,
         ml_task: str = 'classification'
     ) -> Dict[str, Any]:
         """
@@ -961,7 +976,7 @@ class FeatureExtractor:
         self,
         feature_session_id: str,
         method: str = 'combined',
-        n_features: int = 15,
+        n_features: int = 10,
         variance_threshold: float = 0.01,
         correlation_threshold: float = 0.95
     ) -> Dict[str, Any]:

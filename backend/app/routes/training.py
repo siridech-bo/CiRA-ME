@@ -3,15 +3,34 @@ CiRA ME - ML Training Routes
 Handles Anomaly Detection (PyOD), Classification (Scikit-learn), and Deep Learning (TimesNet)
 """
 
+import math
 import logging
+import pickle
+import numpy as np
 from flask import Blueprint, request, jsonify
 from ..auth import login_required
-from ..services.ml_trainer import MLTrainer
+from ..services.ml_trainer import MLTrainer, _model_sessions
 from ..services.timesnet_trainer import TimesNetTrainer, TimesNetConfig
+from ..services.feature_extractor import FeatureExtractor
 from ..services.data_loader import _data_sessions
+from ..services.deployer import load_saved_model_session
 from ..config import ANOMALY_ALGORITHMS, CLASSIFICATION_ALGORITHMS
+from ..models import SavedModel
 
 logger = logging.getLogger(__name__)
+
+
+def _sanitize_nan(obj):
+    """Replace NaN/Inf float values with None so JSON serialization is valid."""
+    if isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return obj
+    if isinstance(obj, dict):
+        return {k: _sanitize_nan(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_nan(v) for v in obj]
+    return obj
 training_bp = Blueprint('training', __name__)
 
 
@@ -154,7 +173,7 @@ def train_anomaly_model():
             project_id=project_id,
             user_id=request.current_user['id']
         )
-        return jsonify(result)
+        return jsonify(_sanitize_nan(result))
     except Exception as e:
         return jsonify({'error': str(e)}), 400
 
@@ -190,7 +209,7 @@ def train_classification_model():
             project_id=project_id,
             user_id=request.current_user['id']
         )
-        return jsonify(result)
+        return jsonify(_sanitize_nan(result))
     except Exception as e:
         return jsonify({'error': str(e)}), 400
 
@@ -238,7 +257,7 @@ def train_anomaly_compare():
             project_id=project_id,
             user_id=request.current_user['id']
         )
-        return jsonify(result)
+        return jsonify(_sanitize_nan(result))
     except Exception as e:
         logger.error(f"Anomaly comparison training error: {e}")
         return jsonify({'error': str(e)}), 400
@@ -290,7 +309,7 @@ def train_classification_compare():
             project_id=project_id,
             user_id=request.current_user['id']
         )
-        return jsonify(result)
+        return jsonify(_sanitize_nan(result))
     except Exception as e:
         logger.error(f"Classification comparison training error: {e}")
         return jsonify({'error': str(e)}), 400
@@ -342,6 +361,35 @@ def export_model(training_session_id: str):
     try:
         trainer = MLTrainer()
         result = trainer.export_model(training_session_id, export_format)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+
+@training_bp.route('/export-saved/<int:model_id>', methods=['POST'])
+@login_required
+def export_saved_model(model_id: int):
+    """Export a saved benchmark model."""
+    data = request.get_json() or {}
+    export_format = data.get('format', 'pickle')
+
+    try:
+        saved_model = SavedModel.get_by_id(model_id)
+        if not saved_model:
+            return jsonify({'error': f'Saved model not found: {model_id}'}), 404
+
+        # Load model from disk into a temporary session
+        session = load_saved_model_session(
+            saved_model['model_path'],
+            algorithm=saved_model['algorithm'],
+            mode=saved_model['mode']
+        )
+        temp_session_id = f"saved_{model_id}"
+        _model_sessions[temp_session_id] = session
+
+        # Use the existing export flow
+        trainer = MLTrainer()
+        result = trainer.export_model(temp_session_id, export_format)
         return jsonify(result)
     except Exception as e:
         return jsonify({'error': str(e)}), 400
@@ -551,4 +599,189 @@ def get_timesnet_metrics(training_session_id: str):
         result = trainer.get_metrics(training_session_id)
         return jsonify(result)
     except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+
+# ─── Saved Models (Benchmarks) ─────────────────────────────────────
+
+@training_bp.route('/saved-models', methods=['GET'])
+@login_required
+def list_saved_models():
+    """List all saved benchmark models for the current user."""
+    models = SavedModel.get_all(request.current_user['id'])
+    return jsonify(models)
+
+
+@training_bp.route('/save-benchmark', methods=['POST'])
+@login_required
+def save_benchmark():
+    """Save the current best model as a named benchmark."""
+    data = request.get_json()
+    if not data:
+        return jsonify({'error': 'No data provided'}), 400
+
+    training_session_id = data.get('training_session_id')
+    name = data.get('name', '').strip()
+
+    if not training_session_id:
+        return jsonify({'error': 'training_session_id required'}), 400
+
+    # Get the in-memory session
+    session = _model_sessions.get(training_session_id)
+    if not session:
+        return jsonify({'error': 'Training session not found (may have expired)'}), 404
+
+    if not name:
+        algo_name = session.get('algorithm', 'model')
+        name = f"{algo_name} - {session.get('created_at', '')[:16]}"
+
+    model_id = SavedModel.save(
+        name=name,
+        algorithm=session.get('algorithm', ''),
+        mode=session.get('mode', ''),
+        metrics=session.get('metrics', {}),
+        model_path=session.get('model_path', ''),
+        training_session_id=training_session_id,
+        pipeline_config=data.get('pipeline_config', {}),
+        dataset_info=data.get('dataset_info', {}),
+        user_id=request.current_user['id']
+    )
+
+    return jsonify({'id': model_id, 'name': name, 'message': 'Model saved as benchmark'})
+
+
+@training_bp.route('/saved-models/<int:model_id>', methods=['DELETE'])
+@login_required
+def delete_saved_model(model_id):
+    """Delete a saved benchmark model."""
+    deleted = SavedModel.delete(model_id, request.current_user['id'])
+    if deleted:
+        return jsonify({'message': 'Model deleted'})
+    return jsonify({'error': 'Model not found or access denied'}), 404
+
+
+@training_bp.route('/saved-models/compare', methods=['POST'])
+@login_required
+def compare_saved_models():
+    """Compare metrics of two saved models side-by-side."""
+    data = request.get_json()
+    id1 = data.get('model_id_1')
+    id2 = data.get('model_id_2')
+
+    if not id1 or not id2:
+        return jsonify({'error': 'Two model IDs required'}), 400
+
+    m1 = SavedModel.get_by_id(id1)
+    m2 = SavedModel.get_by_id(id2)
+
+    if not m1 or not m2:
+        return jsonify({'error': 'One or both models not found'}), 404
+
+    # Build comparison
+    metric_keys = ['accuracy', 'precision', 'recall', 'f1', 'roc_auc']
+    comparison = []
+    for key in metric_keys:
+        v1 = (m1.get('metrics') or {}).get(key)
+        v2 = (m2.get('metrics') or {}).get(key)
+        diff = None
+        if v1 is not None and v2 is not None:
+            diff = round(v2 - v1, 4)
+        comparison.append({
+            'metric': key,
+            'model_1': round(v1, 4) if v1 is not None else None,
+            'model_2': round(v2, 4) if v2 is not None else None,
+            'diff': diff,
+            'better': 'model_2' if diff and diff > 0 else ('model_1' if diff and diff < 0 else 'equal')
+        })
+
+    return jsonify({
+        'model_1': {'id': m1['id'], 'name': m1['name'], 'algorithm': m1['algorithm'], 'created_at': m1['created_at']},
+        'model_2': {'id': m2['id'], 'name': m2['name'], 'algorithm': m2['algorithm'], 'created_at': m2['created_at']},
+        'comparison': comparison
+    })
+
+
+# ─── Independent Test Data Evaluation ──────────────────────────────
+
+@training_bp.route('/evaluate', methods=['POST'])
+@login_required
+def evaluate_on_new_data():
+    """Evaluate a saved model on new test data features."""
+    data = request.get_json()
+    if not data:
+        return jsonify({'error': 'No data provided'}), 400
+
+    model_id = data.get('saved_model_id')
+    feature_session_id = data.get('feature_session_id')
+
+    if not model_id or not feature_session_id:
+        return jsonify({'error': 'saved_model_id and feature_session_id required'}), 400
+
+    saved = SavedModel.get_by_id(model_id)
+    if not saved:
+        return jsonify({'error': 'Saved model not found'}), 404
+
+    model_path = saved.get('model_path')
+    if not model_path or not __import__('os').path.exists(model_path):
+        return jsonify({'error': 'Model file not found on disk'}), 404
+
+    try:
+        # Load the saved model
+        with open(model_path, 'rb') as f:
+            model_data = pickle.load(f)
+
+        model = model_data['model']
+        scaler = model_data.get('scaler')
+
+        # Get new test features
+        X_new, y_new, _ = FeatureExtractor.get_features_for_training(feature_session_id)
+
+        if y_new is None:
+            return jsonify({'error': 'New dataset must have labels for evaluation'}), 400
+
+        # Scale with the original scaler
+        if scaler is not None:
+            X_new_scaled = scaler.transform(X_new)
+        else:
+            X_new_scaled = X_new
+
+        # Predict
+        y_pred = model.predict(X_new_scaled)
+
+        # Compute metrics
+        from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+        new_metrics = {
+            'accuracy': float(accuracy_score(y_new, y_pred)),
+            'precision': float(precision_score(y_new, y_pred, average='weighted', zero_division=0)),
+            'recall': float(recall_score(y_new, y_pred, average='weighted', zero_division=0)),
+            'f1': float(f1_score(y_new, y_pred, average='weighted', zero_division=0)),
+            'test_samples': len(X_new)
+        }
+
+        # Build comparison with original metrics
+        original_metrics = saved.get('metrics', {})
+        metric_keys = ['accuracy', 'precision', 'recall', 'f1']
+        comparison = []
+        for key in metric_keys:
+            orig = original_metrics.get(key)
+            new = new_metrics.get(key)
+            diff = None
+            if orig is not None and new is not None:
+                diff = round(new - orig, 4)
+            comparison.append({
+                'metric': key,
+                'original': round(orig, 4) if orig is not None else None,
+                'new_data': round(new, 4) if new is not None else None,
+                'diff': diff
+            })
+
+        return jsonify(_sanitize_nan({
+            'saved_model': {'id': saved['id'], 'name': saved['name'], 'algorithm': saved['algorithm']},
+            'original_metrics': original_metrics,
+            'new_metrics': new_metrics,
+            'comparison': comparison
+        }))
+
+    except Exception as e:
+        logger.error(f"Evaluation error: {e}")
         return jsonify({'error': str(e)}), 400

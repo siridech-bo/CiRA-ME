@@ -68,6 +68,24 @@ def init_db(db_path: str):
             )
         ''')
 
+        # Saved models table (user-saved benchmarks)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS saved_models (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                algorithm TEXT NOT NULL,
+                mode TEXT NOT NULL,
+                metrics JSON,
+                model_path TEXT,
+                training_session_id TEXT,
+                pipeline_config JSON,
+                dataset_info JSON,
+                user_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+        ''')
+
         # Create default admin user if not exists
         cursor.execute('SELECT id FROM users WHERE username = ?', ('admin',))
         if not cursor.fetchone():
@@ -320,3 +338,76 @@ class TrainingSession:
                     session['metrics'] = json.loads(session['metrics'])
                 sessions.append(session)
             return sessions
+
+
+class SavedModel:
+    """Saved model (benchmark) operations."""
+
+    @staticmethod
+    def save(name: str, algorithm: str, mode: str, metrics: dict,
+             model_path: str, training_session_id: str,
+             pipeline_config: dict, dataset_info: dict, user_id: int) -> int:
+        import json
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO saved_models
+                (name, algorithm, mode, metrics, model_path, training_session_id,
+                 pipeline_config, dataset_info, user_id, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                name, algorithm, mode,
+                json.dumps(metrics),
+                model_path,
+                training_session_id,
+                json.dumps(pipeline_config),
+                json.dumps(dataset_info),
+                user_id,
+                datetime.utcnow().isoformat()
+            ))
+            conn.commit()
+            return cursor.lastrowid
+
+    @staticmethod
+    def get_all(user_id: int) -> list:
+        import json
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT * FROM saved_models WHERE user_id = ? ORDER BY created_at DESC',
+                (user_id,)
+            )
+            models = []
+            for row in cursor.fetchall():
+                m = dict(row)
+                for field in ('metrics', 'pipeline_config', 'dataset_info'):
+                    if m.get(field):
+                        m[field] = json.loads(m[field])
+                models.append(m)
+            return models
+
+    @staticmethod
+    def get_by_id(model_id: int) -> dict:
+        import json
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM saved_models WHERE id = ?', (model_id,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            m = dict(row)
+            for field in ('metrics', 'pipeline_config', 'dataset_info'):
+                if m.get(field):
+                    m[field] = json.loads(m[field])
+            return m
+
+    @staticmethod
+    def delete(model_id: int, user_id: int) -> bool:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'DELETE FROM saved_models WHERE id = ? AND user_id = ?',
+                (model_id, user_id)
+            )
+            conn.commit()
+            return cursor.rowcount > 0

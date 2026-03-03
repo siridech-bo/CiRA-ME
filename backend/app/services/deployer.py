@@ -5,10 +5,36 @@ Handles model export and SSH deployment to edge devices
 
 import os
 import uuid
+import pickle
 from typing import Dict, Any, Optional
 from datetime import datetime
 
 from .ml_trainer import _model_sessions
+
+
+def load_saved_model_session(model_path: str, algorithm: str = 'unknown',
+                              mode: str = 'classification') -> Dict[str, Any]:
+    """Load a saved model from disk and create a session-compatible dict.
+
+    This allows saved benchmark models (stored as pickle on disk) to be
+    used with the deployer and exporter without needing an in-memory session.
+    """
+    if not os.path.exists(model_path):
+        raise ValueError(f"Model file not found: {model_path}")
+
+    with open(model_path, 'rb') as f:
+        data = pickle.load(f)
+
+    session = {
+        'model': data.get('model'),
+        'scaler': data.get('scaler'),
+        'algorithm': data.get('algorithm', algorithm),
+        'mode': data.get('mode', mode),
+        'model_path': model_path,
+        'hyperparameters': data.get('hyperparameters', {}),
+        'metrics': data.get('metrics', {}),
+    }
+    return session
 
 # Global storage for deployments
 _deployments: Dict[str, Dict] = {}
@@ -78,19 +104,35 @@ class Deployer:
         target_type: str,
         export_format: str,
         ssh_config: Dict,
-        options: Dict
+        options: Dict,
+        saved_model_session: Dict = None
     ) -> Dict[str, Any]:
-        """Deploy a trained model to an edge device via SSH."""
+        """Deploy a trained model to an edge device via SSH.
+
+        Args:
+            training_session_id: In-memory session ID (from current training)
+            target_type: Target device type
+            export_format: Export format (pickle, joblib, onnx)
+            ssh_config: SSH connection configuration
+            options: Deployment options
+            saved_model_session: Pre-loaded session dict from a saved model on disk.
+                                 If provided, this is used instead of looking up training_session_id.
+        """
         try:
             import paramiko
             from scp import SCPClient
         except ImportError:
             raise ImportError("paramiko and scp libraries required. Install with: pip install paramiko scp")
 
-        # Get model session
-        session = _model_sessions.get(training_session_id)
-        if not session:
-            raise ValueError(f"Training session not found: {training_session_id}")
+        # Get model session — either from saved model or in-memory
+        if saved_model_session:
+            session = saved_model_session
+            # Temporarily register so export_model() can find it
+            _model_sessions[training_session_id] = session
+        else:
+            session = _model_sessions.get(training_session_id)
+            if not session:
+                raise ValueError(f"Training session not found: {training_session_id}")
 
         deployment_id = str(uuid.uuid4())
         deployment_status = {
@@ -223,9 +265,10 @@ class Deployer:
 
         return deployment
 
-    def generate_inference_script(self, training_session_id: str, language: str = 'python') -> Dict[str, Any]:
+    def generate_inference_script(self, training_session_id: str, language: str = 'python',
+                                    saved_model_session: Dict = None) -> Dict[str, Any]:
         """Generate an inference script for a trained model."""
-        session = _model_sessions.get(training_session_id)
+        session = saved_model_session or _model_sessions.get(training_session_id)
         if not session:
             raise ValueError(f"Training session not found: {training_session_id}")
 

@@ -505,6 +505,35 @@ def ingest_csv():
         return jsonify({'error': str(e)}), 400
 
 
+@data_sources_bp.route('/ingest/csv-multiple', methods=['POST'])
+@login_required
+def ingest_csv_multiple():
+    """Ingest data from multiple CSV files as one dataset."""
+    data = request.get_json()
+
+    if not data:
+        return jsonify({'error': 'No data provided'}), 400
+
+    file_paths = data.get('file_paths')
+    if not file_paths or not isinstance(file_paths, list):
+        return jsonify({'error': 'file_paths (list) required'}), 400
+
+    # Validate all paths
+    datasets_root = current_app.config['DATASETS_ROOT_PATH']
+    shared_folder = current_app.config['SHARED_FOLDER_PATH']
+
+    for fp in file_paths:
+        if not validate_path(fp, request.current_user, datasets_root, shared_folder):
+            return jsonify({'error': f'Access denied to: {fp}'}), 403
+
+    try:
+        loader = DataLoader()
+        result = loader.load_csv_multiple(file_paths)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+
 @data_sources_bp.route('/ingest/ei-json', methods=['POST'])
 @login_required
 def ingest_edge_impulse_json():
@@ -599,23 +628,36 @@ def preview_data():
         return jsonify({'error': 'No data provided'}), 400
 
     file_path = data.get('file_path')
+    file_paths = data.get('file_paths')  # Multi-CSV support
     rows = data.get('rows', 10)
     format_hint = data.get('format')
     category = data.get('category')  # Optional: partition filter
     label = data.get('label')        # Optional: label filter
 
-    if not file_path:
+    if not file_path and not file_paths:
         return jsonify({'error': 'File path required'}), 400
 
     # Validate path access
     datasets_root = current_app.config['DATASETS_ROOT_PATH']
     shared_folder = current_app.config['SHARED_FOLDER_PATH']
 
-    if not validate_path(file_path, request.current_user, datasets_root, shared_folder):
-        return jsonify({'error': 'Access denied to this path'}), 403
-
     try:
         loader = DataLoader()
+
+        # Multi-CSV preview
+        if file_paths and isinstance(file_paths, list) and len(file_paths) > 1:
+            for fp in file_paths:
+                if not validate_path(fp, request.current_user, datasets_root, shared_folder):
+                    return jsonify({'error': f'Access denied to: {fp}'}), 403
+            result = loader.load_csv_multiple(file_paths)
+            # Limit preview rows
+            session = loader._get_session(result['session_id'])
+            if session:
+                result['preview'] = session['data'].head(rows).to_dict(orient='records')
+            return jsonify(result)
+
+        if not validate_path(file_path, request.current_user, datasets_root, shared_folder):
+            return jsonify({'error': 'Access denied to this path'}), 403
 
         # Use partition preview if category/label filters provided on a directory
         if os.path.isdir(file_path) and category is not None:
@@ -671,6 +713,7 @@ def apply_windowing():
     window_size = data.get('window_size', 128)
     stride = data.get('stride', 64)
     label_method = data.get('label_method', 'majority')
+    test_ratio = data.get('test_ratio', 0.2)
 
     if not session_id:
         return jsonify({'error': 'Session ID required'}), 400
@@ -681,7 +724,8 @@ def apply_windowing():
             session_id,
             window_size=window_size,
             stride=stride,
-            label_method=label_method
+            label_method=label_method,
+            test_ratio=test_ratio
         )
         return jsonify(result)
     except Exception as e:

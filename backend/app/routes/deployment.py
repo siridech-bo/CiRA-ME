@@ -5,7 +5,8 @@ Handles model export and SSH deployment to edge devices (NVIDIA Jetson)
 
 from flask import Blueprint, request, jsonify
 from ..auth import login_required, admin_required
-from ..services.deployer import Deployer
+from ..services.deployer import Deployer, load_saved_model_session
+from ..models import SavedModel
 
 deployment_bp = Blueprint('deployment', __name__)
 
@@ -86,6 +87,7 @@ def deploy_model():
         return jsonify({'error': 'No data provided'}), 400
 
     training_session_id = data.get('training_session_id')
+    saved_model_id = data.get('saved_model_id')
     target_type = data.get('target_type', 'custom_ssh')
     export_format = data.get('export_format', 'onnx')
 
@@ -106,20 +108,36 @@ def deploy_model():
         'include_requirements': data.get('include_requirements', True)
     }
 
-    if not training_session_id:
-        return jsonify({'error': 'Training session ID required'}), 400
+    if not training_session_id and not saved_model_id:
+        return jsonify({'error': 'Training session ID or saved model ID required'}), 400
 
     if not ssh_config['host'] or not ssh_config['username']:
         return jsonify({'error': 'SSH host and username required'}), 400
 
     try:
         deployer = Deployer()
+        saved_model_session = None
+
+        # Load saved model from disk if saved_model_id provided
+        if saved_model_id:
+            saved_model = SavedModel.get_by_id(int(saved_model_id))
+            if not saved_model:
+                return jsonify({'error': f'Saved model not found: {saved_model_id}'}), 404
+            saved_model_session = load_saved_model_session(
+                saved_model['model_path'],
+                algorithm=saved_model['algorithm'],
+                mode=saved_model['mode']
+            )
+            # Use a synthetic session ID for the deployer
+            training_session_id = f"saved_{saved_model_id}"
+
         result = deployer.deploy(
             training_session_id=training_session_id,
             target_type=target_type,
             export_format=export_format,
             ssh_config=ssh_config,
-            options=options
+            options=options,
+            saved_model_session=saved_model_session
         )
         return jsonify(result)
     except Exception as e:
@@ -148,14 +166,31 @@ def generate_inference_script():
         return jsonify({'error': 'No data provided'}), 400
 
     training_session_id = data.get('training_session_id')
+    saved_model_id = data.get('saved_model_id')
     language = data.get('language', 'python')  # python, cpp
 
-    if not training_session_id:
-        return jsonify({'error': 'Training session ID required'}), 400
+    if not training_session_id and not saved_model_id:
+        return jsonify({'error': 'Training session ID or saved model ID required'}), 400
 
     try:
         deployer = Deployer()
-        result = deployer.generate_inference_script(training_session_id, language)
+        saved_model_session = None
+
+        if saved_model_id:
+            saved_model = SavedModel.get_by_id(int(saved_model_id))
+            if not saved_model:
+                return jsonify({'error': f'Saved model not found: {saved_model_id}'}), 404
+            saved_model_session = load_saved_model_session(
+                saved_model['model_path'],
+                algorithm=saved_model['algorithm'],
+                mode=saved_model['mode']
+            )
+
+        result = deployer.generate_inference_script(
+            training_session_id or f"saved_{saved_model_id}",
+            language,
+            saved_model_session=saved_model_session
+        )
         return jsonify(result)
     except Exception as e:
         return jsonify({'error': str(e)}), 400

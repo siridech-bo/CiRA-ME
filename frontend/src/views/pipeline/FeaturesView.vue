@@ -436,8 +436,8 @@
                 <v-slider
                   v-if="selectionMethod === 'fresh_combined'"
                   v-model="targetFeatures"
-                  :min="5"
-                  :max="Math.min(100, extractionResult?.num_features || 100)"
+                  :min="3"
+                  :max="Math.min(10, extractionResult?.num_features || 10)"
                   :step="1"
                   label="Target Features"
                   thumb-label
@@ -449,8 +449,8 @@
               <v-slider
                 v-if="selectionMethod !== 'fresh' && selectionMethod !== 'fresh_combined'"
                 v-model="targetFeatures"
-                :min="5"
-                :max="Math.min(50, extractionResult?.num_features || 50)"
+                :min="3"
+                :max="Math.min(10, extractionResult?.num_features || 10)"
                 :step="1"
                 label="Target Features"
                 thumb-label
@@ -843,7 +843,7 @@ const extracting = ref(false)
 
 // Feature selection state
 const selectionMethod = ref('combined')
-const targetFeatures = ref(15)
+const targetFeatures = ref(10)
 const fdrLevel = ref(0.05)
 const selectionResult = ref<any>(null)
 const selectingFeatures = ref(false)

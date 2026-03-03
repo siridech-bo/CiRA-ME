@@ -206,10 +206,22 @@
             <v-list-item
               v-for="item in currentItems"
               :key="item.path"
-              :class="{ 'selected': selectedFile?.path === item.path }"
+              :class="{
+                'selected': !isCsvFormat || item.is_dir
+                  ? selectedFile?.path === item.path
+                  : isFileSelected(item.path)
+              }"
               @click="handleItemClick(item)"
             >
               <template #prepend>
+                <!-- Checkbox for CSV files in CSV mode -->
+                <v-checkbox-btn
+                  v-if="isCsvFormat && !item.is_dir && item.extension === '.csv'"
+                  :model-value="isFileSelected(item.path)"
+                  density="compact"
+                  class="mr-1"
+                  @click.stop="toggleCsvFile(item)"
+                />
                 <v-icon :color="getFolderColor(item)">
                   {{ item.is_dir ? getFolderIcon(item) : getFileIcon(item.extension) }}
                 </v-icon>
@@ -252,9 +264,33 @@
             </v-list-item>
           </v-list>
 
-          <!-- Selected File/Folder Info -->
+          <!-- Multi-CSV selection info -->
           <v-alert
-            v-if="selectedFile"
+            v-if="isCsvFormat && selectedFiles.length > 1"
+            type="info"
+            variant="tonal"
+            class="mt-4"
+          >
+            <div class="font-weight-medium">{{ selectedFiles.length }} CSV files selected</div>
+            <div class="text-caption">
+              {{ selectedFiles.map(f => f.name).join(', ') }}
+            </div>
+          </v-alert>
+
+          <!-- Multi-CSV column mismatch error -->
+          <v-alert
+            v-if="multiCsvError"
+            type="error"
+            variant="tonal"
+            class="mt-4"
+          >
+            <div class="font-weight-medium">Column mismatch</div>
+            <div class="text-caption">{{ multiCsvError }}</div>
+          </v-alert>
+
+          <!-- Selected File/Folder Info (single select) -->
+          <v-alert
+            v-if="selectedFile && !(isCsvFormat && selectedFiles.length > 1)"
             type="success"
             variant="tonal"
             class="mt-4"
@@ -344,12 +380,14 @@
         </v-col>
         <v-col cols="12" sm="6" md="3">
           <div class="text-caption text-medium-emphasis">
-            {{ dataPreview.metadata.is_folder ? 'Samples' : 'Session ID' }}
+            {{ dataPreview.metadata.is_folder || dataPreview.metadata.is_multi_csv ? 'Samples (files)' : 'Session ID' }}
           </div>
           <div class="font-weight-medium text-truncate">
-            {{ dataPreview.metadata.is_folder
-              ? `${dataPreview.metadata.total_samples}${dataPreview.metadata.training_samples != null ? ` (Train: ${dataPreview.metadata.training_samples}, Test: ${dataPreview.metadata.testing_samples || 0})` : ''}`
-              : dataPreview.session_id
+            {{ dataPreview.metadata.is_multi_csv
+              ? `${dataPreview.metadata.total_samples} files`
+              : dataPreview.metadata.is_folder
+                ? `${dataPreview.metadata.total_samples}${dataPreview.metadata.training_samples != null ? ` (Train: ${dataPreview.metadata.training_samples}, Test: ${dataPreview.metadata.testing_samples || 0})` : ''}`
+                : dataPreview.session_id
             }}
           </div>
         </v-col>
@@ -585,6 +623,8 @@ const currentPath = ref('')
 const basePath = ref<string | null>(null) // The root path user has access to
 const currentItems = ref<FileItem[]>([])
 const selectedFile = ref<FileItem | null>(null)
+const selectedFiles = ref<FileItem[]>([])  // Multi-select for CSV
+const multiCsvError = ref<string | null>(null)
 const dataPreview = ref<any>(null)
 const loading = ref(false)
 const loadingFolders = ref(false)
@@ -618,7 +658,7 @@ const deleting = ref(false)
 const formatInfo = computed(() => {
   switch (selectedFormat.value) {
     case 'csv':
-      return 'Headers in first row. Requires numeric sensor columns and optional "label" column.'
+      return 'Headers in first row. Requires numeric sensor columns and optional "label" column. Select multiple CSV files with the same columns to load as one dataset.'
     case 'ei-json':
       return 'Standard Edge Impulse JSON export format with sensors and values arrays.'
     case 'ei-cbor':
@@ -632,6 +672,12 @@ const formatInfo = computed(() => {
 
 const isCborFormat = computed(() => {
   return selectedFormat.value === 'ei-cbor' || selectedFormat.value === 'cira-cbor'
+})
+
+const isCsvFormat = computed(() => selectedFormat.value === 'csv')
+
+const isFileSelected = computed(() => {
+  return (path: string) => selectedFiles.value.some(f => f.path === path)
 })
 
 // Detect if current folder is a dataset root (has training/testing subfolders)
@@ -762,7 +808,64 @@ function navigateTo(path: string) {
   selectedLabel.value = null
   dataPreview.value = null
   selectedFile.value = null
+  selectedFiles.value = []
+  multiCsvError.value = null
   loadFolders()
+}
+
+function toggleCsvFile(item: FileItem) {
+  multiCsvError.value = null
+  const idx = selectedFiles.value.findIndex(f => f.path === item.path)
+  if (idx >= 0) {
+    selectedFiles.value.splice(idx, 1)
+  } else {
+    selectedFiles.value.push(item)
+  }
+
+  // Update selectedFile for compatibility
+  if (selectedFiles.value.length === 1) {
+    selectedFile.value = selectedFiles.value[0]
+  } else if (selectedFiles.value.length > 1) {
+    selectedFile.value = null
+  } else {
+    selectedFile.value = null
+  }
+
+  // Trigger preview
+  if (selectedFiles.value.length === 1) {
+    previewFile(selectedFiles.value[0])
+  } else if (selectedFiles.value.length > 1) {
+    previewMultipleCsv()
+  } else {
+    dataPreview.value = null
+  }
+}
+
+async function previewMultipleCsv() {
+  try {
+    loading.value = true
+    multiCsvError.value = null
+
+    const response = await api.post('/api/data/preview', {
+      file_paths: selectedFiles.value.map(f => f.path),
+      rows: 100,
+      format: 'csv'
+    })
+
+    dataPreview.value = response.data
+    notificationStore.showSuccess(`${selectedFiles.value.length} CSV files loaded successfully`)
+  } catch (e: any) {
+    const errorMsg = e.response?.data?.error || 'Failed to load multiple CSV files'
+    if (errorMsg.includes('Column mismatch') || errorMsg.includes('mismatch')) {
+      multiCsvError.value = errorMsg
+      dataPreview.value = null
+    } else {
+      notificationStore.showError(errorMsg)
+      dataPreview.value = null
+    }
+  } finally {
+    loading.value = false
+  }
 }
 
 async function handleItemClick(item: FileItem) {
@@ -773,9 +876,15 @@ async function handleItemClick(item: FileItem) {
     selectedLabel.value = null
     dataPreview.value = null
     selectedFile.value = null
+    selectedFiles.value = []
+    multiCsvError.value = null
     await loadFolders()
+  } else if (isCsvFormat.value && item.extension === '.csv') {
+    // CSV multi-select mode
+    toggleCsvFile(item)
   } else {
     selectedFile.value = item
+    selectedFiles.value = []
     await previewFile(item)
   }
 }
@@ -863,7 +972,8 @@ async function previewFile(item: FileItem) {
 }
 
 async function loadMorePreview() {
-  if (!dataPreview.value || !selectedFile.value) return
+  if (!dataPreview.value) return
+  if (!selectedFile.value && selectedFiles.value.length === 0) return
 
   try {
     loadingMore.value = true
@@ -871,8 +981,20 @@ async function loadMorePreview() {
     const currentRows = dataPreview.value.preview.length
     const newRowCount = Math.min(currentRows + 100, maxPreviewRows)
 
+    // Multi-CSV load more
+    if (dataPreview.value.metadata?.is_multi_csv && selectedFiles.value.length > 1) {
+      const response = await api.post('/api/data/preview', {
+        file_paths: selectedFiles.value.map(f => f.path),
+        rows: newRowCount,
+        format: 'csv'
+      })
+      dataPreview.value = response.data
+      notificationStore.showSuccess(`Loaded ${response.data.preview.length} rows`)
+      return
+    }
+
     const requestData: any = {
-      file_path: selectedFile.value.path,
+      file_path: selectedFile.value!.path,
       rows: newRowCount,
       format: selectedFormat.value
     }
@@ -897,8 +1019,29 @@ async function loadMorePreview() {
 async function proceedToWindowing() {
   if (!dataPreview.value) return
 
-  // If this is a partition preview, load the full dataset first
-  if (dataPreview.value.metadata?.is_partition_preview) {
+  // Multi-CSV: load full dataset via ingest endpoint
+  if (dataPreview.value.metadata?.is_multi_csv && selectedFiles.value.length > 1) {
+    try {
+      loadingFull.value = true
+      loading.value = true
+
+      const response = await api.post('/api/data/ingest/csv-multiple', {
+        file_paths: selectedFiles.value.map(f => f.path)
+      })
+
+      pipelineStore.dataSession = response.data
+      notificationStore.showSuccess(
+        `${response.data.metadata.total_samples} CSV files loaded as one dataset`
+      )
+    } catch (e: any) {
+      notificationStore.showError(e.response?.data?.error || 'Failed to load CSV files')
+      return
+    } finally {
+      loadingFull.value = false
+      loading.value = false
+    }
+  } else if (dataPreview.value.metadata?.is_partition_preview) {
+    // Partition preview: load the full dataset first
     try {
       loadingFull.value = true
       loading.value = true
@@ -932,6 +1075,8 @@ async function proceedToWindowing() {
 // Watch format changes to reset state
 watch(selectedFormat, () => {
   selectedFile.value = null
+  selectedFiles.value = []
+  multiCsvError.value = null
   dataPreview.value = null
   datasetScan.value = null
   selectedCategory.value = null

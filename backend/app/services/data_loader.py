@@ -133,6 +133,101 @@ class DataLoader:
             'preview': df.head(10).to_dict(orient='records')
         }
 
+    def load_csv_multiple(self, file_paths: List[str]) -> Dict[str, Any]:
+        """
+        Load data from multiple CSV files as one dataset.
+
+        All files must have identical columns. Each file becomes a separate
+        sample_id so windowing respects file boundaries.
+        """
+        if not file_paths:
+            raise ValueError("No file paths provided")
+
+        if len(file_paths) == 1:
+            return self.load_csv(file_paths[0])
+
+        # Validate all files exist
+        for fp in file_paths:
+            if not os.path.exists(fp):
+                raise FileNotFoundError(f"File not found: {fp}")
+
+        # Read headers from all files and check column compatibility
+        reference_cols = None
+        reference_file = None
+        for fp in file_paths:
+            cols = pd.read_csv(fp, nrows=0).columns.tolist()
+            if reference_cols is None:
+                reference_cols = cols
+                reference_file = os.path.basename(fp)
+            elif cols != reference_cols:
+                raise ValueError(
+                    f"Column mismatch: '{os.path.basename(fp)}' has columns {cols}, "
+                    f"but '{reference_file}' has columns {reference_cols}"
+                )
+
+        # Load and concatenate all files with sample_id
+        dfs = []
+        for idx, fp in enumerate(file_paths):
+            df = pd.read_csv(fp)
+            df['sample_id'] = idx
+            df['source_file'] = os.path.basename(fp)
+            dfs.append(df)
+
+        combined = pd.concat(dfs, ignore_index=True)
+
+        # Detect columns (identical across files, so use once)
+        columns = reference_cols
+        label_col = self._detect_label_column(columns)
+        timestamp_col = self._detect_time_column(columns)
+
+        if not timestamp_col and len(columns) > 0 and pd.api.types.is_numeric_dtype(combined[columns[0]]):
+            timestamp_col = columns[0]
+
+        exclude_cols = set()
+        if label_col:
+            exclude_cols.add(label_col)
+        if timestamp_col:
+            exclude_cols.add(timestamp_col)
+
+        sensor_cols = [
+            col for col in columns
+            if col not in exclude_cols and pd.api.types.is_numeric_dtype(combined[col])
+        ]
+
+        # Store session
+        session_id = self._generate_session_id()
+        all_columns = combined.columns.tolist()
+        metadata = {
+            'format': 'csv',
+            'file_path': os.path.dirname(file_paths[0]),
+            'file_paths': file_paths,
+            'is_multi_csv': True,
+            'total_rows': len(combined),
+            'total_samples': len(file_paths),
+            'columns': all_columns,
+            'sensor_columns': sensor_cols,
+            'label_column': label_col,
+            'timestamp_column': timestamp_col,
+            'labels': combined[label_col].unique().tolist() if label_col else None,
+            'source_files': [os.path.basename(fp) for fp in file_paths]
+        }
+
+        self._store_session(session_id, combined, metadata)
+
+        # Stratified preview: sample from each file
+        preview_dfs = []
+        rows_per_file = max(10 // len(file_paths), 2)
+        for idx in range(len(file_paths)):
+            file_df = combined[combined['sample_id'] == idx]
+            preview_dfs.append(file_df.head(rows_per_file))
+        preview = pd.concat(preview_dfs, ignore_index=True)
+
+        return {
+            'session_id': session_id,
+            'metadata': metadata,
+            'preview': preview.to_dict(orient='records')
+        }
+
     def load_edge_impulse_json(self, file_path: str) -> Dict[str, Any]:
         """
         Load data from Edge Impulse JSON format.
@@ -1091,7 +1186,8 @@ class DataLoader:
         session_id: str,
         window_size: int = 128,
         stride: int = 64,
-        label_method: str = 'majority'
+        label_method: str = 'majority',
+        test_ratio: float = 0.2
     ) -> Dict[str, Any]:
         """
         Apply windowing to loaded data, respecting sample boundaries.
@@ -1100,11 +1196,17 @@ class DataLoader:
         across different recordings. The 'category' column (training/testing)
         is preserved per window for proper train/test splitting.
 
+        For CSV data without a pre-existing category column, a train/test
+        split is applied automatically:
+        - sample_id present: whole samples assigned to train or test
+        - no sample_id: temporal split with a gap of window_size
+
         Args:
             session_id: Session ID from data loading
             window_size: Number of samples per window
             stride: Step size between windows
             label_method: How to assign labels ('majority', 'first', 'last', 'threshold')
+            test_ratio: Fraction of data reserved for testing (0.1–0.5)
 
         Returns:
             Windowed data information
@@ -1121,6 +1223,79 @@ class DataLoader:
         has_sample_id = 'sample_id' in df.columns
         has_category = 'category' in df.columns
 
+        # --- Auto train/test split for CSV data without pre-existing categories ---
+        split_method = None
+        if has_category:
+            split_method = 'preset'  # CBOR folders already have training/testing
+        elif test_ratio and 0 < test_ratio < 1:
+            if has_sample_id:
+                sample_ids = df['sample_id'].unique()
+                n_samples = len(sample_ids)
+                n_test_files = max(1, round(n_samples * test_ratio))
+                actual_file_ratio = n_test_files / n_samples
+
+                # Use file-level split only when enough files to honor the ratio
+                # (tolerance: actual ratio within 10% of requested ratio)
+                use_file_split = (n_samples >= 4 and
+                                  abs(actual_file_ratio - test_ratio) <= 0.10)
+
+                if use_file_split:
+                    # File-level split: assign whole files to train or test
+                    split_method = 'sample'
+                    n_train = n_samples - n_test_files
+
+                    if label_col:
+                        sample_labels = df.groupby('sample_id')[label_col].agg(
+                            lambda x: x.value_counts().index[0]
+                        )
+                        from sklearn.model_selection import train_test_split as sk_split
+                        try:
+                            train_ids, test_ids = sk_split(
+                                sample_ids, test_size=n_test_files,
+                                random_state=42,
+                                stratify=sample_labels[sample_ids].values
+                            )
+                        except ValueError:
+                            train_ids = sample_ids[:n_train]
+                            test_ids = sample_ids[n_train:]
+                    else:
+                        train_ids = sample_ids[:n_train]
+                        test_ids = sample_ids[n_train:]
+
+                    test_set = set(test_ids)
+                    df = df.copy()
+                    df['category'] = df['sample_id'].apply(
+                        lambda sid: 'testing' if sid in test_set else 'training'
+                    )
+                    has_category = True
+                else:
+                    # Too few files for file-level split to honor the ratio.
+                    # Use stratified window-level split: create all windows first,
+                    # then assign train/test by stratified random split on labels.
+                    # This ensures all classes appear in both train and test.
+                    split_method = 'stratified'
+                    # Don't assign categories now — will be done after windowing
+            else:
+                # Temporal split with gap for single CSV
+                split_method = 'temporal'
+                total_rows = len(df)
+                gap = window_size  # gap equal to window_size prevents overlap
+                test_rows = max(window_size, round(total_rows * test_ratio))
+                train_rows = total_rows - test_rows - gap
+
+                if train_rows < window_size:
+                    # Not enough data for gap, skip gap
+                    gap = 0
+                    train_rows = total_rows - test_rows
+
+                df = df.copy()
+                df['category'] = 'gap'
+                df.iloc[:train_rows, df.columns.get_loc('category')] = 'training'
+                df.iloc[train_rows + gap:, df.columns.get_loc('category')] = 'testing'
+                # Remove gap rows so no window can span train/test
+                df = df[df['category'] != 'gap'].reset_index(drop=True)
+                has_category = True
+
         windows = []
         labels = []
         categories = []
@@ -1134,7 +1309,7 @@ class DataLoader:
                 if n_rows < window_size:
                     continue
 
-                # Get category for this sample (all rows in a sample share the same category)
+                # Get category for this sample (for file-level or preset splits)
                 sample_category = None
                 if has_category:
                     sample_category = sample_df['category'].iloc[0]
@@ -1154,20 +1329,38 @@ class DataLoader:
                     if sample_category is not None:
                         categories.append(sample_category)
         else:
-            # No sample_id - fall back to sequential windowing
-            num_samples = len(df)
-            n_windows = max(0, (num_samples - window_size) // stride + 1)
+            # No sample_id — window within each category to prevent leakage
+            if has_category:
+                for cat, cat_df in df.groupby('category', sort=False):
+                    cat_data = cat_df[sensor_cols].values
+                    n_rows = len(cat_data)
+                    if n_rows < window_size:
+                        continue
 
-            for i in range(n_windows):
-                start = i * stride
-                end = start + window_size
+                    n_windows = (n_rows - window_size) // stride + 1
+                    for i in range(n_windows):
+                        start = i * stride
+                        end = start + window_size
+                        windows.append(cat_data[start:end])
+                        categories.append(cat)
+                        if label_col:
+                            window_labels = cat_df.iloc[start:end][label_col].values
+                            labels.append(self._get_window_label(window_labels, label_method))
+            else:
+                # No category, no sample_id — plain sequential windowing
+                num_samples = len(df)
+                n_windows = max(0, (num_samples - window_size) // stride + 1)
 
-                window_data = df.iloc[start:end][sensor_cols].values
-                windows.append(window_data)
+                for i in range(n_windows):
+                    start = i * stride
+                    end = start + window_size
 
-                if label_col:
-                    window_labels = df.iloc[start:end][label_col].values
-                    labels.append(self._get_window_label(window_labels, label_method))
+                    window_data = df.iloc[start:end][sensor_cols].values
+                    windows.append(window_data)
+
+                    if label_col:
+                        window_labels = df.iloc[start:end][label_col].values
+                        labels.append(self._get_window_label(window_labels, label_method))
 
         num_windows = len(windows)
         if num_windows == 0:
@@ -1175,6 +1368,25 @@ class DataLoader:
                 f"No windows could be created. Window size ({window_size}) may be "
                 f"larger than individual samples. Try a smaller window size."
             )
+
+        # --- Post-windowing stratified split (for few-file multi-CSV) ---
+        if split_method == 'stratified' and labels and num_windows > 1:
+            from sklearn.model_selection import train_test_split as sk_split
+            label_arr = np.array(labels)
+            indices = np.arange(num_windows)
+            try:
+                train_idx, test_idx = sk_split(
+                    indices, test_size=test_ratio,
+                    random_state=42, stratify=label_arr
+                )
+            except ValueError:
+                # Stratification failed (too few samples per class), use random
+                train_idx, test_idx = sk_split(
+                    indices, test_size=test_ratio, random_state=42
+                )
+            categories = ['training'] * num_windows
+            for idx in test_idx:
+                categories[idx] = 'testing'
 
         # Store windowed data
         windowed_session_id = self._generate_session_id()
@@ -1198,7 +1410,9 @@ class DataLoader:
             'original_session_id': session_id,
             'per_sample_windowing': has_sample_id,
             'has_category_split': bool(categories),
-            'category_distribution': category_dist
+            'category_distribution': category_dist,
+            'split_method': split_method,
+            'test_ratio': float(test_ratio) if test_ratio else None
         }
 
         _data_sessions[windowed_session_id] = {

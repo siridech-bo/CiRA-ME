@@ -16,9 +16,19 @@
 
           <!-- Window Size -->
           <div class="mb-6">
-            <div class="d-flex justify-space-between mb-2">
+            <div class="d-flex justify-space-between align-center mb-2">
               <span class="text-body-2">Window Size (samples)</span>
-              <span class="font-weight-medium">{{ windowingConfig.window_size }}</span>
+              <v-text-field
+                :model-value="windowingConfig.window_size"
+                @update:model-value="onWindowSizeInput"
+                type="number"
+                :min="16"
+                :max="sliderMaxWindowSize"
+                density="compact"
+                variant="outlined"
+                hide-details
+                style="max-width: 100px"
+              />
             </div>
             <v-slider
               v-model="windowingConfig.window_size"
@@ -47,9 +57,19 @@
 
           <!-- Stride -->
           <div class="mb-6">
-            <div class="d-flex justify-space-between mb-2">
+            <div class="d-flex justify-space-between align-center mb-2">
               <span class="text-body-2">Stride (samples)</span>
-              <span class="font-weight-medium">{{ windowingConfig.stride }}</span>
+              <v-text-field
+                :model-value="windowingConfig.stride"
+                @update:model-value="onStrideInput"
+                type="number"
+                :min="1"
+                :max="windowingConfig.window_size"
+                density="compact"
+                variant="outlined"
+                hide-details
+                style="max-width: 100px"
+              />
             </div>
             <v-slider
               v-model="windowingConfig.stride"
@@ -65,6 +85,47 @@
           <v-alert type="info" variant="tonal" density="compact" class="mb-4">
             <strong>Overlap:</strong> {{ overlapPercent }}%
           </v-alert>
+
+          <!-- Train/Test Split -->
+          <div class="mb-6">
+            <div class="d-flex justify-space-between align-center mb-2">
+              <span class="text-body-2">Test Ratio</span>
+              <v-text-field
+                v-if="!hasPresetCategory"
+                :model-value="windowingConfig.test_ratio"
+                @update:model-value="onTestRatioInput"
+                type="number"
+                min="0.1"
+                max="0.5"
+                step="0.05"
+                density="compact"
+                variant="outlined"
+                hide-details
+                style="max-width: 100px"
+              />
+              <span v-else class="font-weight-medium">Preset</span>
+            </div>
+            <v-slider
+              v-if="!hasPresetCategory"
+              v-model="windowingConfig.test_ratio"
+              :min="0.1"
+              :max="0.5"
+              :step="0.05"
+              color="warning"
+              hide-details
+            />
+            <div class="text-caption text-medium-emphasis mt-1">
+              <template v-if="hasPresetCategory">
+                Train/test split is preset from dataset folders (training/testing).
+              </template>
+              <template v-else-if="hasSampleId">
+                {{ Math.round((1 - windowingConfig.test_ratio) * 100) }}% train / {{ Math.round(windowingConfig.test_ratio * 100) }}% test. Split by file if enough files, otherwise stratified random split at window level.
+              </template>
+              <template v-else>
+                Temporal split with gap: first {{ Math.round((1 - windowingConfig.test_ratio) * 100) }}% for training, last {{ Math.round(windowingConfig.test_ratio * 100) }}% for testing, gap = window size.
+              </template>
+            </div>
+          </div>
 
           <!-- Label Preservation -->
           <h4 class="text-subtitle-2 font-weight-bold mb-3">Label Preservation</h4>
@@ -208,6 +269,28 @@
             >
               {{ label }}: {{ count }}
             </v-chip>
+          </div>
+
+          <div v-if="windowedResult.summary?.category_distribution" class="mt-3">
+            <h4 class="text-subtitle-2 mb-2">Train / Test Split</h4>
+            <v-chip
+              v-for="(count, cat) in windowedResult.summary.category_distribution"
+              :key="cat"
+              size="small"
+              class="mr-2 mb-2"
+              :color="cat === 'training' ? 'primary' : 'warning'"
+              variant="flat"
+            >
+              {{ cat }}: {{ count }} windows
+            </v-chip>
+            <div v-if="windowedResult.metadata?.split_method" class="text-caption text-medium-emphasis mt-1">
+              Split method: {{ {
+                'preset': 'preset (dataset folders)',
+                'sample': 'by file (whole files)',
+                'temporal': 'temporal (with gap)',
+                'stratified': 'stratified random (all classes in train & test)'
+              }[windowedResult.metadata.split_method] || windowedResult.metadata.split_method }}
+            </div>
           </div>
         </v-card>
       </v-col>
@@ -622,7 +705,8 @@ watch(windowedResult, (newVal) => {
 const windowingConfig = reactive({
   window_size: pipelineStore.windowingConfig.window_size,
   stride: pipelineStore.windowingConfig.stride,
-  label_method: pipelineStore.windowingConfig.label_method
+  label_method: pipelineStore.windowingConfig.label_method,
+  test_ratio: pipelineStore.windowingConfig.test_ratio
 })
 
 const totalSamples = computed(() =>
@@ -685,6 +769,42 @@ const previewWindows = computed(() => {
   return windows
 })
 
+// Check if dataset already has preset train/test categories (CBOR folders)
+const hasPresetCategory = computed(() => {
+  const meta = pipelineStore.dataSession?.metadata
+  return meta?.format === 'edge_impulse_cbor' && (meta?.training_samples > 0 || meta?.testing_samples > 0)
+})
+
+// Check if dataset has sample_id (multi-CSV or CBOR)
+const hasSampleId = computed(() => {
+  const meta = pipelineStore.dataSession?.metadata
+  return (meta?.total_samples || 0) > 1
+})
+
+// Handle manual number input for test ratio
+function onTestRatioInput(val: string | number) {
+  const num = Number(val)
+  if (isNaN(num)) return
+  windowingConfig.test_ratio = Math.min(0.5, Math.max(0.1, num))
+}
+
+// Handle manual number input for window size
+function onWindowSizeInput(val: string | number) {
+  const num = Number(val)
+  if (isNaN(num) || num < 1) return
+  windowingConfig.window_size = Math.min(num, sliderMaxWindowSize.value)
+  if (windowingConfig.stride > windowingConfig.window_size) {
+    windowingConfig.stride = windowingConfig.window_size
+  }
+}
+
+// Handle manual number input for stride
+function onStrideInput(val: string | number) {
+  const num = Number(val)
+  if (isNaN(num) || num < 1) return
+  windowingConfig.stride = Math.min(num, windowingConfig.window_size)
+}
+
 // Clamp window size when data changes and current size exceeds max
 watch(sliderMaxWindowSize, (newMax) => {
   if (windowingConfig.window_size > newMax) {
@@ -700,6 +820,7 @@ async function applyWindowing() {
   pipelineStore.windowingConfig.window_size = windowingConfig.window_size
   pipelineStore.windowingConfig.stride = windowingConfig.stride
   pipelineStore.windowingConfig.label_method = windowingConfig.label_method
+  pipelineStore.windowingConfig.test_ratio = windowingConfig.test_ratio
 
   loading.value = true
 

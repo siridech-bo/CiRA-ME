@@ -5,8 +5,120 @@
 
     <h2 class="text-h5 font-weight-bold mb-2">Deploy to Edge</h2>
     <p class="text-body-2 text-medium-emphasis mb-6">
-      Deploy your trained model to an edge device
+      Select a model and deploy it to an edge device
     </p>
+
+    <!-- Model Selection -->
+    <v-card class="pa-4 mb-6">
+      <h3 class="text-subtitle-1 font-weight-bold mb-4">
+        <v-icon start color="primary">mdi-brain</v-icon>
+        Select Model
+      </h3>
+
+      <v-radio-group v-model="modelSource" hide-details>
+        <!-- Current Session -->
+        <v-radio
+          value="session"
+          :disabled="!pipelineStore.trainingSession"
+        >
+          <template #label>
+            <div class="d-flex align-center flex-wrap ga-2" style="width: 100%">
+              <span class="font-weight-medium">Current Training Session</span>
+              <template v-if="pipelineStore.trainingSession">
+                <v-chip size="x-small" color="primary" variant="tonal">
+                  {{ pipelineStore.trainingSession.algorithm }}
+                </v-chip>
+                <v-chip size="x-small" color="info" variant="tonal">
+                  {{ pipelineStore.trainingSession.mode }}
+                </v-chip>
+                <v-chip
+                  v-if="pipelineStore.trainingSession.metrics?.accuracy != null"
+                  size="x-small" color="success" variant="tonal"
+                >
+                  Acc: {{ (pipelineStore.trainingSession.metrics.accuracy * 100).toFixed(1) }}%
+                </v-chip>
+                <v-chip
+                  v-if="pipelineStore.trainingSession.metrics?.f1 != null"
+                  size="x-small" color="warning" variant="tonal"
+                >
+                  F1: {{ (pipelineStore.trainingSession.metrics.f1 * 100).toFixed(1) }}%
+                </v-chip>
+              </template>
+              <span v-else class="text-caption text-medium-emphasis">(no model trained in this session)</span>
+            </div>
+          </template>
+        </v-radio>
+
+        <!-- Saved Models -->
+        <v-radio value="saved">
+          <template #label>
+            <span class="font-weight-medium">Saved Benchmark Model</span>
+          </template>
+        </v-radio>
+      </v-radio-group>
+
+      <!-- Saved Models Table (shown when 'saved' is selected) -->
+      <div v-if="modelSource === 'saved'" class="mt-4">
+        <div v-if="loadingSavedModels" class="text-center pa-4">
+          <v-progress-circular indeterminate size="24" />
+          <span class="ml-2 text-medium-emphasis">Loading saved models...</span>
+        </div>
+
+        <v-alert v-else-if="savedModels.length === 0" type="info" variant="tonal">
+          No saved models found. Save a benchmark from the Training page first.
+        </v-alert>
+
+        <v-table v-else dense hover>
+          <thead>
+            <tr>
+              <th></th>
+              <th>Name</th>
+              <th>Algorithm</th>
+              <th>Mode</th>
+              <th>Accuracy</th>
+              <th>F1</th>
+              <th>Date</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="model in savedModels"
+              :key="model.id"
+              :class="{ 'bg-primary-darken-3': selectedSavedModelId === model.id }"
+              style="cursor: pointer"
+              @click="selectSavedModel(model)"
+            >
+              <td>
+                <v-radio-group v-model="selectedSavedModelId" hide-details inline>
+                  <v-radio :value="model.id" density="compact" hide-details />
+                </v-radio-group>
+              </td>
+              <td class="font-weight-medium">{{ model.name }}</td>
+              <td>{{ model.algorithm }}</td>
+              <td>
+                <v-chip size="x-small" :color="model.mode === 'anomaly' ? 'warning' : 'info'" variant="tonal">
+                  {{ model.mode }}
+                </v-chip>
+              </td>
+              <td>{{ model.metrics?.accuracy != null ? (model.metrics.accuracy * 100).toFixed(1) + '%' : '-' }}</td>
+              <td>{{ model.metrics?.f1 != null ? (model.metrics.f1 * 100).toFixed(1) + '%' : '-' }}</td>
+              <td class="text-caption">{{ formatDate(model.created_at) }}</td>
+            </tr>
+          </tbody>
+        </v-table>
+      </div>
+
+      <!-- Selected Model Summary -->
+      <v-alert
+        v-if="selectedModelSummary"
+        type="success"
+        variant="tonal"
+        class="mt-4"
+        density="compact"
+      >
+        <strong>Selected:</strong> {{ selectedModelSummary }}
+      </v-alert>
+    </v-card>
 
     <v-row>
       <!-- Target Device -->
@@ -239,6 +351,7 @@
           variant="outlined"
           @click="exportOnly"
           :loading="exporting"
+          :disabled="!hasModelSelected"
         >
           <v-icon start>mdi-download</v-icon>
           Export Only
@@ -260,7 +373,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { usePipelineStore } from '@/stores/pipeline'
 import { useNotificationStore } from '@/stores/notification'
@@ -271,6 +384,13 @@ const router = useRouter()
 const pipelineStore = usePipelineStore()
 const notificationStore = useNotificationStore()
 
+// Model selection
+const modelSource = ref<'session' | 'saved'>(pipelineStore.trainingSession ? 'session' : 'saved')
+const savedModels = ref<any[]>([])
+const selectedSavedModelId = ref<number | null>(null)
+const loadingSavedModels = ref(false)
+
+// Deploy config
 const targetDevice = ref('jetson_nano')
 const exportFormat = ref('onnx')
 const includeScaler = ref(true)
@@ -292,9 +412,57 @@ const deploying = ref(false)
 const exporting = ref(false)
 const deploymentResult = ref<any>(null)
 
+// Computed
+const hasModelSelected = computed(() => {
+  if (modelSource.value === 'session') return !!pipelineStore.trainingSession
+  if (modelSource.value === 'saved') return !!selectedSavedModelId.value
+  return false
+})
+
 const canDeploy = computed(() =>
-  sshConfig.host && sshConfig.username && pipelineStore.trainingSession
+  hasModelSelected.value && sshConfig.host && sshConfig.username
 )
+
+const selectedModelSummary = computed(() => {
+  if (modelSource.value === 'session' && pipelineStore.trainingSession) {
+    const s = pipelineStore.trainingSession
+    const acc = s.metrics?.accuracy != null ? ` | Acc: ${(s.metrics.accuracy * 100).toFixed(1)}%` : ''
+    return `${s.algorithm} (${s.mode})${acc}`
+  }
+  if (modelSource.value === 'saved' && selectedSavedModelId.value) {
+    const model = savedModels.value.find(m => m.id === selectedSavedModelId.value)
+    if (model) {
+      const acc = model.metrics?.accuracy != null ? ` | Acc: ${(model.metrics.accuracy * 100).toFixed(1)}%` : ''
+      return `${model.name} — ${model.algorithm} (${model.mode})${acc}`
+    }
+  }
+  return null
+})
+
+// Functions
+function selectSavedModel(model: any) {
+  selectedSavedModelId.value = model.id
+}
+
+function formatDate(dateStr: string) {
+  if (!dateStr) return '-'
+  return new Date(dateStr).toLocaleDateString('en-US', {
+    month: 'short', day: 'numeric', year: 'numeric',
+    hour: '2-digit', minute: '2-digit'
+  })
+}
+
+async function loadSavedModels() {
+  try {
+    loadingSavedModels.value = true
+    const response = await api.get('/api/training/saved-models')
+    savedModels.value = response.data || []
+  } catch (e: any) {
+    console.error('Failed to load saved models:', e)
+  } finally {
+    loadingSavedModels.value = false
+  }
+}
 
 async function testConnection() {
   try {
@@ -318,19 +486,22 @@ async function testConnection() {
 }
 
 async function exportOnly() {
-  if (!pipelineStore.trainingSession) {
-    notificationStore.showError('No trained model available')
+  if (!hasModelSelected.value) {
+    notificationStore.showError('No model selected')
     return
   }
 
   try {
     exporting.value = true
 
-    const response = await api.post(
-      `/api/training/export/${pipelineStore.trainingSession.training_session_id}`,
-      { format: exportFormat.value }
-    )
+    let url: string
+    if (modelSource.value === 'session' && pipelineStore.trainingSession) {
+      url = `/api/training/export/${pipelineStore.trainingSession.training_session_id}`
+    } else {
+      url = `/api/training/export-saved/${selectedSavedModelId.value}`
+    }
 
+    const response = await api.post(url, { format: exportFormat.value })
     notificationStore.showSuccess(`Model exported as ${exportFormat.value}`)
   } catch (e: any) {
     notificationStore.showError(e.response?.data?.error || 'Export failed')
@@ -340,24 +511,30 @@ async function exportOnly() {
 }
 
 async function deploy() {
-  if (!pipelineStore.trainingSession) {
-    notificationStore.showError('No trained model available')
+  if (!hasModelSelected.value) {
+    notificationStore.showError('No model selected')
     return
   }
 
   try {
     deploying.value = true
 
-    const response = await api.post('/api/deployment/deploy', {
-      training_session_id: pipelineStore.trainingSession.training_session_id,
+    const payload: any = {
       target_type: targetDevice.value,
       export_format: exportFormat.value,
       ...sshConfig,
       include_scaler: includeScaler.value,
       include_inference_script: includeInferenceScript.value,
       include_requirements: includeRequirements.value
-    })
+    }
 
+    if (modelSource.value === 'session' && pipelineStore.trainingSession) {
+      payload.training_session_id = pipelineStore.trainingSession.training_session_id
+    } else {
+      payload.saved_model_id = selectedSavedModelId.value
+    }
+
+    const response = await api.post('/api/deployment/deploy', payload)
     deploymentResult.value = response.data
     notificationStore.showSuccess('Deployment successful!')
   } catch (e: any) {
@@ -366,4 +543,8 @@ async function deploy() {
     deploying.value = false
   }
 }
+
+onMounted(() => {
+  loadSavedModels()
+})
 </script>

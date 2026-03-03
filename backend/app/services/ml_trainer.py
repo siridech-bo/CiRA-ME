@@ -575,8 +575,8 @@ class MLTrainer:
         class_labels = [str(c) for c in class_list]
         metrics['classes'] = class_list
 
-        # Confusion matrix with labels
-        cm = confusion_matrix(y_test, y_pred)
+        # Confusion matrix with labels (use all classes so shape is consistent)
+        cm = confusion_matrix(y_test, y_pred, labels=classes)
         metrics['confusion_matrix'] = cm.tolist()
         metrics['confusion_matrix_labels'] = class_labels
 
@@ -697,22 +697,30 @@ class MLTrainer:
 
                     for i in range(len(model_classes)):
                         if i < y_proba.shape[1] and i < y_test_bin.shape[1]:
+                            # Skip classes with no positive samples in test set
+                            n_positive = int(y_test_bin[:, i].sum())
+                            if n_positive == 0:
+                                print(f"[ML DEBUG] Class {i} ({model_classes[i]}): skipped (0 samples in test set)")
+                                continue
                             fpr_i, tpr_i, _ = roc_curve(y_test_bin[:, i], y_proba[:, i])
                             class_auc = auc(fpr_i, tpr_i)
-                            print(f"[ML DEBUG] Class {i} ({model_classes[i]}): AUC={class_auc:.4f}, samples={y_test_bin[:, i].sum()}")
+                            if np.isnan(class_auc):
+                                print(f"[ML DEBUG] Class {i} ({model_classes[i]}): skipped (NaN AUC)")
+                                continue
+                            print(f"[ML DEBUG] Class {i} ({model_classes[i]}): AUC={class_auc:.4f}, samples={n_positive}")
                             mean_tpr += np.interp(all_fpr, fpr_i, tpr_i)
                             valid_classes += 1
 
                     if valid_classes > 0:
                         mean_tpr /= valid_classes
+                    else:
+                        # No valid classes — use diagonal (random classifier)
+                        mean_tpr = all_fpr.copy()
+
+                    # Replace any remaining NaN with 0
+                    mean_tpr = np.nan_to_num(mean_tpr, nan=0.0)
 
                     print(f"[ML DEBUG] mean_tpr range: [{mean_tpr.min():.4f}, {mean_tpr.max():.4f}]")
-
-                    # Print sample curve points to verify shape
-                    sample_indices = [0, 25, 50, 75, 99]
-                    print(f"[ML DEBUG] Sample ROC points (fpr, tpr):")
-                    for idx in sample_indices:
-                        print(f"  [{idx}] ({all_fpr[idx]:.3f}, {mean_tpr[idx]:.3f})")
 
                     metrics['roc_curve'] = {
                         'fpr': all_fpr.tolist(),

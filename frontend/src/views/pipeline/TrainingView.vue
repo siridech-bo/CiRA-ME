@@ -630,17 +630,217 @@
 
       <v-divider class="my-4" />
 
-      <p class="text-caption text-medium-emphasis">
-        The best performing model ({{ comparisonResult.best_algorithm?.algorithm_name }})
-        has been selected for deployment. You can view detailed metrics below.
-      </p>
+      <div class="d-flex align-center justify-space-between">
+        <p class="text-caption text-medium-emphasis mb-0">
+          The best performing model ({{ comparisonResult.best_algorithm?.algorithm_name }})
+          has been selected for deployment. You can view detailed metrics below.
+        </p>
+        <v-btn
+          v-if="comparisonResult.best_algorithm"
+          color="warning"
+          variant="flat"
+          size="small"
+          @click="showSaveBenchmarkDialog = true"
+        >
+          <v-icon start size="small">mdi-content-save</v-icon>
+          Save as Benchmark
+        </v-btn>
+      </div>
     </v-card>
+
+    <!-- Save Benchmark Dialog -->
+    <v-dialog v-model="showSaveBenchmarkDialog" max-width="450">
+      <v-card class="pa-4">
+        <h3 class="text-subtitle-1 font-weight-bold mb-4">Save Model as Benchmark</h3>
+        <v-text-field
+          v-model="benchmarkName"
+          label="Benchmark Name"
+          :placeholder="`${comparisonResult?.best_algorithm?.algorithm_name || 'Model'} - ${new Date().toLocaleDateString()}`"
+          variant="outlined"
+          density="compact"
+          class="mb-4"
+        />
+        <div class="d-flex justify-end ga-2">
+          <v-btn variant="text" @click="showSaveBenchmarkDialog = false">Cancel</v-btn>
+          <v-btn color="warning" variant="flat" @click="saveBenchmark" :loading="savingBenchmark">Save</v-btn>
+        </div>
+      </v-card>
+    </v-dialog>
+
+    <!-- Model History -->
+    <v-card class="pa-4 mt-6">
+      <div class="d-flex align-center justify-space-between mb-4">
+        <h3 class="text-subtitle-1 font-weight-bold">
+          <v-icon start size="small">mdi-history</v-icon>
+          Model History
+        </h3>
+        <v-btn variant="text" size="small" @click="loadSavedModels" :loading="loadingSavedModels">
+          <v-icon start size="small">mdi-refresh</v-icon>
+          Refresh
+        </v-btn>
+      </div>
+
+      <v-alert v-if="savedModels.length === 0 && !loadingSavedModels" type="info" variant="tonal" density="compact">
+        No saved benchmarks yet. Train a model and click "Save as Benchmark" to start tracking.
+      </v-alert>
+
+      <v-table v-if="savedModels.length > 0" density="compact" class="comparison-table">
+        <thead>
+          <tr>
+            <th><v-checkbox-btn v-model="selectAllModels" @update:model-value="toggleSelectAllModels" density="compact" hide-details /></th>
+            <th class="text-left">Name</th>
+            <th class="text-center">Algorithm</th>
+            <th class="text-center">Accuracy</th>
+            <th class="text-center">F1</th>
+            <th class="text-center">Date</th>
+            <th class="text-center">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="m in savedModels" :key="m.id">
+            <td><v-checkbox-btn v-model="selectedModelIds" :value="m.id" density="compact" hide-details /></td>
+            <td class="font-weight-medium">{{ m.name }}</td>
+            <td class="text-center text-caption">{{ m.algorithm }}</td>
+            <td class="text-center">{{ m.metrics?.accuracy != null ? (m.metrics.accuracy * 100).toFixed(1) + '%' : '-' }}</td>
+            <td class="text-center">{{ m.metrics?.f1 != null ? (m.metrics.f1 * 100).toFixed(1) + '%' : '-' }}</td>
+            <td class="text-center text-caption">{{ m.created_at?.slice(0, 10) }}</td>
+            <td class="text-center">
+              <v-btn icon size="x-small" variant="text" color="info" @click="startEvaluation(m)" title="Test with new data">
+                <v-icon size="small">mdi-test-tube</v-icon>
+              </v-btn>
+              <v-btn icon size="x-small" variant="text" color="error" @click="deleteSavedModel(m)" title="Delete">
+                <v-icon size="small">mdi-delete</v-icon>
+              </v-btn>
+            </td>
+          </tr>
+        </tbody>
+      </v-table>
+
+      <v-btn
+        v-if="selectedModelIds.length === 2"
+        color="primary"
+        variant="flat"
+        size="small"
+        class="mt-3"
+        @click="compareSelectedModels"
+        :loading="comparing"
+      >
+        <v-icon start size="small">mdi-compare</v-icon>
+        Compare Selected ({{ selectedModelIds.length }})
+      </v-btn>
+
+      <!-- Compare Result -->
+      <v-card v-if="compareResult" variant="outlined" class="pa-3 mt-3">
+        <h4 class="text-subtitle-2 font-weight-bold mb-2">Comparison: {{ compareResult.model_1.name }} vs {{ compareResult.model_2.name }}</h4>
+        <v-table density="compact">
+          <thead>
+            <tr>
+              <th class="text-left">Metric</th>
+              <th class="text-center">{{ compareResult.model_1.name }}</th>
+              <th class="text-center">{{ compareResult.model_2.name }}</th>
+              <th class="text-center">Diff</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="c in compareResult.comparison" :key="c.metric">
+              <td class="font-weight-medium">{{ c.metric }}</td>
+              <td class="text-center">{{ c.model_1 != null ? (c.model_1 * 100).toFixed(1) + '%' : '-' }}</td>
+              <td class="text-center">{{ c.model_2 != null ? (c.model_2 * 100).toFixed(1) + '%' : '-' }}</td>
+              <td class="text-center" :class="c.diff > 0 ? 'text-success' : c.diff < 0 ? 'text-error' : ''">
+                {{ c.diff != null ? (c.diff > 0 ? '+' : '') + (c.diff * 100).toFixed(1) + '%' : '-' }}
+              </td>
+            </tr>
+          </tbody>
+        </v-table>
+      </v-card>
+    </v-card>
+
+    <!-- Evaluate on New Data Dialog -->
+    <v-dialog v-model="showEvalDialog" max-width="600">
+      <v-card class="pa-4">
+        <h3 class="text-subtitle-1 font-weight-bold mb-4">
+          <v-icon start size="small">mdi-test-tube</v-icon>
+          Evaluate "{{ evalModel?.name }}" on New Data
+        </h3>
+
+        <v-alert type="info" variant="tonal" density="compact" class="mb-4">
+          Load new data through the pipeline (Data Source → Windowing → Features), then click Evaluate.
+          The saved model will predict on the new features and compare with original metrics.
+        </v-alert>
+
+        <div v-if="pipelineStore.featureSession" class="mb-4">
+          <v-chip color="success" size="small" variant="flat" class="mr-2">
+            Features Ready
+          </v-chip>
+          <span class="text-caption">
+            {{ pipelineStore.featureSession.metadata?.num_features || '?' }} features,
+            {{ pipelineStore.featureSession.metadata?.num_windows || '?' }} samples
+          </span>
+        </div>
+        <v-alert v-else type="warning" variant="tonal" density="compact" class="mb-4">
+          No feature session available. Go back to the pipeline to load & process new data first.
+        </v-alert>
+
+        <div class="d-flex justify-end ga-2">
+          <v-btn variant="text" @click="showEvalDialog = false">Cancel</v-btn>
+          <v-btn
+            color="primary"
+            variant="flat"
+            :disabled="!pipelineStore.featureSession"
+            :loading="evaluating"
+            @click="runEvaluation"
+          >
+            Evaluate
+          </v-btn>
+        </div>
+
+        <!-- Evaluation Result -->
+        <v-card v-if="evalResult" variant="outlined" class="pa-3 mt-4">
+          <h4 class="text-subtitle-2 font-weight-bold mb-2">Results: Original vs New Data</h4>
+          <v-table density="compact">
+            <thead>
+              <tr>
+                <th class="text-left">Metric</th>
+                <th class="text-center">Original</th>
+                <th class="text-center">New Data</th>
+                <th class="text-center">Diff</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="c in evalResult.comparison" :key="c.metric">
+                <td class="font-weight-medium">{{ c.metric }}</td>
+                <td class="text-center">{{ c.original != null ? (c.original * 100).toFixed(1) + '%' : '-' }}</td>
+                <td class="text-center">{{ c.new_data != null ? (c.new_data * 100).toFixed(1) + '%' : '-' }}</td>
+                <td class="text-center" :class="c.diff != null ? (c.diff >= 0 ? 'text-success' : 'text-error') : ''">
+                  {{ c.diff != null ? (c.diff > 0 ? '+' : '') + (c.diff * 100).toFixed(1) + '%' : '-' }}
+                </td>
+              </tr>
+            </tbody>
+          </v-table>
+          <div class="text-caption text-medium-emphasis mt-2">
+            Evaluated on {{ evalResult.new_metrics?.test_samples || '?' }} samples
+          </div>
+        </v-card>
+      </v-card>
+    </v-dialog>
 
     <!-- Training Results (Single Algorithm or Best from Comparison) -->
     <v-card v-if="trainingResult" class="pa-4 mt-6">
-      <h3 class="text-subtitle-1 font-weight-bold mb-4">
-        {{ comparisonResult ? 'Best Model Details' : 'Training Complete' }}
-      </h3>
+      <div class="d-flex align-center justify-space-between mb-4">
+        <h3 class="text-subtitle-1 font-weight-bold">
+          {{ comparisonResult ? 'Best Model Details' : 'Training Complete' }}
+        </h3>
+        <v-btn
+          v-if="!comparisonResult && trainingResult.training_session_id"
+          color="warning"
+          variant="flat"
+          size="small"
+          @click="showSaveBenchmarkDialog = true"
+        >
+          <v-icon start size="small">mdi-content-save</v-icon>
+          Save as Benchmark
+        </v-btn>
+      </div>
 
       <v-alert type="success" variant="tonal" class="mb-4">
         Model trained successfully using
@@ -938,6 +1138,23 @@ const training = ref(false)
 const trainingResult = ref<any>(null)
 const comparisonResult = ref<any>(null)
 const pytorchAvailable = ref(true)  // Assume available, check on mount
+
+// Saved models / benchmark state
+const savedModels = ref<any[]>([])
+const loadingSavedModels = ref(false)
+const showSaveBenchmarkDialog = ref(false)
+const benchmarkName = ref('')
+const savingBenchmark = ref(false)
+const selectedModelIds = ref<number[]>([])
+const selectAllModels = ref(false)
+const comparing = ref(false)
+const compareResult = ref<any>(null)
+
+// Evaluate on new data state
+const showEvalDialog = ref(false)
+const evalModel = ref<any>(null)
+const evaluating = ref(false)
+const evalResult = ref<any>(null)
 
 const mlHyperparameters = reactive({
   n_estimators: 100,
@@ -1313,6 +1530,119 @@ watch(() => pipelineStore.mode, (newMode) => {
   comparisonResult.value = null
 })
 
+// ─── Saved Models / Benchmark Functions ───────────────────────────
+
+async function loadSavedModels() {
+  loadingSavedModels.value = true
+  try {
+    const response = await api.get('/api/training/saved-models')
+    savedModels.value = response.data
+  } catch {
+    savedModels.value = []
+  }
+  loadingSavedModels.value = false
+}
+
+async function saveBenchmark() {
+  // Determine training_session_id from comparison best or single training result
+  let sessionId: string | undefined
+  if (comparisonResult.value?.best_algorithm) {
+    sessionId = comparisonResult.value.best_algorithm.training_session_id
+  } else if (trainingResult.value?.training_session_id) {
+    sessionId = trainingResult.value.training_session_id
+  }
+
+  if (!sessionId) {
+    notificationStore.showError('No training session to save')
+    return
+  }
+
+  savingBenchmark.value = true
+
+  try {
+    await api.post('/api/training/save-benchmark', {
+      training_session_id: sessionId,
+      name: benchmarkName.value || undefined,
+      pipeline_config: {
+        window_size: pipelineStore.windowingConfig.window_size,
+        stride: pipelineStore.windowingConfig.stride,
+        test_ratio: pipelineStore.windowingConfig.test_ratio,
+        mode: pipelineStore.mode,
+        training_approach: pipelineStore.trainingApproach
+      },
+      dataset_info: {
+        format: pipelineStore.dataSession?.metadata?.format,
+        file_path: pipelineStore.dataSession?.metadata?.file_path,
+        total_rows: pipelineStore.dataSession?.metadata?.total_rows
+      }
+    })
+    notificationStore.showSuccess('Model saved as benchmark')
+    showSaveBenchmarkDialog.value = false
+    benchmarkName.value = ''
+    loadSavedModels()
+  } catch (e: any) {
+    notificationStore.showError(e.response?.data?.error || 'Failed to save benchmark')
+  }
+  savingBenchmark.value = false
+}
+
+async function deleteSavedModel(model: any) {
+  if (!confirm(`Delete benchmark "${model.name}"?`)) return
+  try {
+    await api.delete(`/api/training/saved-models/${model.id}`)
+    notificationStore.showSuccess('Benchmark deleted')
+    loadSavedModels()
+  } catch (e: any) {
+    notificationStore.showError(e.response?.data?.error || 'Failed to delete')
+  }
+}
+
+function toggleSelectAllModels(val: boolean) {
+  selectedModelIds.value = val ? savedModels.value.map((m: any) => m.id) : []
+}
+
+async function compareSelectedModels() {
+  if (selectedModelIds.value.length !== 2) {
+    notificationStore.showError('Select exactly 2 models to compare')
+    return
+  }
+  comparing.value = true
+  try {
+    const response = await api.post('/api/training/saved-models/compare', {
+      model_id_1: selectedModelIds.value[0],
+      model_id_2: selectedModelIds.value[1]
+    })
+    compareResult.value = response.data
+  } catch (e: any) {
+    notificationStore.showError(e.response?.data?.error || 'Comparison failed')
+  }
+  comparing.value = false
+}
+
+// ─── Evaluate on New Data Functions ───────────────────────────────
+
+function startEvaluation(model: any) {
+  evalModel.value = model
+  evalResult.value = null
+  showEvalDialog.value = true
+}
+
+async function runEvaluation() {
+  if (!evalModel.value || !pipelineStore.featureSession) return
+  evaluating.value = true
+  try {
+    const response = await api.post('/api/training/evaluate', {
+      saved_model_id: evalModel.value.id,
+      feature_session_id: pipelineStore.featureSession.session_id
+    })
+    evalResult.value = response.data
+    notificationStore.showSuccess('Evaluation complete')
+  } catch (e: any) {
+    notificationStore.showError(e.response?.data?.error || 'Evaluation failed')
+  }
+  evaluating.value = false
+}
+
 onMounted(async () => {
   // Set default algorithm selection (recommended ones)
   if (pipelineStore.mode === 'anomaly') {
@@ -1336,6 +1666,9 @@ onMounted(async () => {
   if (trainingApproach.value === 'dl') {
     fetchGpuStatus()
   }
+
+  // Load saved models
+  loadSavedModels()
 })
 </script>
 
