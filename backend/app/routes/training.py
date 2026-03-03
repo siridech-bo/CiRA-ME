@@ -481,6 +481,9 @@ def train_timesnet_anomaly():
             user_id=request.current_user['id']
         )
 
+        if 'error' in result:
+            return jsonify(result), 400
+
         return jsonify(result)
 
     except Exception as e:
@@ -553,6 +556,9 @@ def train_timesnet_classification():
             test_size=test_size,
             user_id=request.current_user['id']
         )
+
+        if 'error' in result:
+            return jsonify(result), 400
 
         return jsonify(result)
 

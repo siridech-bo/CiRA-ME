@@ -375,10 +375,11 @@ def train_timesnet_classification(config: dict, data: dict) -> dict:
         'metrics_info': 'Category-based split (no data leakage)' if split_method == 'category' else 'Random split (potential data leakage with overlapping windows)'
     }
 
-    # Per-class metrics
-    per_class_precision = precision_score(y_true, y_pred, average=None, zero_division=0)
-    per_class_recall = recall_score(y_true, y_pred, average=None, zero_division=0)
-    per_class_f1 = f1_score(y_true, y_pred, average=None, zero_division=0)
+    # Per-class metrics — pass labels to ensure all classes are included
+    all_class_labels = list(range(num_classes))
+    per_class_precision = precision_score(y_true, y_pred, average=None, labels=all_class_labels, zero_division=0)
+    per_class_recall = recall_score(y_true, y_pred, average=None, labels=all_class_labels, zero_division=0)
+    per_class_f1 = f1_score(y_true, y_pred, average=None, labels=all_class_labels, zero_division=0)
 
     metrics['per_class_metrics'] = [
         {
@@ -436,19 +437,27 @@ def train_timesnet_classification(config: dict, data: dict) -> dict:
         print(f"[TimesNet DEBUG] y_probs min/max: {y_probs.min():.4f}/{y_probs.max():.4f}", file=sys.stderr)
         print(f"[TimesNet DEBUG] y_probs row sums (should be ~1): {y_probs.sum(axis=1)[:5]}", file=sys.stderr)
 
-        # Compute ROC curve per class and average (SAME as Traditional ML)
+        # Compute ROC curve per class and average - skip classes not in test set
         all_fpr = np.linspace(0, 1, 100)
         mean_tpr = np.zeros_like(all_fpr)
+        classes_in_test = set(np.unique(y_true).tolist())
+        valid_class_count = 0
 
         for i in range(num_classes):
             if i < y_probs.shape[1] and i < y_true_bin.shape[1]:
+                n_positive = int(y_true_bin[:, i].sum())
+                if n_positive == 0 or n_positive == len(y_true_bin[:, i]):
+                    print(f"[TimesNet DEBUG] Class {i} ({class_names[i]}): SKIPPED (n_positive={n_positive}, not in test set)", file=sys.stderr)
+                    continue
                 fpr_i, tpr_i, _ = roc_curve(y_true_bin[:, i], y_probs[:, i])
                 class_auc_i = auc(fpr_i, tpr_i)
                 print(f"[TimesNet DEBUG] Class {i} ({class_names[i]}): AUC={class_auc_i:.4f}, fpr_range=[{fpr_i.min():.3f},{fpr_i.max():.3f}], tpr_range=[{tpr_i.min():.3f},{tpr_i.max():.3f}]", file=sys.stderr)
                 mean_tpr += np.interp(all_fpr, fpr_i, tpr_i)
+                valid_class_count += 1
 
-        mean_tpr /= num_classes
-        print(f"[TimesNet DEBUG] mean_tpr range: [{mean_tpr.min():.4f}, {mean_tpr.max():.4f}]", file=sys.stderr)
+        if valid_class_count > 0:
+            mean_tpr /= valid_class_count
+        print(f"[TimesNet DEBUG] mean_tpr range: [{mean_tpr.min():.4f}, {mean_tpr.max():.4f}], valid_classes={valid_class_count}/{num_classes}", file=sys.stderr)
 
         # Store the averaged curve
         metrics['roc_curve'] = {
@@ -456,16 +465,41 @@ def train_timesnet_classification(config: dict, data: dict) -> dict:
             'tpr': mean_tpr.tolist()
         }
 
-        # Compute AUC using sklearn (same as Traditional ML)
+        # Compute AUC - filter to only classes present in test set
         try:
-            computed_auc = float(roc_auc_score(y_true, y_probs, multi_class='ovr', average='weighted'))
+            # Filter y_true and y_probs to only classes present in test
+            present_classes = sorted(classes_in_test)
+            if len(present_classes) >= 2:
+                mask = np.isin(y_true, present_classes)
+                y_true_filtered = y_true[mask]
+                y_probs_filtered = y_probs[mask][:, present_classes]
+                computed_auc = float(roc_auc_score(
+                    y_true_filtered, y_probs_filtered,
+                    multi_class='ovr', average='weighted',
+                    labels=present_classes
+                ))
+            else:
+                computed_auc = float(auc(all_fpr, mean_tpr)) if valid_class_count > 0 else 0.0
             metrics['auc_roc'] = computed_auc
             metrics['roc_auc'] = computed_auc
-            print(f"[TimesNet] Multiclass ROC-AUC (sklearn ovr weighted): {computed_auc:.4f}", file=sys.stderr)
+            print(f"[TimesNet] Multiclass ROC-AUC: {computed_auc:.4f} (classes in test: {present_classes})", file=sys.stderr)
         except Exception as e:
             print(f"[TimesNet] sklearn roc_auc_score failed: {e}", file=sys.stderr)
             # Fallback: compute from the averaged curve
-            metrics['roc_auc'] = float(auc(all_fpr, mean_tpr))
+            fallback_auc = float(auc(all_fpr, mean_tpr)) if valid_class_count > 0 else 0.0
+            metrics['roc_auc'] = fallback_auc
+            metrics['auc_roc'] = fallback_auc
+
+    # Sanitize NaN/Inf values in metrics to prevent JSON serialization issues
+    def sanitize_value(v):
+        if isinstance(v, float) and (np.isnan(v) or np.isinf(v)):
+            return 0.0
+        if isinstance(v, dict):
+            return {k: sanitize_value(val) for k, val in v.items()}
+        if isinstance(v, list):
+            return [sanitize_value(item) for item in v]
+        return v
+    metrics = sanitize_value(metrics)
 
     print(f"[TimesNet] Classification Metrics - Acc: {metrics['accuracy']:.2%}, F1: {metrics['f1']:.2%}, "
           f"ROC-AUC: {metrics.get('roc_auc', 0):.3f}", file=sys.stderr)

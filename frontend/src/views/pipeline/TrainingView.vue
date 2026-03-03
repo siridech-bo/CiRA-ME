@@ -1490,6 +1490,11 @@ async function trainTimesNetModel() {
     device: selectedDevice.value  // CPU or CUDA
   })
 
+  if (response.data.error) {
+    notificationStore.showError(response.data.error)
+    return
+  }
+
   trainingResult.value = response.data
   pipelineStore.trainingSession = response.data
   notificationStore.showSuccess('TimesNet model trained successfully!')
