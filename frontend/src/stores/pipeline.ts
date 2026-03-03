@@ -208,9 +208,13 @@ export const usePipelineStore = defineStore('pipeline', () => {
       loading.value = true
       error.value = null
 
+      const featureList = features && features.length > 0
+        ? features
+        : (selectedFeatures.value.length > 0 ? selectedFeatures.value : null)
+
       const response = await api.post('/api/features/extract', {
         session_id: windowedSession.value.session_id,
-        features: features || selectedFeatures.value.length > 0 ? selectedFeatures.value : null
+        features: featureList
       })
 
       featureSession.value = response.data

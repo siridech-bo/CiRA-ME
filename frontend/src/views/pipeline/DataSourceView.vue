@@ -82,6 +82,16 @@
             <v-btn
               variant="tonal"
               size="small"
+              color="secondary"
+              prepend-icon="mdi-access-point"
+              class="mr-2"
+              @click="showRecordDialog = true"
+            >
+              Record Sensors
+            </v-btn>
+            <v-btn
+              variant="tonal"
+              size="small"
               color="primary"
               prepend-icon="mdi-upload"
               class="mr-2"
@@ -550,6 +560,211 @@
       </v-card>
     </v-dialog>
 
+    <!-- Record Sensors Dialog -->
+    <v-dialog v-model="showRecordDialog" max-width="550" persistent>
+      <v-card>
+        <v-card-title class="d-flex align-center">
+          <v-icon class="mr-2" color="secondary">mdi-access-point</v-icon>
+          Record System Sensors
+          <v-spacer />
+          <v-btn icon variant="text" @click="closeRecordDialog" :disabled="recording">
+            <v-icon>mdi-close</v-icon>
+          </v-btn>
+        </v-card-title>
+
+        <v-card-text>
+          <!-- Not Recording: Configuration -->
+          <template v-if="!recording && !recordingDone">
+            <div class="text-body-2 text-medium-emphasis mb-4">
+              Record CPU, RAM, disk, network{{ recordHasGpu ? ', GPU' : '' }} sensors from this machine as time series CSV.
+            </div>
+
+            <!-- Mode -->
+            <div class="font-weight-medium mb-2">Recording Mode</div>
+            <v-radio-group v-model="recordMode" hide-details class="mb-4">
+              <v-radio value="anomaly">
+                <template #label>
+                  <div>
+                    <div class="font-weight-medium">Anomaly Detection</div>
+                    <div class="text-caption text-medium-emphasis">
+                      Auto: Normal → CPU Stress (Anomaly) → Recovery
+                    </div>
+                  </div>
+                </template>
+              </v-radio>
+              <v-radio value="classify">
+                <template #label>
+                  <div>
+                    <div class="font-weight-medium">Classification</div>
+                    <div class="text-caption text-medium-emphasis">
+                      Auto: Idle → CPU Stress → IO Stress{{ recordHasGpu ? ' → GPU Stress' : '' }}
+                    </div>
+                  </div>
+                </template>
+              </v-radio>
+              <v-radio value="manual">
+                <template #label>
+                  <div>
+                    <div class="font-weight-medium">Manual Label</div>
+                    <div class="text-caption text-medium-emphasis">
+                      Record with a single custom label (no stress)
+                    </div>
+                  </div>
+                </template>
+              </v-radio>
+            </v-radio-group>
+
+            <!-- Manual label -->
+            <v-text-field
+              v-if="recordMode === 'manual'"
+              v-model="recordLabel"
+              label="Label"
+              density="compact"
+              variant="outlined"
+              class="mb-4"
+              hide-details
+            />
+
+            <!-- Duration & Rate -->
+            <v-row>
+              <v-col cols="6">
+                <v-text-field
+                  v-model.number="recordDuration"
+                  label="Duration (seconds)"
+                  type="number"
+                  :min="10"
+                  :max="600"
+                  density="compact"
+                  variant="outlined"
+                  hide-details
+                />
+              </v-col>
+              <v-col cols="6">
+                <v-text-field
+                  v-model.number="recordRate"
+                  label="Sample Rate (Hz)"
+                  type="number"
+                  :min="1"
+                  :max="10"
+                  density="compact"
+                  variant="outlined"
+                  hide-details
+                />
+              </v-col>
+            </v-row>
+
+            <div class="text-caption text-medium-emphasis mt-2">
+              Total samples: {{ recordDuration * recordRate }} ({{ recordDuration }}s at {{ recordRate }} Hz)
+            </div>
+
+            <!-- Optional filename -->
+            <v-text-field
+              v-model="recordFilename"
+              label="Filename (optional)"
+              density="compact"
+              variant="outlined"
+              class="mt-4"
+              hide-details
+              placeholder="Auto-generated if empty"
+            />
+          </template>
+
+          <!-- Recording in progress -->
+          <template v-if="recording">
+            <div class="text-center py-4">
+              <v-progress-circular
+                :model-value="recordProgress"
+                :size="100"
+                :width="8"
+                color="secondary"
+                class="mb-4"
+              >
+                <span class="text-h6">{{ Math.round(recordProgress) }}%</span>
+              </v-progress-circular>
+
+              <div class="text-body-1 font-weight-medium mb-1">Recording...</div>
+              <div class="text-body-2 text-medium-emphasis mb-2">
+                {{ recordElapsed.toFixed(0) }}s / {{ recordDuration }}s
+              </div>
+
+              <v-chip
+                v-if="recordCurrentPhase"
+                :color="recordCurrentPhase === 'Anomaly' || recordCurrentPhase.includes('stress') ? 'error' : 'success'"
+                variant="flat"
+                size="small"
+              >
+                Phase: {{ recordCurrentPhase }}
+              </v-chip>
+            </div>
+
+            <v-progress-linear
+              :model-value="recordProgress"
+              color="secondary"
+              height="6"
+              rounded
+              class="mt-2"
+            />
+          </template>
+
+          <!-- Recording complete -->
+          <template v-if="recordingDone">
+            <div class="text-center py-4">
+              <v-icon size="64" color="success" class="mb-3">mdi-check-circle</v-icon>
+              <div class="text-body-1 font-weight-medium mb-1">Recording Complete</div>
+              <div class="text-body-2 text-medium-emphasis mb-2">
+                {{ recordTotalSamples }} samples recorded
+              </div>
+              <v-chip color="info" variant="tonal" size="small">
+                {{ recordOutputFilename }}
+              </v-chip>
+            </div>
+          </template>
+
+          <!-- Recording error -->
+          <v-alert v-if="recordError" type="error" variant="tonal" density="compact" class="mt-4">
+            {{ recordError }}
+          </v-alert>
+        </v-card-text>
+
+        <v-card-actions>
+          <v-spacer />
+          <template v-if="!recording && !recordingDone">
+            <v-btn variant="text" @click="closeRecordDialog">Cancel</v-btn>
+            <v-btn
+              color="secondary"
+              variant="flat"
+              @click="startRecording"
+              :loading="recordStarting"
+            >
+              <v-icon start>mdi-record-circle</v-icon>
+              Start Recording
+            </v-btn>
+          </template>
+          <template v-if="recording">
+            <v-btn
+              color="warning"
+              variant="tonal"
+              @click="stopRecording"
+            >
+              <v-icon start>mdi-stop</v-icon>
+              Stop Early
+            </v-btn>
+          </template>
+          <template v-if="recordingDone">
+            <v-btn variant="text" @click="closeRecordDialog">Close</v-btn>
+            <v-btn
+              color="primary"
+              variant="flat"
+              @click="loadRecordedData"
+            >
+              <v-icon start>mdi-play</v-icon>
+              Load This Data
+            </v-btn>
+          </template>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
+
     <!-- Delete Confirmation Dialog (Admin only) -->
     <v-dialog v-model="showDeleteDialog" max-width="450" persistent>
       <v-card>
@@ -654,6 +869,27 @@ const allowedFileTypes = '.csv,.json,.cbor'
 const showDeleteDialog = ref(false)
 const itemToDelete = ref<FileItem | null>(null)
 const deleting = ref(false)
+
+// Sensor recording state
+const showRecordDialog = ref(false)
+const recordMode = ref<'manual' | 'anomaly' | 'classify'>('anomaly')
+const recordDuration = ref(120)
+const recordRate = ref(10)
+const recordLabel = ref('Normal')
+const recordFilename = ref('')
+const recording = ref(false)
+const recordingDone = ref(false)
+const recordStarting = ref(false)
+const recordJobId = ref<string | null>(null)
+const recordElapsed = ref(0)
+const recordProgress = ref(0)
+const recordCurrentPhase = ref('')
+const recordTotalSamples = ref(0)
+const recordOutputFilename = ref('')
+const recordOutputPath = ref('')
+const recordError = ref('')
+const recordHasGpu = ref(false)
+let recordPollTimer: ReturnType<typeof setInterval> | null = null
 
 const formatInfo = computed(() => {
   switch (selectedFormat.value) {
@@ -1282,6 +1518,131 @@ async function executeDelete() {
     notificationStore.showError(e.response?.data?.error || 'Delete failed')
   } finally {
     deleting.value = false
+  }
+}
+
+// Sensor recording methods
+async function startRecording() {
+  recordStarting.value = true
+  recordError.value = ''
+
+  try {
+    const response = await api.post('/api/sensors/start', {
+      mode: recordMode.value,
+      duration: recordDuration.value,
+      rate: recordRate.value,
+      label: recordLabel.value,
+      filename: recordFilename.value || undefined,
+    })
+
+    recordJobId.value = response.data.id
+    recordHasGpu.value = response.data.has_gpu
+    recording.value = true
+    recordingDone.value = false
+    recordCurrentPhase.value = response.data.current_phase || ''
+
+    // Start polling
+    recordPollTimer = setInterval(pollRecordingStatus, 500)
+  } catch (e: any) {
+    recordError.value = e.response?.data?.error || 'Failed to start recording'
+  } finally {
+    recordStarting.value = false
+  }
+}
+
+async function pollRecordingStatus() {
+  if (!recordJobId.value) return
+
+  try {
+    const response = await api.get(`/api/sensors/status/${recordJobId.value}`)
+    const job = response.data
+
+    recordElapsed.value = job.elapsed || 0
+    recordCurrentPhase.value = job.current_phase || ''
+    recordTotalSamples.value = job.samples_collected || 0
+    recordProgress.value = job.total_expected > 0
+      ? Math.min(100, (job.samples_collected / job.total_expected) * 100)
+      : 0
+
+    if (job.status === 'completed') {
+      recording.value = false
+      recordingDone.value = true
+      recordOutputFilename.value = job.output_filename || ''
+      recordOutputPath.value = job.output_path || ''
+      if (recordPollTimer) {
+        clearInterval(recordPollTimer)
+        recordPollTimer = null
+      }
+    }
+  } catch (e: any) {
+    // Silently continue polling
+  }
+}
+
+async function stopRecording() {
+  if (!recordJobId.value) return
+
+  try {
+    await api.post(`/api/sensors/stop/${recordJobId.value}`)
+    // Polling will detect the completed status
+  } catch (e: any) {
+    recordError.value = e.response?.data?.error || 'Failed to stop recording'
+  }
+}
+
+async function loadRecordedData() {
+  if (!recordOutputPath.value) return
+
+  try {
+    loading.value = true
+    // Set format to CSV and preview the recorded file
+    selectedFormat.value = 'csv'
+
+    const response = await api.post('/api/data/preview', {
+      file_path: recordOutputPath.value,
+      rows: 100,
+      format: 'csv',
+    })
+
+    dataPreview.value = response.data
+    selectedFile.value = {
+      name: recordOutputFilename.value,
+      path: recordOutputPath.value,
+      is_dir: false,
+      extension: '.csv',
+      size: null,
+      file_type: 'csv',
+    }
+    selectedFiles.value = []
+
+    closeRecordDialog()
+    notificationStore.showSuccess('Sensor recording loaded successfully')
+
+    // Refresh file browser to show the new file
+    await loadFolders()
+  } catch (e: any) {
+    recordError.value = e.response?.data?.error || 'Failed to load recorded data'
+  } finally {
+    loading.value = false
+  }
+}
+
+function closeRecordDialog() {
+  if (recording.value) return // Don't close while recording
+  showRecordDialog.value = false
+  recording.value = false
+  recordingDone.value = false
+  recordJobId.value = null
+  recordElapsed.value = 0
+  recordProgress.value = 0
+  recordCurrentPhase.value = ''
+  recordTotalSamples.value = 0
+  recordOutputFilename.value = ''
+  recordOutputPath.value = ''
+  recordError.value = ''
+  if (recordPollTimer) {
+    clearInterval(recordPollTimer)
+    recordPollTimer = null
   }
 }
 

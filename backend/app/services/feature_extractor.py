@@ -7,6 +7,7 @@ Supports both:
 Includes intelligent feature selection with statistical and hypothesis testing methods
 """
 
+import logging
 import numpy as np
 import pandas as pd
 import uuid
@@ -16,6 +17,8 @@ from scipy import stats
 from scipy.fft import fft, fftfreq
 from sklearn.feature_selection import VarianceThreshold, mutual_info_classif, SelectKBest, f_classif
 from sklearn.preprocessing import StandardScaler
+
+logger = logging.getLogger(__name__)
 
 # Real tsfresh imports
 try:
@@ -173,9 +176,15 @@ class FeatureExtractor:
             peak_freq_idx = np.argmax(fft_magnitude)
             peak_frequency = fft_freqs[peak_freq_idx]
 
-            # Spectral skewness and kurtosis
-            spectral_skewness = stats.skew(fft_magnitude)
-            spectral_kurtosis = stats.kurtosis(fft_magnitude)
+            # Spectral skewness and kurtosis (suppress warnings for constant signals)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)
+                spectral_skewness = stats.skew(fft_magnitude)
+                spectral_kurtosis = stats.kurtosis(fft_magnitude)
+                if not np.isfinite(spectral_skewness):
+                    spectral_skewness = 0.0
+                if not np.isfinite(spectral_kurtosis):
+                    spectral_kurtosis = 0.0
 
             # Band power (low, mid, high)
             low_mask = (fft_freqs >= 0) & (fft_freqs < sampling_rate / 6)
@@ -246,38 +255,63 @@ class FeatureExtractor:
         all_features = []
         feature_names = []
 
+        logger.info(f"Extracting features from {num_windows} windows, {num_channels} channels")
+        logger.info(f"Sensor columns: {sensor_columns}")
+        if selected_features:
+            logger.info(f"Selected features filter: {selected_features}")
+
         for window_idx, window in enumerate(windows):
             window_features = {}
 
-            # TSFresh features
+            # TSFresh features — suppress RuntimeWarnings from constant-value channels
             if include_tsfresh:
-                for feat_name, feat_func in self.TSFRESH_FEATURES.items():
-                    if selected_features is None or feat_name in selected_features:
-                        try:
-                            values = feat_func(window)
-                            for ch_idx, val in enumerate(values):
-                                col_name = f"{feat_name}_{sensor_columns[ch_idx]}"
-                                window_features[col_name] = val
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", RuntimeWarning)
+                    for feat_name, feat_func in self.TSFRESH_FEATURES.items():
+                        if selected_features is None or feat_name in selected_features:
+                            try:
+                                values = feat_func(window)
+                                for ch_idx, val in enumerate(values):
+                                    col_name = f"{feat_name}_{sensor_columns[ch_idx]}"
+                                    # Replace NaN/Inf with 0
+                                    if not np.isfinite(val):
+                                        val = 0.0
+                                    window_features[col_name] = float(val)
+                                    if window_idx == 0:
+                                        feature_names.append(col_name)
+                            except Exception as e:
                                 if window_idx == 0:
-                                    feature_names.append(col_name)
-                        except Exception:
-                            pass
+                                    logger.warning(f"Feature '{feat_name}' failed: {e}")
 
             # DSP features
             if include_dsp:
-                dsp_features = self._compute_dsp_features(window, sampling_rate)
-                for feat_name, values in dsp_features.items():
-                    if selected_features is None or feat_name in selected_features:
-                        for ch_idx, val in enumerate(values):
-                            col_name = f"{feat_name}_{sensor_columns[ch_idx]}"
-                            window_features[col_name] = val
-                            if window_idx == 0:
-                                feature_names.append(col_name)
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", RuntimeWarning)
+                    try:
+                        dsp_features = self._compute_dsp_features(window, sampling_rate)
+                        for feat_name, values in dsp_features.items():
+                            if selected_features is None or feat_name in selected_features:
+                                for ch_idx, val in enumerate(values):
+                                    col_name = f"{feat_name}_{sensor_columns[ch_idx]}"
+                                    # Replace NaN/Inf with 0
+                                    if not np.isfinite(val):
+                                        val = 0.0
+                                    window_features[col_name] = float(val)
+                                    if window_idx == 0:
+                                        feature_names.append(col_name)
+                    except Exception as e:
+                        if window_idx == 0:
+                            logger.warning(f"DSP features failed: {e}")
 
             all_features.append(window_features)
 
         # Convert to DataFrame
         features_df = pd.DataFrame(all_features)
+
+        # Clean up any remaining NaN/Inf values
+        features_df = features_df.replace([np.inf, -np.inf], 0.0).fillna(0.0)
+
+        logger.info(f"Extracted {len(feature_names)} features from {num_windows} windows")
 
         # Store in session
         feature_session_id = f"features_{session_id}"

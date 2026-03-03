@@ -229,8 +229,18 @@ def extract_features():
             include_tsfresh=include_tsfresh,
             include_dsp=include_dsp
         )
+
+        if result.get('num_features', 0) == 0:
+            return jsonify({
+                'error': 'No features were extracted. This may happen if the data has too few samples or all values are constant. '
+                         'Try recording with longer duration or higher sample rate, or select different features.',
+                'num_windows': result.get('num_windows', 0),
+                'session_id': result.get('session_id')
+            }), 400
+
         return jsonify(result)
     except Exception as e:
+        logger.error(f"Feature extraction error: {e}")
         return jsonify({'error': str(e)}), 400
 
 

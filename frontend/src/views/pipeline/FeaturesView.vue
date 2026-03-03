@@ -1056,9 +1056,14 @@ async function extractFeatures() {
       num_windows: result.data.num_windows,
       feature_set: result.data.feature_set
     })
-    notificationStore.showSuccess('Features extracted successfully')
-    await fetchFeaturePreview()
-    activeTab.value = 'select'
+
+    if (result.data.num_features === 0) {
+      notificationStore.showError('No features were extracted. Check that data has sufficient samples and variation.')
+    } else {
+      notificationStore.showSuccess(`Extracted ${result.data.num_features} features from ${result.data.num_windows} windows`)
+      await fetchFeaturePreview()
+      activeTab.value = 'select'
+    }
   } else {
     notificationStore.showError(result.error || 'Failed to extract features')
   }
