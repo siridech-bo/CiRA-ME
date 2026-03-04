@@ -217,6 +217,26 @@
                 </div>
               </template>
             </v-radio>
+            <v-radio value="rdk_x5">
+              <template #label>
+                <div>
+                  <div class="font-weight-medium">Horizon RDK X5</div>
+                  <div class="text-caption text-medium-emphasis">
+                    4GB RAM, BPU 10 TOPS
+                  </div>
+                </div>
+              </template>
+            </v-radio>
+            <v-radio value="ubuntu_x86">
+              <template #label>
+                <div>
+                  <div class="font-weight-medium">Ubuntu x86 PC</div>
+                  <div class="text-caption text-medium-emphasis">
+                    Any Linux x86_64 machine
+                  </div>
+                </div>
+              </template>
+            </v-radio>
             <v-radio value="custom_ssh">
               <template #label>
                 <div>
@@ -269,6 +289,26 @@
 
           <v-divider class="my-4" />
 
+          <div class="text-subtitle-2 font-weight-medium mb-2">Deploy Mode</div>
+          <v-btn-toggle v-model="deployMode" mandatory density="compact" class="mb-3">
+            <v-btn value="docker" size="small">
+              <v-icon start size="small">mdi-docker</v-icon>
+              Docker Container
+            </v-btn>
+            <v-btn value="files" size="small">
+              <v-icon start size="small">mdi-file-code</v-icon>
+              Python Files
+            </v-btn>
+          </v-btn-toggle>
+          <v-alert
+            v-if="deployMode === 'docker'"
+            type="info" variant="tonal" density="compact" class="mb-3 text-caption"
+          >
+            Requires Docker installed on the remote device.
+            Transfers Dockerfile + docker-compose.yml and runs
+            <code>docker compose up --build -d</code>.
+          </v-alert>
+
           <v-checkbox
             v-model="includeScaler"
             label="Include feature scaler"
@@ -303,7 +343,7 @@
             v-model="sshConfig.username"
             label="Username"
             prepend-inner-icon="mdi-account"
-            placeholder="jetson"
+            placeholder="cira"
           />
 
           <v-text-field
@@ -326,7 +366,7 @@
             v-model="sshConfig.remote_path"
             label="Remote Path"
             prepend-inner-icon="mdi-folder"
-            placeholder="/home/jetson/models"
+            placeholder="~/cira_models"
           />
 
           <v-btn
@@ -373,7 +413,7 @@
                   indeterminate
                 />
               </div>
-              <span class="text-capitalize">{{ step.step.replace('_', ' ') }}</span>
+              <span class="text-capitalize">{{ step.step.replace(/_/g, ' ') }}</span>
             </div>
           </div>
 
@@ -387,6 +427,143 @@
             <div class="text-caption">
               Model deployed to: {{ deploymentResult.remote_path }}
             </div>
+          </v-alert>
+        </v-card>
+
+        <!-- Post-Deployment: Validate & Run Inference -->
+        <v-card v-if="deploymentResult?.status === 'completed'" class="pa-4 mt-4">
+          <h3 class="text-subtitle-1 font-weight-bold mb-3">
+            <v-icon start color="info">mdi-check-network</v-icon>
+            Validate & Run Inference
+          </h3>
+
+          <!-- Step 5: Check Remote Files -->
+          <div class="text-subtitle-2 font-weight-medium mb-2">Step 5 — Verify Remote Files</div>
+          <v-btn
+            color="info" variant="outlined" size="small"
+            :loading="checkingFiles"
+            @click="checkRemoteFiles"
+          >
+            <v-icon start size="small">mdi-folder-search</v-icon>
+            Check Remote Files
+          </v-btn>
+
+          <v-card v-if="remoteFiles" variant="tonal" class="pa-3 mt-3">
+            <div class="text-caption font-weight-bold mb-1">
+              <v-icon size="x-small" class="mr-1">mdi-folder</v-icon>
+              {{ deploymentResult.remote_path }}
+            </div>
+            <pre class="text-caption" style="white-space: pre-wrap; font-family: monospace;">{{ remoteFiles.files }}</pre>
+            <template v-if="remoteFiles.containers">
+              <v-divider class="my-2" />
+              <div class="text-caption font-weight-bold mb-1">
+                <v-icon size="x-small" class="mr-1">mdi-docker</v-icon>
+                Docker Containers
+              </div>
+              <pre class="text-caption" style="white-space: pre-wrap; font-family: monospace;">{{ remoteFiles.containers }}</pre>
+            </template>
+          </v-card>
+
+          <v-divider class="my-4" />
+
+          <!-- Step 6: Run Inference -->
+          <div class="text-subtitle-2 font-weight-medium mb-2">Step 6 — Run Inference on Remote</div>
+          <p class="text-caption text-medium-emphasis mb-3">
+            Upload a CSV with the same sensor columns as training data.
+            It will be transferred to the remote device and inference will run there.
+          </p>
+
+          <v-file-input
+            v-model="inferenceFile"
+            label="Upload CSV for inference"
+            accept=".csv"
+            prepend-icon="mdi-file-delimited"
+            show-size density="compact"
+            class="mb-2"
+          />
+
+          <v-btn
+            color="primary" variant="flat" size="small"
+            :disabled="!inferenceFile"
+            :loading="runningInference"
+            @click="runRemoteInference"
+          >
+            <v-icon start size="small">mdi-play-circle</v-icon>
+            Run Inference on Remote
+          </v-btn>
+
+          <!-- Inference Output -->
+          <v-card v-if="inferenceOutput" variant="outlined" class="pa-3 mt-3">
+            <div class="d-flex align-center mb-3">
+              <v-icon color="success" class="mr-2">mdi-check-circle</v-icon>
+              <span class="text-subtitle-2 font-weight-bold">
+                Inference Results — {{ inferenceOutput.csv }}
+              </span>
+            </div>
+
+            <!-- Metric chips -->
+            <v-row dense class="mb-3">
+              <v-col cols="6" sm="3">
+                <v-card variant="tonal" color="primary" class="pa-2 text-center">
+                  <div class="text-caption text-medium-emphasis">Windows</div>
+                  <div class="text-h6">{{ inferenceOutput.num_windows ?? '—' }}</div>
+                </v-card>
+              </v-col>
+              <v-col cols="6" sm="3">
+                <v-card variant="tonal" color="info" class="pa-2 text-center">
+                  <div class="text-caption text-medium-emphasis">Features</div>
+                  <div class="text-h6">{{ inferenceOutput.num_features ?? '—' }}</div>
+                </v-card>
+              </v-col>
+              <v-col cols="6" sm="3">
+                <v-card variant="tonal" color="success" class="pa-2 text-center">
+                  <div class="text-caption text-medium-emphasis">Avg Confidence</div>
+                  <div class="text-h6">
+                    {{ inferenceOutput.avg_confidence != null ? inferenceOutput.avg_confidence + '%' : '—' }}
+                  </div>
+                </v-card>
+              </v-col>
+              <v-col cols="6" sm="3">
+                <v-card variant="tonal" color="warning" class="pa-2 text-center">
+                  <div class="text-caption text-medium-emphasis">Classes</div>
+                  <div class="text-h6">
+                    {{ inferenceOutput.prediction_distribution ? Object.keys(inferenceOutput.prediction_distribution).length : '—' }}
+                  </div>
+                </v-card>
+              </v-col>
+            </v-row>
+
+            <!-- Prediction distribution chips -->
+            <div v-if="inferenceOutput.prediction_distribution" class="mb-3">
+              <div class="text-caption text-medium-emphasis mb-1">Prediction Distribution</div>
+              <div class="d-flex flex-wrap ga-2">
+                <v-chip
+                  v-for="(count, label) in inferenceOutput.prediction_distribution"
+                  :key="label"
+                  size="small"
+                  variant="tonal"
+                  color="primary"
+                >
+                  {{ label }}: <strong class="ml-1">{{ count }}</strong>
+                </v-chip>
+              </div>
+            </div>
+
+            <!-- Raw console (collapsed by default) -->
+            <v-expansion-panels variant="accordion" class="mt-2">
+              <v-expansion-panel>
+                <v-expansion-panel-title class="text-caption">
+                  <v-icon size="x-small" class="mr-1">mdi-console</v-icon>
+                  Raw console output
+                </v-expansion-panel-title>
+                <v-expansion-panel-text>
+                  <pre class="text-caption" style="white-space: pre-wrap; font-family: monospace; max-height: 250px; overflow-y: auto;">{{ inferenceOutput.output }}</pre>
+                </v-expansion-panel-text>
+              </v-expansion-panel>
+            </v-expansion-panels>
+          </v-card>
+          <v-alert v-if="inferenceError" type="error" variant="tonal" class="mt-3" density="compact">
+            {{ inferenceError }}
           </v-alert>
         </v-card>
       </v-col>
@@ -580,6 +757,7 @@ const loadingSavedModels = ref(false)
 // Deploy config
 const targetDevice = ref('jetson_nano')
 const exportFormat = ref('onnx')
+const deployMode = ref<'docker' | 'files'>('docker')
 const includeScaler = ref(true)
 const includeInferenceScript = ref(true)
 const includeRequirements = ref(true)
@@ -587,10 +765,10 @@ const showPassword = ref(false)
 
 const sshConfig = reactive({
   host: '',
-  username: 'jetson',
+  username: '',
   password: '',
   port: 22,
-  remote_path: '/home/jetson/models'
+  remote_path: '~/cira_models'
 })
 
 const testingConnection = ref(false)
@@ -606,6 +784,14 @@ const evaluating = ref(false)
 const evalResult = ref<any>(null)
 const evalFile = ref<File | null>(null)
 const downloadingPackage = ref(false)
+
+// Post-deployment state
+const checkingFiles = ref(false)
+const remoteFiles = ref<any>(null)
+const inferenceFile = ref<File | null>(null)
+const runningInference = ref(false)
+const inferenceOutput = ref<any>(null)
+const inferenceError = ref<string | null>(null)
 
 // Computed
 const hasModelSelected = computed(() => {
@@ -787,6 +973,7 @@ async function deploy() {
     const payload: any = {
       target_type: targetDevice.value,
       export_format: exportFormat.value,
+      deploy_mode: deployMode.value,
       ...sshConfig,
       include_scaler: includeScaler.value,
       include_inference_script: includeInferenceScript.value,
@@ -806,6 +993,51 @@ async function deploy() {
     notificationStore.showError(e.response?.data?.error || 'Deployment failed')
   } finally {
     deploying.value = false
+  }
+}
+
+async function checkRemoteFiles() {
+  if (!deploymentResult.value) return
+  checkingFiles.value = true
+  remoteFiles.value = null
+  try {
+    const res = await api.post('/api/deployment/remote-files', {
+      ...sshConfig,
+      remote_path: deploymentResult.value.remote_path
+    })
+    remoteFiles.value = res.data
+  } catch (e: any) {
+    notificationStore.showError(e.response?.data?.error || 'Failed to list remote files')
+  } finally {
+    checkingFiles.value = false
+  }
+}
+
+async function runRemoteInference() {
+  if (!inferenceFile.value || !deploymentResult.value) return
+  runningInference.value = true
+  inferenceOutput.value = null
+  inferenceError.value = null
+  try {
+    const form = new FormData()
+    form.append('file', inferenceFile.value)
+    form.append('host', sshConfig.host)
+    form.append('username', sshConfig.username)
+    form.append('password', sshConfig.password)
+    form.append('port', String(sshConfig.port))
+    form.append('remote_path', deploymentResult.value.remote_path)
+    form.append('deploy_mode', deploymentResult.value.deploy_mode || 'docker')
+    form.append('service_name', deploymentResult.value.service_name || 'inference')
+    const res = await api.post('/api/deployment/run-inference', form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 180000
+    })
+    inferenceOutput.value = res.data
+    notificationStore.showSuccess('Inference completed on remote device')
+  } catch (e: any) {
+    inferenceError.value = e.response?.data?.error || 'Inference failed'
+  } finally {
+    runningInference.value = false
   }
 }
 

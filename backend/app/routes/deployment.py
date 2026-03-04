@@ -36,6 +36,18 @@ def get_deployment_targets():
                 'formats': ['onnx', 'pickle']
             },
             {
+                'id': 'rdk_x5',
+                'name': 'Horizon RDK X5',
+                'description': '4GB RAM, BPU 10 TOPS',
+                'formats': ['onnx', 'pickle']
+            },
+            {
+                'id': 'ubuntu_x86',
+                'name': 'Ubuntu x86 PC',
+                'description': 'Any Linux x86_64 machine',
+                'formats': ['onnx', 'pickle', 'joblib']
+            },
+            {
                 'id': 'custom_ssh',
                 'name': 'Custom SSH Target',
                 'description': 'Any Linux device with SSH access',
@@ -105,7 +117,8 @@ def deploy_model():
     options = {
         'include_scaler': data.get('include_scaler', True),
         'include_inference_script': data.get('include_inference_script', True),
-        'include_requirements': data.get('include_requirements', True)
+        'include_requirements': data.get('include_requirements', True),
+        'deploy_mode': data.get('deploy_mode', 'files'),  # 'files' | 'docker'
     }
 
     if not training_session_id and not saved_model_id:
@@ -131,13 +144,15 @@ def deploy_model():
             # Use a synthetic session ID for the deployer
             training_session_id = f"saved_{saved_model_id}"
 
+        pipeline_config = saved_model['pipeline_config'] if saved_model_id else {}
         result = deployer.deploy(
             training_session_id=training_session_id,
             target_type=target_type,
             export_format=export_format,
             ssh_config=ssh_config,
             options=options,
-            saved_model_session=saved_model_session
+            saved_model_session=saved_model_session,
+            pipeline_config=pipeline_config
         )
         return jsonify(result)
     except Exception as e:
@@ -225,5 +240,57 @@ def generate_package(model_id):
             download_name=result['filename'],
             mimetype='application/zip'
         )
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+
+@deployment_bp.route('/remote-files', methods=['POST'])
+@login_required
+def list_remote_files():
+    """List files and containers on the remote deployment host."""
+    data = request.get_json()
+    ssh_config = {
+        'host': data.get('host'),
+        'username': data.get('username'),
+        'password': data.get('password'),
+        'port': data.get('port', 22),
+    }
+    remote_path = data.get('remote_path', '~/cira_models')
+    try:
+        deployer = Deployer()
+        result = deployer.list_remote_files(ssh_config, remote_path)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+
+@deployment_bp.route('/run-inference', methods=['POST'])
+@login_required
+def run_inference_remote():
+    """Upload a CSV and run inference on the remote device."""
+    ssh_host = request.form.get('host')
+    ssh_username = request.form.get('username')
+    ssh_password = request.form.get('password')
+    ssh_port = int(request.form.get('port', 22))
+    remote_path = request.form.get('remote_path', '~/cira_models')
+    deploy_mode = request.form.get('deploy_mode', 'docker')
+    service_name = request.form.get('service_name', 'inference')
+
+    if 'file' not in request.files:
+        return jsonify({'error': 'No CSV file provided'}), 400
+    f = request.files['file']
+    csv_bytes = f.read()
+
+    ssh_config = {
+        'host': ssh_host, 'username': ssh_username,
+        'password': ssh_password, 'port': ssh_port,
+    }
+    try:
+        deployer = Deployer()
+        result = deployer.run_inference_remote(
+            ssh_config, remote_path, deploy_mode, service_name,
+            csv_bytes, f.filename
+        )
+        return jsonify(result)
     except Exception as e:
         return jsonify({'error': str(e)}), 400

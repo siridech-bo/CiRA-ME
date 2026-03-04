@@ -98,6 +98,44 @@ class Deployer:
         finally:
             client.close()
 
+    def generate_dockerfile(self, approach: str, algorithm: str) -> str:
+        """Generate a Dockerfile for the inference container."""
+        is_dl = approach == 'dl' or algorithm.lower() == 'timesnet'
+        pyod_algorithms = {'iforest', 'lof', 'ocsvm', 'hbos', 'knn', 'copod', 'ecod', 'suod'}
+        needs_pyod = algorithm.lower() in pyod_algorithms
+
+        base_pkgs = "numpy scipy pandas scikit-learn"
+        if needs_pyod:
+            base_pkgs += " pyod"
+        if is_dl:
+            base_pkgs = "numpy scipy pandas torch --index-url https://download.pytorch.org/whl/cpu"
+
+        return f'''FROM python:3.10-slim
+
+WORKDIR /app
+
+# Install dependencies
+RUN pip install --no-cache-dir {base_pkgs}
+
+# Copy model artifacts
+COPY model.pkl inference.py pipeline_config.json ./
+
+# Default: run inference on /data/input.csv, write to /data/output.csv
+CMD ["python", "inference.py", "model.pkl", "/data/input.csv"]
+'''
+
+    def generate_docker_compose(self, service_name: str) -> str:
+        """Generate a docker-compose.yml for the inference service."""
+        safe_name = service_name.lower().replace(' ', '_').replace('-', '_')[:20]
+        return f'''services:
+  {safe_name}:
+    build: .
+    restart: unless-stopped
+    volumes:
+      - ./data:/data
+    command: ["python", "inference.py", "model.pkl", "/data/input.csv"]
+'''
+
     def deploy(
         self,
         training_session_id: str,
@@ -105,7 +143,8 @@ class Deployer:
         export_format: str,
         ssh_config: Dict,
         options: Dict,
-        saved_model_session: Dict = None
+        saved_model_session: Dict = None,
+        pipeline_config: Dict = None
     ) -> Dict[str, Any]:
         """Deploy a trained model to an edge device via SSH.
 
@@ -147,26 +186,64 @@ class Deployer:
 
         _deployments[deployment_id] = deployment_status
 
+        deploy_mode = options.get('deploy_mode', 'files')
+        pipeline_config = pipeline_config or {}
+
         try:
-            # Step 1: Export model
+            # Step 1: Locate model file
             deployment_status['steps'].append({'step': 'export', 'status': 'in_progress'})
 
-            from .ml_trainer import MLTrainer
-            trainer = MLTrainer()
-            export_result = trainer.export_model(training_session_id, export_format)
-            model_path = export_result['path']
+            # For saved models use model_path directly (already a .pkl on disk)
+            # For in-memory sessions, export via MLTrainer
+            if saved_model_session and saved_model_session.get('model_path'):
+                model_path = saved_model_session['model_path']
+            else:
+                from .ml_trainer import MLTrainer
+                trainer = MLTrainer()
+                export_result = trainer.export_model(training_session_id, export_format)
+                model_path = export_result['path']
 
             deployment_status['steps'][-1]['status'] = 'completed'
-            deployment_status['steps'][-1]['result'] = export_result
+            deployment_status['steps'][-1]['result'] = {'path': model_path}
 
-            # Step 2: Generate inference script
-            if options.get('include_inference_script', True):
-                deployment_status['steps'].append({'step': 'generate_script', 'status': 'in_progress'})
+            # Step 2: Generate inference script (+ Dockerfile if docker mode)
+            deployment_status['steps'].append({'step': 'generate_script', 'status': 'in_progress'})
 
-                script_result = self.generate_inference_script(training_session_id, 'python')
-                script_path = script_result['path']
+            algorithm = session.get('algorithm', 'unknown')
+            mode = session.get('mode', 'classification')
+            approach = pipeline_config.get('training_approach', 'ml')
 
-                deployment_status['steps'][-1]['status'] = 'completed'
+            if pipeline_config.get('normalization'):
+                # Full pipeline script (preferred — uses saved normalization/features)
+                script_content = self.generate_full_inference_script(
+                    pipeline_config, algorithm, mode)
+            else:
+                script_result = self.generate_inference_script(training_session_id, 'python',
+                                                                saved_model_session=session)
+                script_content = script_result['script']
+
+            import tempfile, json as _json
+            tmp_dir = tempfile.mkdtemp()
+            script_path = os.path.join(tmp_dir, 'inference.py')
+            with open(script_path, 'w') as f:
+                f.write(script_content)
+
+            # Write pipeline_config.json
+            config_path = os.path.join(tmp_dir, 'pipeline_config.json')
+            with open(config_path, 'w') as f:
+                _json.dump(pipeline_config, f, indent=2, default=str)
+
+            if deploy_mode == 'docker':
+                dockerfile_content = self.generate_dockerfile(approach, algorithm)
+                compose_content = self.generate_docker_compose(algorithm)
+                dockerfile_path = os.path.join(tmp_dir, 'Dockerfile')
+                compose_path = os.path.join(tmp_dir, 'docker-compose.yml')
+                with open(dockerfile_path, 'w') as f:
+                    f.write(dockerfile_content)
+                with open(compose_path, 'w') as f:
+                    f.write(compose_content)
+
+            deployment_status['steps'][-1]['status'] = 'completed'
 
             # Step 3: Connect via SSH
             deployment_status['steps'].append({'step': 'ssh_connect', 'status': 'in_progress'})
@@ -197,8 +274,19 @@ class Deployer:
             # Step 4: Create remote directory
             deployment_status['steps'].append({'step': 'create_directory', 'status': 'in_progress'})
 
-            remote_path = ssh_config.get('remote_path', '/home/user/models')
-            client.exec_command(f'mkdir -p {remote_path}')
+            remote_path = ssh_config.get('remote_path', '~/cira_models')
+            # Expand ~ to absolute path on the remote
+            _, out, _ = client.exec_command('echo $HOME')
+            out.channel.recv_exit_status()
+            home_dir = out.read().decode().strip()
+            if home_dir:
+                remote_path = remote_path.replace('~', home_dir)
+            # Create directory and block until done
+            _, stdout, stderr = client.exec_command(f'mkdir -p {remote_path}')
+            exit_code = stdout.channel.recv_exit_status()
+            if exit_code != 0:
+                err = stderr.read().decode().strip()
+                raise RuntimeError(f"Failed to create remote directory {remote_path}: {err}")
 
             deployment_status['steps'][-1]['status'] = 'completed'
 
@@ -207,33 +295,41 @@ class Deployer:
 
             scp = SCPClient(client.get_transport())
 
-            # Transfer model
-            remote_model_path = os.path.join(remote_path, os.path.basename(model_path))
-            scp.put(model_path, remote_model_path)
+            # Always transfer model and inference script
+            scp.put(model_path, os.path.join(remote_path, 'model.pkl'))
+            scp.put(script_path, os.path.join(remote_path, 'inference.py'))
+            scp.put(config_path, os.path.join(remote_path, 'pipeline_config.json'))
 
-            # Transfer inference script
-            if options.get('include_inference_script', True):
-                remote_script_path = os.path.join(remote_path, 'inference.py')
-                scp.put(script_path, remote_script_path)
-
-            # Transfer scaler if included
-            if options.get('include_scaler', True):
-                scaler_path = model_path.replace('.onnx', '_scaler.pkl').replace('.joblib', '_scaler.pkl')
-                if os.path.exists(scaler_path):
-                    remote_scaler_path = os.path.join(remote_path, os.path.basename(scaler_path))
-                    scp.put(scaler_path, remote_scaler_path)
+            if deploy_mode == 'docker':
+                scp.put(dockerfile_path, os.path.join(remote_path, 'Dockerfile'))
+                scp.put(compose_path, os.path.join(remote_path, 'docker-compose.yml'))
+                # Create data directory on remote for input/output CSVs
+                client.exec_command(f'mkdir -p {remote_path}/data')
 
             scp.close()
             deployment_status['steps'][-1]['status'] = 'completed'
 
-            # Step 6: Validate deployment
+            # Step 6: Validate / start container
             deployment_status['steps'].append({'step': 'validate', 'status': 'in_progress'})
 
-            stdin, stdout, stderr = client.exec_command(f'ls -la {remote_path}')
-            file_list = stdout.read().decode('utf-8')
+            if deploy_mode == 'docker':
+                # Build and start Docker container on remote
+                build_cmd = f'cd {remote_path} && docker compose up --build -d 2>&1'
+                stdin, stdout, stderr = client.exec_command(build_cmd, timeout=300)
+                build_output = stdout.read().decode('utf-8')
+                # Verify container is running
+                stdin2, stdout2, _ = client.exec_command(f'docker ps --filter "status=running" 2>&1')
+                ps_output = stdout2.read().decode('utf-8')
+                deployment_status['steps'][-1]['result'] = {
+                    'build_output': build_output[-1000:],  # last 1000 chars
+                    'docker_ps': ps_output,
+                }
+            else:
+                stdin, stdout, stderr = client.exec_command(f'ls -la {remote_path}')
+                file_list = stdout.read().decode('utf-8')
+                deployment_status['steps'][-1]['result'] = {'files': file_list}
 
             deployment_status['steps'][-1]['status'] = 'completed'
-            deployment_status['steps'][-1]['result'] = {'files': file_list}
 
             client.close()
 
@@ -242,10 +338,13 @@ class Deployer:
             deployment_status['completed_at'] = datetime.utcnow().isoformat()
             deployment_status['remote_path'] = remote_path
 
+            safe_name = algorithm.lower().replace(' ', '_').replace('-', '_')[:20]
             return {
                 'deployment_id': deployment_id,
                 'status': 'completed',
                 'remote_path': remote_path,
+                'deploy_mode': deploy_mode,
+                'service_name': safe_name,
                 'steps': deployment_status['steps'],
                 'message': 'Deployment successful'
             }
@@ -256,6 +355,127 @@ class Deployer:
             deployment_status['completed_at'] = datetime.utcnow().isoformat()
 
             raise
+
+    def list_remote_files(self, ssh_config: Dict, remote_path: str) -> Dict[str, Any]:
+        """List files in the remote deployment directory."""
+        import paramiko
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        try:
+            client.connect(ssh_config['host'], port=ssh_config.get('port', 22),
+                           username=ssh_config['username'],
+                           password=ssh_config.get('password'), timeout=10)
+            _, out, _ = client.exec_command(f'ls -lh {remote_path} 2>&1')
+            out.channel.recv_exit_status()
+            files = out.read().decode()
+            _, out2, _ = client.exec_command(
+                f'docker ps --format "table {{{{.Names}}}}\\t{{{{.Status}}}}\\t{{{{.Image}}}}" 2>&1')
+            out2.channel.recv_exit_status()
+            containers = out2.read().decode()
+            return {'files': files, 'containers': containers}
+        finally:
+            client.close()
+
+    def run_inference_remote(self, ssh_config: Dict, remote_path: str,
+                              deploy_mode: str, service_name: str,
+                              csv_bytes: bytes, csv_filename: str) -> Dict[str, Any]:
+        """Upload a CSV to the remote device and run inference."""
+        import paramiko
+        from scp import SCPClient
+        import tempfile
+
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        try:
+            client.connect(ssh_config['host'], port=ssh_config.get('port', 22),
+                           username=ssh_config['username'],
+                           password=ssh_config.get('password'), timeout=10)
+
+            # Write CSV to temp file and SCP to remote data/input.csv
+            with tempfile.NamedTemporaryFile(suffix='.csv', delete=False) as tmp:
+                tmp.write(csv_bytes)
+                tmp_path = tmp.name
+
+            scp = SCPClient(client.get_transport())
+            remote_csv = os.path.join(remote_path, 'data', 'input.csv')
+            # Ensure data dir exists
+            _, out, _ = client.exec_command(f'mkdir -p {remote_path}/data')
+            out.channel.recv_exit_status()
+            scp.put(tmp_path, remote_csv)
+            scp.close()
+            os.unlink(tmp_path)
+
+            # Run inference directly with python3 (most reliable over SSH/paramiko).
+            def _ssh_run(cmd, timeout=120):
+                _, o, e = client.exec_command(cmd, timeout=timeout)
+                o.channel.recv_exit_status()
+                return (o.read().decode('utf-8', errors='replace'),
+                        e.read().decode('utf-8', errors='replace'))
+
+            infer_cmd = f'cd {remote_path} && python3 -u inference.py model.pkl data/input.csv'
+            stdout_data, stderr_data = _ssh_run(infer_cmd)
+
+            # Detect numpy/sklearn version mismatch (model saved on newer numpy 2.x)
+            needs_upgrade = (
+                "numpy._core" in stderr_data or
+                "No module named 'numpy._core'" in stderr_data or
+                "binary incompatibility" in stderr_data or
+                "ModuleNotFoundError" in stderr_data
+            )
+            if needs_upgrade:
+                # Upgrade to numpy-2.x-compatible stack (works on Python 3.10+)
+                upgrade_cmd = (
+                    "pip3 install -q 'numpy>=2.0' 'pandas>=2.2' "
+                    "'scikit-learn>=1.5,<1.8' 'scipy>=1.13' && "
+                    f"cd {remote_path} && python3 -u inference.py model.pkl data/input.csv"
+                )
+                stdout_data, stderr_data = _ssh_run(upgrade_cmd, timeout=300)
+
+            output = stdout_data
+            if stderr_data:
+                output = (stdout_data + '\n[stderr]\n' + stderr_data).strip()
+            if not output:
+                output = 'No output from inference'
+
+            parsed = self._parse_inference_output(output)
+            return {'success': True, 'output': output, 'csv': csv_filename, **parsed}
+        finally:
+            client.close()
+
+    def _parse_inference_output(self, output: str) -> dict:
+        """Parse raw inference.py stdout into structured metrics."""
+        import re, ast
+        result = {
+            'num_windows': None,
+            'prediction_distribution': None,
+            'avg_confidence': None,
+            'num_features': None,
+        }
+
+        # Windows created
+        m = re.search(r'Created (\d+) windows', output)
+        if m:
+            result['num_windows'] = int(m.group(1))
+
+        # Features extracted
+        m = re.search(r'Extracted (\d+) features', output)
+        if m:
+            result['num_features'] = int(m.group(1))
+
+        # Summary dict e.g. Summary: {'Normal': 45, 'Anomaly': 12}
+        m = re.search(r'Summary:\s*(\{[^\}]+\})', output)
+        if m:
+            try:
+                result['prediction_distribution'] = ast.literal_eval(m.group(1))
+            except Exception:
+                pass
+
+        # Confidence values from "Window N: Label (XX.X%)"
+        confidences = [float(x) for x in re.findall(r'\((\d+\.\d+)%\)', output)]
+        if confidences:
+            result['avg_confidence'] = round(sum(confidences) / len(confidences), 1)
+
+        return result
 
     def get_status(self, deployment_id: str) -> Dict[str, Any]:
         """Get the status of a deployment."""
