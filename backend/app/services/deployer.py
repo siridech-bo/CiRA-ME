@@ -215,8 +215,11 @@ CMD ["python", "inference.py", "model.pkl", "/data/input.csv"]
 
             if pipeline_config.get('normalization'):
                 # Full pipeline script (preferred — uses saved normalization/features)
-                script_content = self.generate_full_inference_script(
-                    pipeline_config, algorithm, mode)
+                if approach == 'dl':
+                    script_content = self._generate_dl_inference_script(pipeline_config, algorithm)
+                else:
+                    script_content = self.generate_full_inference_script(
+                        pipeline_config, algorithm, mode)
             else:
                 script_result = self.generate_inference_script(training_session_id, 'python',
                                                                 saved_model_session=session)
@@ -1082,7 +1085,15 @@ if __name__ == "__main__":
 
     def _generate_dl_inference_script(self, pipeline_config: dict,
                                        algorithm: str) -> str:
-        """Generate inference script for TimesNet deployment."""
+        """Generate a self-contained TimesNet inference script with embedded architecture.
+
+        Architectures and state-dict format exactly match torch_subprocess.py:
+          build_timesnet_encoder()     — anomaly detection
+          build_timesnet_classifier()  — classification
+        Weights are stored as plain Python lists (via .tolist()) nested one level deep
+        under model_data["model_state"]["model_state_dict"], and must be converted back
+        to tensors before load_state_dict().
+        """
         norm = pipeline_config.get('normalization', {})
         wc = pipeline_config.get('windowing', {})
         sensor_columns = norm.get('sensor_columns', [])
@@ -1098,7 +1109,7 @@ Algorithm: {algorithm}
 Generated: {datetime.utcnow().isoformat()}
 
 Usage: python inference.py <model.pkl> <data.csv>
-NOTE: Requires PyTorch. Install with: pip install torch
+Requires: torch, numpy, pandas  (pip install torch numpy pandas)
 """
 
 import sys
@@ -1109,16 +1120,97 @@ import pandas as pd
 SENSOR_COLUMNS = {sensor_columns}
 WINDOW_SIZE = {window_size}
 STRIDE = {stride}
-CHANNEL_MIN = np.array({channel_min})
-CHANNEL_MAX = np.array({channel_max})
+CHANNEL_MIN = np.array({channel_min}, dtype=np.float32)
+CHANNEL_MAX = np.array({channel_max}, dtype=np.float32)
 
+
+# ===== Exact TimesNet architectures (mirrors torch_subprocess.py) =====
+
+def _build_encoder(cfg):
+    """Anomaly encoder — matches build_timesnet_encoder() in torch_subprocess.py."""
+    import torch.nn as nn
+    enc_in  = cfg.get("enc_in",  3)
+    d_model = cfg.get("d_model", 64)
+    d_ff    = cfg.get("d_ff",    128)
+    dropout = cfg.get("dropout", 0.1)
+
+    class Encoder(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.embed   = nn.Linear(enc_in, d_model)
+            self.encoder = nn.Sequential(
+                nn.Conv1d(d_model, d_ff, kernel_size=3, padding=1), nn.ReLU(),
+                nn.Dropout(dropout),
+                nn.Conv1d(d_ff, d_model, kernel_size=3, padding=1), nn.ReLU(),
+            )
+            self.decoder = nn.Sequential(
+                nn.Conv1d(d_model, d_ff, kernel_size=3, padding=1), nn.ReLU(),
+                nn.Dropout(dropout),
+                nn.Conv1d(d_ff, d_model, kernel_size=3, padding=1),
+            )
+            self.projection = nn.Linear(d_model, enc_in)
+
+        def forward(self, x):
+            x = self.embed(x).transpose(1, 2)
+            x = self.decoder(self.encoder(x)).transpose(1, 2)
+            return self.projection(x)
+
+    return Encoder()
+
+
+def _build_classifier(cfg, num_classes):
+    """Classifier — matches build_timesnet_classifier() in torch_subprocess.py."""
+    import torch.nn as nn
+    enc_in  = cfg.get("enc_in",  3)
+    d_model = cfg.get("d_model", 64)
+    d_ff    = cfg.get("d_ff",    128)
+    dropout = cfg.get("dropout", 0.1)
+
+    class Classifier(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.embed      = nn.Linear(enc_in, d_model)
+            self.encoder    = nn.Sequential(
+                nn.Conv1d(d_model, d_ff, kernel_size=3, padding=1), nn.ReLU(),
+                nn.Dropout(dropout),
+                nn.Conv1d(d_ff, d_model, kernel_size=3, padding=1), nn.ReLU(),
+                nn.Dropout(dropout),
+            )
+            self.pool       = nn.AdaptiveAvgPool1d(1)
+            self.classifier = nn.Sequential(
+                nn.Linear(d_model, d_ff), nn.ReLU(),
+                nn.Dropout(dropout),
+                nn.Linear(d_ff, num_classes),
+            )
+
+        def forward(self, x):
+            x = self.embed(x).transpose(1, 2)
+            x = self.pool(self.encoder(x)).squeeze(-1)
+            return self.classifier(x)
+
+    return Classifier()
+
+
+def _load_state_dict(model_data):
+    """
+    Weights are stored as Python lists (via .tolist()) one level deep:
+      model_data["model_state"]["model_state_dict"] -> dict of lists
+    Convert to float32 tensors before load_state_dict().
+    """
+    import torch
+    inner = model_data.get("model_state", {{}})
+    raw   = inner.get("model_state_dict", {{}})
+    return {{k: torch.tensor(np.array(v, dtype=np.float32)) for k, v in raw.items()}}
+
+
+# ===== Pipeline =====
 
 def load_csv(csv_path):
     df = pd.read_csv(csv_path)
     missing = [c for c in SENSOR_COLUMNS if c not in df.columns]
     if missing:
         raise ValueError(f"CSV missing columns: {{missing}}")
-    return df[SENSOR_COLUMNS].values
+    return df[SENSOR_COLUMNS].values.astype(np.float32)
 
 
 def apply_windowing(data):
@@ -1126,7 +1218,7 @@ def apply_windowing(data):
     for i in range((len(data) - WINDOW_SIZE) // STRIDE + 1):
         start = i * STRIDE
         windows.append(data[start:start + WINDOW_SIZE])
-    return np.array(windows)
+    return np.array(windows, dtype=np.float32)
 
 
 def normalize(windows):
@@ -1141,7 +1233,13 @@ def main():
         sys.exit(1)
 
     model_path = sys.argv[1]
-    csv_path = sys.argv[2]
+    csv_path   = sys.argv[2]
+
+    try:
+        import torch
+    except ImportError:
+        print("ERROR: PyTorch not found. Install with: pip install torch")
+        sys.exit(1)
 
     print("[1/4] Loading CSV...")
     raw_data = load_csv(csv_path)
@@ -1149,26 +1247,56 @@ def main():
 
     print("[2/4] Windowing...")
     windows = apply_windowing(raw_data)
-    print(f"      Created {{len(windows)}} windows")
+    print(f"      Created {{len(windows)}} windows (size={{WINDOW_SIZE}}, stride={{STRIDE}})")
 
     print("[3/4] Normalizing...")
     windows = normalize(windows)
 
     print("[4/4] Predicting with TimesNet...")
-    # Load model state and run inference
     with open(model_path, "rb") as f:
         model_data = pickle.load(f)
 
-    try:
-        import torch
-        # TimesNet inference requires the model architecture class
-        # See the CiRA ME documentation for the full TimesNet model definition
-        print("TimesNet model loaded. Implement model architecture for edge inference.")
-        print(f"Config: {{model_data.get('config', {{}})}}")
-        print(f"Windows shape: {{windows.shape}}")
-    except ImportError:
-        print("ERROR: PyTorch is required. Install with: pip install torch")
-        sys.exit(1)
+    inner      = model_data.get("model_state", {{}})
+    cfg        = inner.get("config",  model_data.get("config",  {{}}))
+    mode       = inner.get("mode",    model_data.get("mode",    "anomaly"))
+    state_dict = _load_state_dict(model_data)
+    x          = torch.FloatTensor(windows)
+
+    with torch.no_grad():
+        if mode == "classification":
+            class_names = inner.get("label_encoder_classes",
+                                    model_data.get("label_encoder_classes", []))
+            num_cls = len(class_names) if class_names else cfg.get("num_classes", cfg.get("num_class", 2))
+            model = _build_classifier(cfg, num_cls)
+            model.load_state_dict(state_dict)
+            model.eval()
+
+            probs  = torch.softmax(model(x), dim=1).numpy()
+            preds  = np.argmax(probs, axis=1)
+            labels = [class_names[p] if p < len(class_names) else str(p) for p in preds]
+
+            for i, (label, prob) in enumerate(zip(labels, probs)):
+                print(f"Window {{i}}: {{label}} ({{float(np.max(prob))*100:.1f}}%)")
+
+            unique, counts = np.unique(labels, return_counts=True)
+            print(f"\\nSummary: {{dict(zip(unique.tolist(), counts.tolist()))}}")
+
+        else:  # anomaly
+            threshold = float(inner.get("threshold", model_data.get("threshold", 0.5)))
+            model = _build_encoder(cfg)
+            model.load_state_dict(state_dict)
+            model.eval()
+
+            recon  = model(x).numpy()
+            errors = np.mean((windows - recon) ** 2, axis=(1, 2))
+            labels = ["Anomaly" if e > threshold else "Normal" for e in errors]
+
+            for i, (label, err) in enumerate(zip(labels, errors)):
+                conf = min(abs(float(err) - threshold) / (threshold + 1e-9) * 50 + 50, 99.9)
+                print(f"Window {{i}}: {{label}} ({{conf:.1f}}%)")
+
+            unique, counts = np.unique(labels, return_counts=True)
+            print(f"\\nSummary: {{dict(zip(unique.tolist(), counts.tolist()))}}")
 
 
 if __name__ == "__main__":
