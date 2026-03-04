@@ -253,6 +253,18 @@
                 <span v-if="!item.is_dir" class="text-caption text-medium-emphasis mr-2">
                   {{ formatFileSize(item.size) }}
                 </span>
+                <!-- Download Button (files only) -->
+                <v-btn
+                  v-if="!item.is_dir"
+                  icon
+                  variant="text"
+                  size="x-small"
+                  color="primary"
+                  @click.stop="downloadFile(item)"
+                  title="Download"
+                >
+                  <v-icon size="small">mdi-download</v-icon>
+                </v-btn>
                 <!-- Delete Button (admin or user's own folder) -->
                 <v-btn
                   v-if="canDeleteItem(item)"
@@ -1475,6 +1487,26 @@ function closeUploadDialog() {
   uploadError.value = ''
   uploadSuccess.value = ''
   isDragging.value = false
+}
+
+// Download file
+async function downloadFile(item: FileItem) {
+  try {
+    const response = await api.get('/api/data/download', {
+      params: { path: item.path },
+      responseType: 'blob'
+    })
+    const blobUrl = window.URL.createObjectURL(new Blob([response.data]))
+    const a = document.createElement('a')
+    a.href = blobUrl
+    a.download = item.name
+    document.body.appendChild(a)
+    a.click()
+    window.URL.revokeObjectURL(blobUrl)
+    document.body.removeChild(a)
+  } catch {
+    notificationStore.showError('Download failed')
+  }
 }
 
 // Delete methods - users can delete from their own folders

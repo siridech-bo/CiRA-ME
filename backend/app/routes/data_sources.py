@@ -5,7 +5,7 @@ Handles CSV, Edge Impulse JSON, Edge Impulse CBOR, and CiRA CBOR formats
 
 import os
 import uuid
-from flask import Blueprint, request, jsonify, current_app
+from flask import Blueprint, request, jsonify, current_app, send_file
 from werkzeug.utils import secure_filename
 from ..auth import login_required, validate_path, get_user_folders
 from ..services.data_loader import DataLoader
@@ -776,3 +776,27 @@ def get_windows_by_label():
         return jsonify(result)
     except Exception as e:
         return jsonify({'error': str(e)}), 400
+
+
+@data_sources_bp.route('/download', methods=['GET'])
+@login_required
+def download_file():
+    """Download a file from the datasets directory."""
+    file_path = request.args.get('path')
+    if not file_path:
+        return jsonify({'error': 'File path required'}), 400
+
+    datasets_root = current_app.config['DATASETS_ROOT_PATH']
+    shared_folder = current_app.config['SHARED_FOLDER_PATH']
+
+    if not validate_path(file_path, request.current_user, datasets_root, shared_folder):
+        return jsonify({'error': 'Access denied to this file'}), 403
+
+    if not os.path.isfile(file_path):
+        return jsonify({'error': 'File not found'}), 404
+
+    return send_file(
+        file_path,
+        as_attachment=True,
+        download_name=os.path.basename(file_path)
+    )

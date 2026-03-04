@@ -581,7 +581,7 @@ def build_timesnet_classifier(config: dict):
             self.d_model = config.get('d_model', 64)
             self.d_ff = config.get('d_ff', 128)
             self.dropout = config.get('dropout', 0.1)
-            self.num_classes = config.get('num_classes', 2)
+            self.num_classes = config.get('num_classes') or config.get('num_class', 2)
 
             # Embedding
             self.embed = nn.Linear(self.enc_in, self.d_model)
@@ -615,6 +615,129 @@ def build_timesnet_classifier(config: dict):
             return x
 
     return TimesNetClassifier(config)
+
+
+def predict_timesnet_anomaly(config: dict, data: dict) -> dict:
+    """Run inference using a trained TimesNet anomaly model."""
+    import torch, pickle
+    windows = np.array(data['windows'], dtype=np.float32)
+    labels = np.array(data['labels']) if data.get('labels') is not None else None
+    threshold = data.get('threshold', 0.0)
+
+    # Load pickle first so we can use its embedded config for the exact architecture
+    model_data_path = data.get('model_data_path')
+    model_data = {}
+    if model_data_path and os.path.exists(model_data_path):
+        with open(model_data_path, 'rb') as f:
+            model_data = pickle.load(f)
+        saved_config = model_data.get('config', config)
+        if isinstance(saved_config, dict):
+            config = saved_config
+        threshold = float(model_data.get('threshold', threshold))
+
+    model = build_timesnet_encoder(config)
+    model_state = model_data.get('model_state')
+    if model_state:
+        # Subprocess-trained models wrap weights under 'model_state_dict' key
+        if 'model_state_dict' in model_state:
+            actual_state = {k: torch.tensor(np.array(v, dtype=np.float32))
+                            for k, v in model_state['model_state_dict'].items()}
+            model.load_state_dict(actual_state)
+        else:
+            # Direct-trained models store the OrderedDict of tensors directly
+            model.load_state_dict(model_state)
+    model.eval()
+
+    X = torch.FloatTensor(windows)
+    if len(X.shape) == 2:
+        X = X.unsqueeze(-1)
+
+    with torch.no_grad():
+        output = model(X)
+        reconstruction_errors = torch.mean((X - output) ** 2, dim=(1, 2)).numpy()
+
+    predictions = (reconstruction_errors > threshold).astype(int)
+    result = {
+        'success': True,
+        'predictions': predictions.tolist(),
+        'reconstruction_errors': reconstruction_errors.tolist(),
+        'threshold': float(threshold),
+    }
+
+    if labels is not None:
+        from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+        y_true = labels.astype(int)
+        result['metrics'] = {
+            'accuracy': float(accuracy_score(y_true, predictions)),
+            'precision': float(precision_score(y_true, predictions, zero_division=0)),
+            'recall': float(recall_score(y_true, predictions, zero_division=0)),
+            'f1': float(f1_score(y_true, predictions, zero_division=0)),
+        }
+    return result
+
+
+def predict_timesnet_classification(config: dict, data: dict) -> dict:
+    """Run inference using a trained TimesNet classification model."""
+    import torch, pickle
+    windows = np.array(data['windows'], dtype=np.float32)
+    labels_raw = data.get('labels')
+    label_classes = data.get('label_classes', [])
+
+    # Load pickle first so we can use its embedded config for the exact architecture
+    model_data_path = data.get('model_data_path')
+    model_data = {}
+    if model_data_path and os.path.exists(model_data_path):
+        with open(model_data_path, 'rb') as f:
+            model_data = pickle.load(f)
+        # Prefer the config stored in the pickle over the one passed via JSON
+        saved_config = model_data.get('config', config)
+        if isinstance(saved_config, dict):
+            config = saved_config
+
+    model = build_timesnet_classifier(config)
+    model_state = model_data.get('model_state')
+    if model_state:
+        # Subprocess-trained models wrap weights under 'model_state_dict' key
+        if 'model_state_dict' in model_state:
+            actual_state = {k: torch.tensor(np.array(v, dtype=np.float32))
+                            for k, v in model_state['model_state_dict'].items()}
+            model.load_state_dict(actual_state)
+        else:
+            # Direct-trained models store the OrderedDict of tensors directly
+            model.load_state_dict(model_state)
+    if not label_classes:
+        label_classes = model_data.get('label_encoder_classes', [])
+    model.eval()
+
+    X = torch.FloatTensor(windows)
+    if len(X.shape) == 2:
+        X = X.unsqueeze(-1)
+
+    with torch.no_grad():
+        output = model(X)
+        probs = torch.softmax(output, dim=1).numpy()
+        pred_indices = np.argmax(probs, axis=1)
+
+    if label_classes:
+        predictions = [label_classes[i] for i in pred_indices]
+    else:
+        predictions = pred_indices.tolist()
+
+    result = {
+        'success': True,
+        'predictions': predictions,
+    }
+
+    if labels_raw is not None and label_classes:
+        from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+        y_true = labels_raw
+        result['metrics'] = {
+            'accuracy': float(accuracy_score(y_true, predictions)),
+            'precision': float(precision_score(y_true, predictions, average='weighted', zero_division=0)),
+            'recall': float(recall_score(y_true, predictions, average='weighted', zero_division=0)),
+            'f1': float(f1_score(y_true, predictions, average='weighted', zero_division=0)),
+        }
+    return result
 
 
 def check_gpu_status() -> dict:
@@ -672,6 +795,10 @@ def main():
             result = train_timesnet_anomaly(config, data)
         elif task == 'train_classification':
             result = train_timesnet_classification(config, data)
+        elif task == 'predict_anomaly':
+            result = predict_timesnet_anomaly(config, data)
+        elif task == 'predict_classification':
+            result = predict_timesnet_classification(config, data)
         else:
             result = {'success': False, 'error': f'Unknown task: {task}'}
 

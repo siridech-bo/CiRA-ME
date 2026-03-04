@@ -5,12 +5,55 @@ Supports both ML (feature-based) and DL (TimesNet) pipelines.
 """
 
 import os
+import sys
+import json
 import logging
+import subprocess
+import tempfile
 import numpy as np
 import pandas as pd
+from pathlib import Path
 from typing import Dict, Any, Optional, List
 
+SUBPROCESS_SCRIPT = Path(__file__).parent / 'torch_subprocess.py'
+
 logger = logging.getLogger(__name__)
+
+
+def _run_timesnet_subprocess(task: str, config: dict, data: dict, timeout: int = 120) -> dict:
+    """Run a TimesNet inference task in an isolated subprocess."""
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+        json.dump({'task': task, 'config': config, 'data': data}, f)
+        config_path = f.name
+
+    output_path = config_path.replace('.json', '_output.json')
+
+    try:
+        cmd = [sys.executable, str(SUBPROCESS_SCRIPT), config_path, output_path]
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=str(SUBPROCESS_SCRIPT.parent.parent.parent)
+        )
+        if result.returncode != 0:
+            return {'success': False, 'error': result.stderr or 'Subprocess failed'}
+        if os.path.exists(output_path):
+            with open(output_path, 'r') as f:
+                return json.load(f)
+        return {'success': False, 'error': 'No output from subprocess'}
+    except subprocess.TimeoutExpired:
+        return {'success': False, 'error': f'Inference timed out after {timeout}s'}
+    except Exception as e:
+        return {'success': False, 'error': str(e)}
+    finally:
+        for p in [config_path, output_path]:
+            if os.path.exists(p):
+                try:
+                    os.unlink(p)
+                except Exception:
+                    pass
 
 
 def _get_window_label(window_labels, method='majority'):
@@ -246,44 +289,51 @@ def replay_dl_pipeline(csv_path: str, pipeline_config: dict,
     if len(ch_min) > 0 and len(ch_max) > 0:
         all_windows = _normalize_windows(all_windows, ch_min, ch_max)
 
-    # Step 4: Predict using TimesNet via subprocess
+    # Step 4: Predict using TimesNet via subprocess (same pattern as timesnet_trainer)
     config_dict = model_data.get('config', {})
     mode = model_data.get('mode', 'classification')
 
+    # Save model_data to a temp pickle so the subprocess can load tensors directly.
+    # This avoids JSON serialization of PyTorch tensors entirely.
+    import pickle
+    model_data_file = tempfile.NamedTemporaryFile(mode='wb', suffix='_model.pkl', delete=False)
     try:
-        from .torch_subprocess import run_timesnet_subprocess
+        pickle.dump(model_data, model_data_file)
+        model_data_path = model_data_file.name
+    finally:
+        model_data_file.close()
 
-        # Prepare data the same way timesnet_trainer does
-        if mode == 'anomaly':
-            subprocess_result = run_timesnet_subprocess(
-                task='predict_anomaly',
-                windows=all_windows,
-                labels=np.array(window_labels) if window_labels else None,
-                config=config_dict,
-                model_state=model_data.get('model_state'),
-                threshold=model_data.get('threshold', 0),
-            )
-        else:
-            subprocess_result = run_timesnet_subprocess(
-                task='predict_classification',
-                windows=all_windows,
-                labels=np.array(window_labels) if window_labels else None,
-                config=config_dict,
-                model_state=model_data.get('model_state'),
-                label_classes=model_data.get('label_encoder_classes', []),
-            )
+    if mode == 'anomaly':
+        task = 'predict_anomaly'
+        data_payload = {
+            'windows': all_windows.tolist(),
+            'labels': np.array(window_labels).tolist() if window_labels else None,
+            'threshold': float(model_data.get('threshold', 0)),
+            'model_data_path': model_data_path,
+        }
+    else:
+        task = 'predict_classification'
+        data_payload = {
+            'windows': all_windows.tolist(),
+            'labels': window_labels if window_labels else None,
+            'label_classes': model_data.get('label_encoder_classes', []),
+            'model_data_path': model_data_path,
+        }
 
-        if not subprocess_result.get('success'):
-            raise RuntimeError(subprocess_result.get('error', 'TimesNet prediction failed'))
+    try:
+        subprocess_result = _run_timesnet_subprocess(task, config_dict, data_payload)
+    finally:
+        if os.path.exists(model_data_path):
+            try:
+                os.unlink(model_data_path)
+            except Exception:
+                pass
 
-        y_pred = np.array(subprocess_result.get('predictions', []))
-        metrics = subprocess_result.get('metrics', {})
+    if not subprocess_result.get('success'):
+        raise RuntimeError(subprocess_result.get('error', 'TimesNet prediction failed'))
 
-    except ImportError:
-        raise RuntimeError(
-            "TimesNet inference requires PyTorch. "
-            "Install with: pip install torch"
-        )
+    y_pred = np.array(subprocess_result.get('predictions', []))
+    metrics = subprocess_result.get('metrics', {})
 
     result: Dict[str, Any] = {
         'predictions': y_pred.tolist(),
