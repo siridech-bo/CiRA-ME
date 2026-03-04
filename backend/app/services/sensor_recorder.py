@@ -23,47 +23,83 @@ except ImportError:
 _recording_jobs: Dict[str, Dict] = {}
 
 
-class StressGenerator:
-    """Generate CPU/IO/GPU stress to create distinct sensor patterns."""
+class DiskIOGenerator:
+    """Generate disk I/O patterns to create distinct sensor signatures."""
 
     def __init__(self):
         self._stop_event = threading.Event()
         self._threads: List[threading.Thread] = []
 
-    def cpu_stress(self, cores: Optional[int] = None):
-        """Spin busy-loop threads on all cores."""
-        cores = cores or os.cpu_count() or 4
-        for _ in range(cores):
-            t = threading.Thread(target=self._cpu_worker, daemon=True)
-            t.start()
-            self._threads.append(t)
-
-    def io_stress(self):
-        """Write/read temp file blocks to spike disk I/O."""
+    def sequential_read(self):
+        """Read a large temp file sequentially in big blocks."""
         for _ in range(2):
-            t = threading.Thread(target=self._io_worker, daemon=True)
+            t = threading.Thread(target=self._seq_read_worker, daemon=True)
             t.start()
             self._threads.append(t)
 
-    def gpu_stress(self):
-        """Run matrix multiplications on CUDA GPU."""
-        t = threading.Thread(target=self._gpu_worker, daemon=True)
-        t.start()
-        self._threads.append(t)
+    def random_read(self):
+        """Create a file then seek+read at random positions."""
+        for _ in range(2):
+            t = threading.Thread(target=self._random_read_worker, daemon=True)
+            t.start()
+            self._threads.append(t)
+
+    def write_heavy(self):
+        """Write many blocks to temp files continuously."""
+        for _ in range(2):
+            t = threading.Thread(target=self._write_worker, daemon=True)
+            t.start()
+            self._threads.append(t)
 
     def stop(self):
-        """Signal all stress threads to stop."""
+        """Signal all threads to stop."""
         self._stop_event.set()
         for t in self._threads:
             t.join(timeout=5)
         self._threads.clear()
         self._stop_event.clear()
 
-    def _cpu_worker(self):
-        while not self._stop_event.is_set():
-            sum(i * i for i in range(10000))
+    def _seq_read_worker(self):
+        import random
+        block = b'\x00' * (1024 * 1024)  # 1 MB
+        try:
+            with tempfile.NamedTemporaryFile(delete=True) as f:
+                # Write 50 MB file first
+                for _ in range(50):
+                    if self._stop_event.is_set():
+                        return
+                    f.write(block)
+                f.flush()
+                # Read it sequentially in a loop
+                while not self._stop_event.is_set():
+                    f.seek(0)
+                    while f.read(1024 * 1024):
+                        if self._stop_event.is_set():
+                            return
+        except Exception:
+            return
 
-    def _io_worker(self):
+    def _random_read_worker(self):
+        import random
+        block = b'\x00' * (1024 * 1024)  # 1 MB
+        try:
+            with tempfile.NamedTemporaryFile(delete=True) as f:
+                # Write 50 MB file
+                for _ in range(50):
+                    if self._stop_event.is_set():
+                        return
+                    f.write(block)
+                f.flush()
+                file_size = f.tell()
+                # Random seek + read in a loop
+                while not self._stop_event.is_set():
+                    pos = random.randint(0, max(0, file_size - 4096))
+                    f.seek(pos)
+                    f.read(4096)
+        except Exception:
+            return
+
+    def _write_worker(self):
         block = b'\x00' * (1024 * 1024)  # 1 MB
         while not self._stop_event.is_set():
             try:
@@ -73,25 +109,8 @@ class StressGenerator:
                             break
                         f.write(block)
                     f.flush()
-                    f.seek(0)
-                    while f.read(1024 * 1024):
-                        if self._stop_event.is_set():
-                            break
             except Exception:
                 break
-
-    def _gpu_worker(self):
-        try:
-            import torch
-            if not torch.cuda.is_available():
-                return
-            device = torch.device('cuda')
-            a = torch.randn(2048, 2048, device=device)
-            while not self._stop_event.is_set():
-                torch.mm(a, a)
-                torch.cuda.synchronize()
-        except Exception:
-            return
 
 
 class SensorRecorder:
@@ -278,7 +297,7 @@ class SensorRecorder:
 
         self._prime_counters()
 
-        stress = StressGenerator()
+        disk_io = DiskIOGenerator()
         rows = []
         current_phase_idx = -1
         start_time = time.perf_counter()
@@ -302,18 +321,18 @@ class SensorRecorder:
 
                 # Start/stop stress when phase changes
                 if phase_idx != current_phase_idx:
-                    stress.stop()
+                    disk_io.stop()
                     current_phase_idx = phase_idx
                     phase = label_schedule[phase_idx]
                     job['current_phase'] = phase['label']
 
                     stress_type = phase.get('stress')
-                    if stress_type == 'cpu':
-                        stress.cpu_stress()
-                    elif stress_type == 'io':
-                        stress.io_stress()
-                    elif stress_type == 'gpu' and self.has_gpu:
-                        stress.gpu_stress()
+                    if stress_type == 'seq_read':
+                        disk_io.sequential_read()
+                    elif stress_type == 'random_read':
+                        disk_io.random_read()
+                    elif stress_type == 'write_heavy':
+                        disk_io.write_heavy()
 
                 # Read sensors
                 sensors = self._read_sensors()
@@ -332,7 +351,7 @@ class SensorRecorder:
                     time.sleep(sleep_time)
 
         finally:
-            stress.stop()
+            disk_io.stop()
 
         # Write CSV
         with open(output_path, 'w', newline='') as f:
@@ -354,27 +373,21 @@ def build_label_schedule(mode: str, label: str = 'Normal',
     if mode == 'manual':
         return [{'start_pct': 0.0, 'end_pct': 1.0, 'label': label, 'stress': None}]
 
-    elif mode == 'anomaly':
+    elif mode == 'network_traffic':
         return [
-            {'start_pct': 0.0, 'end_pct': 0.4, 'label': 'Normal', 'stress': None},
-            {'start_pct': 0.4, 'end_pct': 0.8, 'label': 'Anomaly', 'stress': 'cpu'},
-            {'start_pct': 0.8, 'end_pct': 1.0, 'label': 'Normal', 'stress': None},
+            {'start_pct': 0.0, 'end_pct': 0.25, 'label': 'idle', 'stress': None},
+            {'start_pct': 0.25, 'end_pct': 0.5, 'label': 'web_browsing', 'stress': None},
+            {'start_pct': 0.5, 'end_pct': 0.75, 'label': 'video_streaming', 'stress': None},
+            {'start_pct': 0.75, 'end_pct': 1.0, 'label': 'file_download', 'stress': None},
         ]
 
-    elif mode == 'classify':
-        if has_gpu:
-            return [
-                {'start_pct': 0.0, 'end_pct': 0.25, 'label': 'idle', 'stress': None},
-                {'start_pct': 0.25, 'end_pct': 0.5, 'label': 'cpu_stress', 'stress': 'cpu'},
-                {'start_pct': 0.5, 'end_pct': 0.75, 'label': 'io_stress', 'stress': 'io'},
-                {'start_pct': 0.75, 'end_pct': 1.0, 'label': 'gpu_stress', 'stress': 'gpu'},
-            ]
-        else:
-            return [
-                {'start_pct': 0.0, 'end_pct': 0.333, 'label': 'idle', 'stress': None},
-                {'start_pct': 0.333, 'end_pct': 0.667, 'label': 'cpu_stress', 'stress': 'cpu'},
-                {'start_pct': 0.667, 'end_pct': 1.0, 'label': 'io_stress', 'stress': 'io'},
-            ]
+    elif mode == 'disk_io':
+        return [
+            {'start_pct': 0.0, 'end_pct': 0.25, 'label': 'idle', 'stress': None},
+            {'start_pct': 0.25, 'end_pct': 0.5, 'label': 'sequential_read', 'stress': 'seq_read'},
+            {'start_pct': 0.5, 'end_pct': 0.75, 'label': 'random_read', 'stress': 'random_read'},
+            {'start_pct': 0.75, 'end_pct': 1.0, 'label': 'write_heavy', 'stress': 'write_heavy'},
+        ]
 
     raise ValueError(f"Unknown mode: {mode}")
 

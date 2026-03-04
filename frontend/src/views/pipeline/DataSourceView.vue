@@ -80,6 +80,7 @@
             <h3 class="text-subtitle-1 font-weight-bold">Browse Files</h3>
             <v-spacer />
             <v-btn
+              v-if="authStore.isAdmin"
               variant="tonal"
               size="small"
               color="secondary"
@@ -576,28 +577,28 @@
           <!-- Not Recording: Configuration -->
           <template v-if="!recording && !recordingDone">
             <div class="text-body-2 text-medium-emphasis mb-4">
-              Record CPU, RAM, disk, network{{ recordHasGpu ? ', GPU' : '' }} sensors from this machine as time series CSV.
+              Record system sensors (CPU, RAM, disk, network{{ recordHasGpu ? ', GPU' : '' }}) as time series CSV for classification training.
             </div>
 
-            <!-- Mode -->
-            <div class="font-weight-medium mb-2">Recording Mode</div>
+            <!-- Dataset Preset -->
+            <div class="font-weight-medium mb-2">Dataset Preset</div>
             <v-radio-group v-model="recordMode" hide-details class="mb-4">
-              <v-radio value="anomaly">
+              <v-radio value="network_traffic">
                 <template #label>
                   <div>
-                    <div class="font-weight-medium">Anomaly Detection</div>
+                    <div class="font-weight-medium">Network Traffic</div>
                     <div class="text-caption text-medium-emphasis">
-                      Auto: Normal → CPU Stress (Anomaly) → Recovery
+                      Manual: Idle → Web Browsing → Video Streaming → File Download
                     </div>
                   </div>
                 </template>
               </v-radio>
-              <v-radio value="classify">
+              <v-radio value="disk_io">
                 <template #label>
                   <div>
-                    <div class="font-weight-medium">Classification</div>
+                    <div class="font-weight-medium">Disk I/O Patterns</div>
                     <div class="text-caption text-medium-emphasis">
-                      Auto: Idle → CPU Stress → IO Stress{{ recordHasGpu ? ' → GPU Stress' : '' }}
+                      Auto: Idle → Sequential Read → Random Read → Write Heavy
                     </div>
                   </div>
                 </template>
@@ -607,7 +608,7 @@
                   <div>
                     <div class="font-weight-medium">Manual Label</div>
                     <div class="text-caption text-medium-emphasis">
-                      Record with a single custom label (no stress)
+                      Record with a single custom label
                     </div>
                   </div>
                 </template>
@@ -689,12 +690,37 @@
 
               <v-chip
                 v-if="recordCurrentPhase"
-                :color="recordCurrentPhase === 'Anomaly' || recordCurrentPhase.includes('stress') ? 'error' : 'success'"
+                :color="recordCurrentPhase === 'idle' ? 'success' : 'info'"
                 variant="flat"
                 size="small"
+                class="mb-2"
               >
                 Phase: {{ recordCurrentPhase }}
               </v-chip>
+
+              <!-- Phase instruction for network_traffic mode -->
+              <v-alert
+                v-if="recordMode === 'network_traffic' && recordCurrentPhase"
+                :type="recordCurrentPhase === 'idle' ? 'success' : 'info'"
+                variant="tonal"
+                density="compact"
+                class="mt-3 text-left"
+              >
+                <div class="font-weight-medium mb-1">{{ phaseInstruction.title }}</div>
+                <div class="text-body-2">{{ phaseInstruction.detail }}</div>
+              </v-alert>
+
+              <!-- Auto-generation notice for disk_io mode -->
+              <v-alert
+                v-if="recordMode === 'disk_io' && recordCurrentPhase"
+                type="info"
+                variant="tonal"
+                density="compact"
+                class="mt-3 text-left"
+              >
+                <div class="font-weight-medium">Auto-generating disk activity...</div>
+                <div class="text-body-2">{{ recordCurrentPhase === 'idle' ? 'Baseline idle measurement' : `Running: ${recordCurrentPhase.replace('_', ' ')}` }}</div>
+              </v-alert>
             </div>
 
             <v-progress-linear
@@ -872,7 +898,7 @@ const deleting = ref(false)
 
 // Sensor recording state
 const showRecordDialog = ref(false)
-const recordMode = ref<'manual' | 'anomaly' | 'classify'>('anomaly')
+const recordMode = ref<'manual' | 'network_traffic' | 'disk_io'>('network_traffic')
 const recordDuration = ref(120)
 const recordRate = ref(10)
 const recordLabel = ref('Normal')
@@ -890,6 +916,16 @@ const recordOutputPath = ref('')
 const recordError = ref('')
 const recordHasGpu = ref(false)
 let recordPollTimer: ReturnType<typeof setInterval> | null = null
+
+const phaseInstruction = computed(() => {
+  const instructions: Record<string, { title: string; detail: string }> = {
+    idle: { title: 'Idle Phase', detail: 'Keep your computer idle — don\'t touch anything.' },
+    web_browsing: { title: 'Web Browsing', detail: 'Browse websites — open pages, scroll, click links.' },
+    video_streaming: { title: 'Video Streaming', detail: 'Play a YouTube video or stream media.' },
+    file_download: { title: 'File Download', detail: 'Download a large file from the internet.' },
+  }
+  return instructions[recordCurrentPhase.value] || { title: recordCurrentPhase.value, detail: '' }
+})
 
 const formatInfo = computed(() => {
   switch (selectedFormat.value) {

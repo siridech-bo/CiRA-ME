@@ -215,6 +215,74 @@ class FeatureExtractor:
 
         return features
 
+    def extract_from_windows_direct(
+        self,
+        windows: np.ndarray,
+        sensor_columns: List[str],
+        method: str = 'lightweight',
+        feature_set: str = 'efficient',
+        sampling_rate: float = 100.0,
+    ) -> pd.DataFrame:
+        """
+        Extract features directly from numpy windows array (no session lookup).
+        Used for pipeline replay (Test with New Data) without creating sessions.
+
+        Args:
+            windows: shape (num_windows, window_size, num_channels)
+            sensor_columns: list of channel names
+            method: 'lightweight' or 'tsfresh'
+            feature_set: tsfresh feature set level (if method='tsfresh')
+            sampling_rate: sampling rate for frequency analysis
+
+        Returns:
+            DataFrame with feature columns, one row per window
+        """
+        num_windows = len(windows)
+        all_features = []
+        feature_names = []
+
+        for window_idx in range(num_windows):
+            window = windows[window_idx]
+            window_features = {}
+
+            # TSFresh-like statistical features
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)
+                for feat_name, feat_func in self.TSFRESH_FEATURES.items():
+                    try:
+                        values = feat_func(window)
+                        for ch_idx, val in enumerate(values):
+                            col_name = f"{feat_name}_{sensor_columns[ch_idx]}"
+                            if not np.isfinite(val):
+                                val = 0.0
+                            window_features[col_name] = float(val)
+                            if window_idx == 0:
+                                feature_names.append(col_name)
+                    except Exception:
+                        pass
+
+            # DSP features
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", RuntimeWarning)
+                try:
+                    dsp_features = self._compute_dsp_features(window, sampling_rate)
+                    for feat_name, values in dsp_features.items():
+                        for ch_idx, val in enumerate(values):
+                            col_name = f"{feat_name}_{sensor_columns[ch_idx]}"
+                            if not np.isfinite(val):
+                                val = 0.0
+                            window_features[col_name] = float(val)
+                            if window_idx == 0:
+                                feature_names.append(col_name)
+                except Exception:
+                    pass
+
+            all_features.append(window_features)
+
+        features_df = pd.DataFrame(all_features)
+        features_df = features_df.replace([np.inf, -np.inf], 0.0).fillna(0.0)
+        return features_df
+
     def extract(
         self,
         session_id: str,

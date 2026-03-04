@@ -36,6 +36,22 @@ interface WindowedSession {
   session_id: string
   num_windows: number
   window_shape: [number, number]
+  metadata?: {
+    normalization?: {
+      method: string
+      channel_min: number[]
+      channel_max: number[]
+      sensor_columns: string[]
+      dropped_columns: string[]
+    }
+    window_size?: number
+    stride?: number
+    label_method?: string
+    test_ratio?: number
+    split_method?: string
+    [key: string]: any
+  }
+  summary?: Record<string, any>
 }
 
 interface FeatureSession {

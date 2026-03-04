@@ -5,23 +5,23 @@ API endpoints for recording system sensor data (CPU, RAM, disk, network, GPU)
 
 import os
 from flask import Blueprint, request, jsonify, current_app
-from ..auth import login_required
+from ..auth import admin_required
 from ..services.sensor_recorder import start_recording, get_recording_status, stop_recording
 
 sensor_bp = Blueprint('sensors', __name__)
 
 
 @sensor_bp.route('/start', methods=['POST'])
-@login_required
+@admin_required
 def start_sensor_recording():
     """Start a sensor recording session."""
     data = request.get_json()
     if not data:
         return jsonify({'error': 'No data provided'}), 400
 
-    mode = data.get('mode', 'manual')
-    if mode not in ('manual', 'anomaly', 'classify'):
-        return jsonify({'error': f'Invalid mode: {mode}. Use manual, anomaly, or classify'}), 400
+    mode = data.get('mode', 'network_traffic')
+    if mode not in ('manual', 'network_traffic', 'disk_io'):
+        return jsonify({'error': f'Invalid mode: {mode}. Use manual, network_traffic, or disk_io'}), 400
 
     duration = data.get('duration', 120)
     rate = data.get('rate', 2)
@@ -55,7 +55,7 @@ def start_sensor_recording():
 
 
 @sensor_bp.route('/status/<job_id>', methods=['GET'])
-@login_required
+@admin_required
 def sensor_recording_status(job_id: str):
     """Get the status and progress of a sensor recording job."""
     job = get_recording_status(job_id)
@@ -65,7 +65,7 @@ def sensor_recording_status(job_id: str):
 
 
 @sensor_bp.route('/stop/<job_id>', methods=['POST'])
-@login_required
+@admin_required
 def stop_sensor_recording(job_id: str):
     """Stop a recording early and save partial data."""
     job = stop_recording(job_id)

@@ -75,8 +75,10 @@
               <th>Name</th>
               <th>Algorithm</th>
               <th>Mode</th>
-              <th>Accuracy</th>
-              <th>F1</th>
+              <th class="text-center">Accuracy</th>
+              <th class="text-center">Precision</th>
+              <th class="text-center">Recall</th>
+              <th class="text-center">F1</th>
               <th>Date</th>
             </tr>
           </thead>
@@ -100,24 +102,82 @@
                   {{ model.mode }}
                 </v-chip>
               </td>
-              <td>{{ model.metrics?.accuracy != null ? (model.metrics.accuracy * 100).toFixed(1) + '%' : '-' }}</td>
-              <td>{{ model.metrics?.f1 != null ? (model.metrics.f1 * 100).toFixed(1) + '%' : '-' }}</td>
+              <td class="text-center">{{ model.metrics?.accuracy != null ? (model.metrics.accuracy * 100).toFixed(1) + '%' : '-' }}</td>
+              <td class="text-center">{{ model.metrics?.precision != null ? (model.metrics.precision * 100).toFixed(1) + '%' : '-' }}</td>
+              <td class="text-center">{{ model.metrics?.recall != null ? (model.metrics.recall * 100).toFixed(1) + '%' : '-' }}</td>
+              <td class="text-center">{{ model.metrics?.f1 != null ? (model.metrics.f1 * 100).toFixed(1) + '%' : '-' }}</td>
               <td class="text-caption">{{ formatDate(model.created_at) }}</td>
             </tr>
           </tbody>
         </v-table>
       </div>
 
-      <!-- Selected Model Summary -->
-      <v-alert
-        v-if="selectedModelSummary"
-        type="success"
-        variant="tonal"
-        class="mt-4"
-        density="compact"
-      >
-        <strong>Selected:</strong> {{ selectedModelSummary }}
-      </v-alert>
+      <!-- Selected Model Metrics Summary Card -->
+      <v-card v-if="selectedModel" variant="outlined" class="mt-4 pa-4">
+        <div class="d-flex align-center mb-3">
+          <v-icon color="success" class="mr-2">mdi-check-circle</v-icon>
+          <h4 class="text-subtitle-2 font-weight-bold">
+            {{ selectedModel.name }}
+            <span class="text-medium-emphasis font-weight-regular ml-1">— {{ selectedModel.algorithm }} ({{ selectedModel.mode }})</span>
+          </h4>
+          <v-spacer />
+          <v-btn
+            v-if="modelSource === 'saved'"
+            color="info"
+            variant="tonal"
+            size="small"
+            @click="openEvalDialog"
+          >
+            <v-icon start size="small">mdi-test-tube</v-icon>
+            Test with New Data
+          </v-btn>
+          <v-btn
+            v-if="modelSource === 'saved' && selectedModel?.pipeline_config?.normalization"
+            color="success"
+            variant="tonal"
+            size="small"
+            class="ml-2"
+            :loading="downloadingPackage"
+            @click="downloadPackage"
+          >
+            <v-icon start size="small">mdi-package-down</v-icon>
+            Download Package
+          </v-btn>
+        </div>
+
+        <v-row dense>
+          <v-col cols="6" sm="3">
+            <v-card variant="tonal" class="pa-3 text-center" color="primary">
+              <div class="text-caption text-medium-emphasis">Accuracy</div>
+              <div class="text-h6">{{ selectedModel.metrics?.accuracy != null ? (selectedModel.metrics.accuracy * 100).toFixed(1) + '%' : '-' }}</div>
+            </v-card>
+          </v-col>
+          <v-col cols="6" sm="3">
+            <v-card variant="tonal" class="pa-3 text-center" color="info">
+              <div class="text-caption text-medium-emphasis">Precision</div>
+              <div class="text-h6">{{ selectedModel.metrics?.precision != null ? (selectedModel.metrics.precision * 100).toFixed(1) + '%' : '-' }}</div>
+            </v-card>
+          </v-col>
+          <v-col cols="6" sm="3">
+            <v-card variant="tonal" class="pa-3 text-center" color="warning">
+              <div class="text-caption text-medium-emphasis">Recall</div>
+              <div class="text-h6">{{ selectedModel.metrics?.recall != null ? (selectedModel.metrics.recall * 100).toFixed(1) + '%' : '-' }}</div>
+            </v-card>
+          </v-col>
+          <v-col cols="6" sm="3">
+            <v-card variant="tonal" class="pa-3 text-center" color="success">
+              <div class="text-caption text-medium-emphasis">F1 Score</div>
+              <div class="text-h6">{{ selectedModel.metrics?.f1 != null ? (selectedModel.metrics.f1 * 100).toFixed(1) + '%' : '-' }}</div>
+            </v-card>
+          </v-col>
+        </v-row>
+
+        <!-- Dataset info if available -->
+        <div v-if="selectedModel.dataset_info" class="mt-3 text-caption text-medium-emphasis">
+          <v-icon size="x-small" class="mr-1">mdi-database</v-icon>
+          Trained on: {{ selectedModel.dataset_info.filename || selectedModel.dataset_info.name || 'Unknown dataset' }}
+        </div>
+      </v-card>
     </v-card>
 
     <v-row>
@@ -369,6 +429,133 @@
         </v-btn>
       </div>
     </div>
+
+    <!-- Test with New Data Dialog -->
+    <v-dialog v-model="showEvalDialog" max-width="700">
+      <v-card class="pa-4">
+        <h3 class="text-subtitle-1 font-weight-bold mb-4">
+          <v-icon start size="small">mdi-test-tube</v-icon>
+          Test "{{ evalModel?.name }}" with New Data
+        </h3>
+
+        <!-- No pipeline config warning -->
+        <v-alert
+          v-if="!evalModel?.pipeline_config?.normalization"
+          type="warning" variant="tonal" density="compact" class="mb-4"
+        >
+          This model was saved without full pipeline config.
+          Re-save the model from a training session to enable raw CSV evaluation.
+        </v-alert>
+
+        <!-- Pipeline info -->
+        <template v-else>
+          <v-alert type="info" variant="tonal" density="compact" class="mb-4">
+            Upload a raw CSV file with the same sensor columns as the training data.
+            The saved pipeline will automatically apply windowing, normalization,
+            {{ evalModel.pipeline_config.training_approach === 'dl'
+               ? 'and TimesNet inference'
+               : 'feature extraction, and model prediction' }}.
+            If the CSV has a label column, metrics will be computed.
+          </v-alert>
+
+          <div class="d-flex flex-wrap ga-2 mb-4">
+            <v-chip size="small" color="primary" variant="tonal">
+              {{ evalModel.pipeline_config.training_approach === 'dl' ? 'TimesNet' : 'ML' }}
+            </v-chip>
+            <v-chip size="small" variant="tonal">
+              Window: {{ evalModel.pipeline_config.windowing?.window_size || '?' }}
+            </v-chip>
+            <v-chip size="small" variant="tonal">
+              Channels: {{ evalModel.pipeline_config.normalization?.sensor_columns?.length || '?' }}
+            </v-chip>
+            <v-chip v-if="evalModel.pipeline_config.feature_selection" size="small" color="success" variant="tonal">
+              Selected: {{ evalModel.pipeline_config.feature_selection.num_selected }} features
+            </v-chip>
+            <v-chip v-else-if="evalModel.pipeline_config.feature_extraction" size="small" variant="tonal">
+              {{ evalModel.pipeline_config.feature_extraction.num_features }} features
+            </v-chip>
+          </div>
+        </template>
+
+        <!-- File upload -->
+        <v-file-input
+          v-model="evalFile"
+          label="Upload CSV file"
+          accept=".csv"
+          prepend-icon="mdi-file-delimited"
+          :disabled="!evalModel?.pipeline_config?.normalization"
+          show-size
+          density="compact"
+          class="mb-2"
+        />
+
+        <div class="d-flex justify-end ga-2">
+          <v-btn variant="text" @click="showEvalDialog = false">Cancel</v-btn>
+          <v-btn
+            color="primary"
+            variant="flat"
+            :disabled="!evalFile || !evalModel?.pipeline_config?.normalization"
+            :loading="evaluating"
+            @click="runRawEvaluation"
+          >
+            Evaluate
+          </v-btn>
+        </div>
+
+        <!-- Evaluation Result -->
+        <v-card v-if="evalResult" variant="outlined" class="pa-3 mt-4">
+          <h4 class="text-subtitle-2 font-weight-bold mb-2">
+            {{ evalResult.has_labels ? 'Results: Original vs New Data' : 'Prediction Results' }}
+          </h4>
+
+          <!-- Metrics comparison (if labels found) -->
+          <v-table v-if="evalResult.comparison" density="compact">
+            <thead>
+              <tr>
+                <th class="text-left">Metric</th>
+                <th class="text-center">Original</th>
+                <th class="text-center">New Data</th>
+                <th class="text-center">Diff</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="c in evalResult.comparison" :key="c.metric">
+                <td class="font-weight-medium text-capitalize">{{ c.metric }}</td>
+                <td class="text-center">{{ c.original != null ? (c.original * 100).toFixed(1) + '%' : '-' }}</td>
+                <td class="text-center">{{ c.new_data != null ? (c.new_data * 100).toFixed(1) + '%' : '-' }}</td>
+                <td class="text-center" :class="c.diff != null ? (c.diff >= 0 ? 'text-success' : 'text-error') : ''">
+                  {{ c.diff != null ? (c.diff > 0 ? '+' : '') + (c.diff * 100).toFixed(1) + '%' : '-' }}
+                </td>
+              </tr>
+            </tbody>
+          </v-table>
+
+          <!-- Prediction distribution -->
+          <div class="mt-3">
+            <div class="text-body-2 mb-1">
+              <strong>{{ evalResult.num_windows }}</strong> windows processed
+            </div>
+            <div v-if="evalResult.prediction_distribution" class="d-flex flex-wrap ga-2">
+              <v-chip
+                v-for="(count, label) in evalResult.prediction_distribution"
+                :key="label"
+                size="small"
+                variant="tonal"
+              >
+                {{ label }}: {{ count }}
+              </v-chip>
+            </div>
+          </div>
+
+          <div v-if="evalResult.new_metrics" class="text-caption text-medium-emphasis mt-2">
+            Evaluated on {{ evalResult.new_metrics?.test_samples || '?' }} labeled samples
+          </div>
+          <div v-else class="text-caption text-medium-emphasis mt-2">
+            No label column found in CSV — showing predictions only
+          </div>
+        </v-card>
+      </v-card>
+    </v-dialog>
   </v-container>
 </template>
 
@@ -412,6 +599,14 @@ const deploying = ref(false)
 const exporting = ref(false)
 const deploymentResult = ref<any>(null)
 
+// Evaluation state
+const showEvalDialog = ref(false)
+const evalModel = ref<any>(null)
+const evaluating = ref(false)
+const evalResult = ref<any>(null)
+const evalFile = ref<File | null>(null)
+const downloadingPackage = ref(false)
+
 // Computed
 const hasModelSelected = computed(() => {
   if (modelSource.value === 'session') return !!pipelineStore.trainingSession
@@ -423,18 +618,19 @@ const canDeploy = computed(() =>
   hasModelSelected.value && sshConfig.host && sshConfig.username
 )
 
-const selectedModelSummary = computed(() => {
+const selectedModel = computed(() => {
   if (modelSource.value === 'session' && pipelineStore.trainingSession) {
     const s = pipelineStore.trainingSession
-    const acc = s.metrics?.accuracy != null ? ` | Acc: ${(s.metrics.accuracy * 100).toFixed(1)}%` : ''
-    return `${s.algorithm} (${s.mode})${acc}`
+    return {
+      name: s.algorithm,
+      algorithm: s.algorithm,
+      mode: s.mode,
+      metrics: s.metrics,
+      dataset_info: null
+    }
   }
   if (modelSource.value === 'saved' && selectedSavedModelId.value) {
-    const model = savedModels.value.find(m => m.id === selectedSavedModelId.value)
-    if (model) {
-      const acc = model.metrics?.accuracy != null ? ` | Acc: ${(model.metrics.accuracy * 100).toFixed(1)}%` : ''
-      return `${model.name} — ${model.algorithm} (${model.mode})${acc}`
-    }
+    return savedModels.value.find(m => m.id === selectedSavedModelId.value) || null
   }
   return null
 })
@@ -450,6 +646,75 @@ function formatDate(dateStr: string) {
     month: 'short', day: 'numeric', year: 'numeric',
     hour: '2-digit', minute: '2-digit'
   })
+}
+
+function openEvalDialog() {
+  const model = savedModels.value.find(m => m.id === selectedSavedModelId.value)
+  if (!model) return
+  evalModel.value = model
+  evalResult.value = null
+  evalFile.value = null
+  showEvalDialog.value = true
+}
+
+async function runRawEvaluation() {
+  if (!evalModel.value || !evalFile.value) return
+  evaluating.value = true
+  evalResult.value = null
+  try {
+    const formData = new FormData()
+    formData.append('file', evalFile.value)
+    formData.append('saved_model_id', String(evalModel.value.id))
+
+    const response = await api.post('/api/training/evaluate-raw', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    })
+    evalResult.value = response.data
+    notificationStore.showSuccess('Evaluation complete')
+  } catch (e: any) {
+    notificationStore.showError(e.response?.data?.error || 'Evaluation failed')
+  }
+  evaluating.value = false
+}
+
+async function downloadPackage() {
+  if (!selectedSavedModelId.value) return
+  downloadingPackage.value = true
+  try {
+    const response = await api.post(
+      `/api/deployment/package/${selectedSavedModelId.value}`,
+      {},
+      { responseType: 'blob' }
+    )
+    const blob = new Blob([response.data], { type: 'application/zip' })
+    const url = window.URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    const disposition = response.headers['content-disposition']
+    const filename = disposition
+      ? disposition.split('filename=')[1]?.replace(/"/g, '')
+      : `deployment_package_${selectedSavedModelId.value}.zip`
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    window.URL.revokeObjectURL(url)
+    document.body.removeChild(a)
+    notificationStore.showSuccess('Deployment package downloaded')
+  } catch (e: any) {
+    if (e.response?.data instanceof Blob) {
+      const text = await e.response.data.text()
+      try {
+        const json = JSON.parse(text)
+        notificationStore.showError(json.error || 'Download failed')
+      } catch {
+        notificationStore.showError('Download failed')
+      }
+    } else {
+      notificationStore.showError(e.response?.data?.error || 'Download failed')
+    }
+  } finally {
+    downloadingPackage.value = false
+  }
 }
 
 async function loadSavedModels() {

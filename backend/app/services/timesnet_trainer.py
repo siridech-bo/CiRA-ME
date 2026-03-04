@@ -286,7 +286,12 @@ class TimesNetTrainer:
             'model_state': result.get('model_state'),
             'config': config.to_dict(),
             'threshold': result['metrics'].get('threshold', 0),
-            'mode': 'anomaly'
+            'mode': 'anomaly',
+            'training_hyperparams': {
+                'epochs': epochs,
+                'batch_size': batch_size,
+                'learning_rate': learning_rate,
+            },
         }
 
         with open(model_path, 'wb') as f:
@@ -533,7 +538,12 @@ class TimesNetTrainer:
             'model_state': result.get('model_state'),
             'config': config.to_dict(),
             'label_encoder_classes': class_names,
-            'mode': 'classification'
+            'mode': 'classification',
+            'training_hyperparams': {
+                'epochs': epochs,
+                'batch_size': batch_size,
+                'learning_rate': learning_rate,
+            },
         }
 
         with open(model_path, 'wb') as f:

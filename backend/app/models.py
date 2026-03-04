@@ -348,6 +348,20 @@ class SavedModel:
              model_path: str, training_session_id: str,
              pipeline_config: dict, dataset_info: dict, user_id: int) -> int:
         import json
+        import math
+
+        def _sanitize(v):
+            """Replace NaN/Inf with 0.0 to ensure valid JSON."""
+            if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+                return 0.0
+            if isinstance(v, dict):
+                return {k: _sanitize(val) for k, val in v.items()}
+            if isinstance(v, list):
+                return [_sanitize(item) for item in v]
+            return v
+
+        metrics = _sanitize(metrics)
+
         with get_db() as conn:
             cursor = conn.cursor()
             cursor.execute('''

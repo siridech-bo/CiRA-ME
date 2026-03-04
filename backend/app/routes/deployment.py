@@ -194,3 +194,36 @@ def generate_inference_script():
         return jsonify(result)
     except Exception as e:
         return jsonify({'error': str(e)}), 400
+
+
+@deployment_bp.route('/package/<int:model_id>', methods=['POST'])
+@login_required
+def generate_package(model_id):
+    """Generate and download a deployment package for a saved model.
+    Returns a zip file containing model, inference script, pipeline config, and requirements.
+    """
+    from flask import send_file
+
+    saved = SavedModel.get_by_id(model_id)
+    if not saved:
+        return jsonify({'error': 'Model not found'}), 404
+
+    pipeline_config = saved.get('pipeline_config', {})
+    if not pipeline_config.get('normalization'):
+        return jsonify({
+            'error': 'Model missing pipeline config. '
+                     'Re-save the model from a training session to enable package generation.'
+        }), 400
+
+    try:
+        deployer = Deployer()
+        result = deployer.generate_deployment_package(saved)
+
+        return send_file(
+            result['path'],
+            as_attachment=True,
+            download_name=result['filename'],
+            mimetype='application/zip'
+        )
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400

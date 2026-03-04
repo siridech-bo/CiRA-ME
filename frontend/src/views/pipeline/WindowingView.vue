@@ -291,6 +291,45 @@
                 'stratified': 'stratified random (all classes in train & test)'
               }[windowedResult.metadata.split_method] || windowedResult.metadata.split_method }}
             </div>
+
+            <!-- Test set class breakdown -->
+            <div v-if="windowedResult.summary?.test_label_distribution" class="mt-3">
+              <h4 class="text-subtitle-2 mb-1">Test Set Classes ({{ Object.keys(windowedResult.summary.test_label_distribution).length }})</h4>
+              <v-chip
+                v-for="(count, label) in windowedResult.summary.test_label_distribution"
+                :key="'test-' + label"
+                size="small"
+                class="mr-1 mb-1"
+                color="warning"
+                variant="tonal"
+              >
+                {{ label }}: {{ count }}
+              </v-chip>
+              <v-alert
+                v-if="Object.keys(windowedResult.summary.test_label_distribution).length < Object.keys(windowedResult.summary.label_distribution || {}).length"
+                type="warning"
+                variant="tonal"
+                density="compact"
+                class="mt-2"
+              >
+                Test set is missing {{ Object.keys(windowedResult.summary.label_distribution || {}).length - Object.keys(windowedResult.summary.test_label_distribution).length }} class(es). Record more data for better evaluation.
+              </v-alert>
+            </div>
+
+            <!-- Train set class breakdown -->
+            <div v-if="windowedResult.summary?.train_label_distribution" class="mt-2">
+              <h4 class="text-subtitle-2 mb-1">Train Set Classes ({{ Object.keys(windowedResult.summary.train_label_distribution).length }})</h4>
+              <v-chip
+                v-for="(count, label) in windowedResult.summary.train_label_distribution"
+                :key="'train-' + label"
+                size="small"
+                class="mr-1 mb-1"
+                color="primary"
+                variant="tonal"
+              >
+                {{ label }}: {{ count }}
+              </v-chip>
+            </div>
           </div>
         </v-card>
       </v-col>

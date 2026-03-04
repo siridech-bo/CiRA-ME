@@ -691,6 +691,8 @@
             <th class="text-left">Name</th>
             <th class="text-center">Algorithm</th>
             <th class="text-center">Accuracy</th>
+            <th class="text-center">Precision</th>
+            <th class="text-center">Recall</th>
             <th class="text-center">F1</th>
             <th class="text-center">Date</th>
             <th class="text-center">Actions</th>
@@ -702,6 +704,8 @@
             <td class="font-weight-medium">{{ m.name }}</td>
             <td class="text-center text-caption">{{ m.algorithm }}</td>
             <td class="text-center">{{ m.metrics?.accuracy != null ? (m.metrics.accuracy * 100).toFixed(1) + '%' : '-' }}</td>
+            <td class="text-center">{{ m.metrics?.precision != null ? (m.metrics.precision * 100).toFixed(1) + '%' : '-' }}</td>
+            <td class="text-center">{{ m.metrics?.recall != null ? (m.metrics.recall * 100).toFixed(1) + '%' : '-' }}</td>
             <td class="text-center">{{ m.metrics?.f1 != null ? (m.metrics.f1 * 100).toFixed(1) + '%' : '-' }}</td>
             <td class="text-center text-caption">{{ m.created_at?.slice(0, 10) }}</td>
             <td class="text-center">
@@ -1569,16 +1573,51 @@ async function saveBenchmark() {
       training_session_id: sessionId,
       name: benchmarkName.value || undefined,
       pipeline_config: {
-        window_size: pipelineStore.windowingConfig.window_size,
-        stride: pipelineStore.windowingConfig.stride,
-        test_ratio: pipelineStore.windowingConfig.test_ratio,
+        version: 1,
+        training_approach: pipelineStore.trainingApproach,
         mode: pipelineStore.mode,
-        training_approach: pipelineStore.trainingApproach
+        // Session IDs for backend to pull full data
+        windowed_session_id: pipelineStore.windowedSession?.session_id || null,
+        feature_session_id: pipelineStore.featureSession?.session_id || null,
+        selection_session_id: pipelineStore.featureSelectionState.selectionApplied
+          ? pipelineStore.featureSelectionState.selectionResult?.session_id || null
+          : null,
+        // Windowing params
+        windowing: {
+          window_size: pipelineStore.windowingConfig.window_size,
+          stride: pipelineStore.windowingConfig.stride,
+          label_method: pipelineStore.windowingConfig.label_method,
+          test_ratio: pipelineStore.windowingConfig.test_ratio,
+        },
+        // Normalization from windowed session metadata
+        normalization: pipelineStore.windowedSession?.metadata?.normalization || null,
+        // Feature extraction info (ML only)
+        feature_extraction: pipelineStore.featureSession ? {
+          feature_names: pipelineStore.featureSession.feature_names,
+          num_features: pipelineStore.featureSession.num_features,
+          method: pipelineStore.featureSelectionState.extractionResult?.feature_set
+            ? 'tsfresh' : 'lightweight',
+          feature_set: pipelineStore.featureSelectionState.extractionResult?.feature_set || null,
+        } : null,
+        // Feature selection info (ML only, if applied)
+        feature_selection: pipelineStore.featureSelectionState.selectionApplied
+          ? {
+            method: pipelineStore.featureSelectionState.selectionResult?.method,
+            fdr_level: pipelineStore.featureSelectionState.selectionResult?.fdr_level,
+            selected_features: pipelineStore.featureSelectionState.selectionResult?.selected_features,
+            num_selected: pipelineStore.featureSelectionState.selectionResult?.final_count,
+          }
+          : null,
       },
       dataset_info: {
         format: pipelineStore.dataSession?.metadata?.format,
         file_path: pipelineStore.dataSession?.metadata?.file_path,
-        total_rows: pipelineStore.dataSession?.metadata?.total_rows
+        filename: pipelineStore.dataSession?.metadata?.file_path?.split(/[/\\]/).pop(),
+        total_rows: pipelineStore.dataSession?.metadata?.total_rows,
+        columns: pipelineStore.dataSession?.metadata?.columns,
+        sensor_columns: pipelineStore.dataSession?.metadata?.sensor_columns,
+        label_column: pipelineStore.dataSession?.metadata?.label_column,
+        labels: pipelineStore.dataSession?.metadata?.labels,
       }
     })
     notificationStore.showSuccess('Model saved as benchmark')

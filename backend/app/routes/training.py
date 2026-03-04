@@ -632,14 +632,65 @@ def save_benchmark():
     if not training_session_id:
         return jsonify({'error': 'training_session_id required'}), 400
 
-    # Get the in-memory session
-    session = _model_sessions.get(training_session_id)
+    # Get the in-memory session (check both ML and TimesNet sessions)
+    from ..services.timesnet_trainer import _timesnet_sessions
+    session = _model_sessions.get(training_session_id) or _timesnet_sessions.get(training_session_id)
     if not session:
         return jsonify({'error': 'Training session not found (may have expired)'}), 404
 
     if not name:
         algo_name = session.get('algorithm', 'model')
         name = f"{algo_name} - {session.get('created_at', '')[:16]}"
+
+    # Build complete pipeline_config: start from frontend data, augment from backend sessions
+    pipeline_config = data.get('pipeline_config', {})
+
+    # Augment normalization from windowed session if not already provided
+    windowed_session_id = pipeline_config.get('windowed_session_id')
+    if windowed_session_id and not pipeline_config.get('normalization'):
+        windowed_session = _data_sessions.get(windowed_session_id)
+        if windowed_session and 'metadata' in windowed_session:
+            wm = windowed_session['metadata']
+            pipeline_config['normalization'] = wm.get('normalization')
+            if 'windowing' not in pipeline_config:
+                pipeline_config['windowing'] = {
+                    'window_size': wm.get('window_size'),
+                    'stride': wm.get('stride'),
+                    'label_method': wm.get('label_method'),
+                    'test_ratio': wm.get('test_ratio'),
+                }
+
+    # Augment feature info from feature session if not already provided
+    feature_session_id = pipeline_config.get('feature_session_id')
+    if feature_session_id and not pipeline_config.get('feature_extraction'):
+        from ..services.feature_extractor import _feature_sessions
+        feat_session = _feature_sessions.get(feature_session_id)
+        if feat_session:
+            pipeline_config['feature_extraction'] = {
+                'method': feat_session.get('metadata', {}).get('extraction_method', 'lightweight'),
+                'feature_set': feat_session.get('metadata', {}).get('feature_set'),
+                'feature_names': feat_session.get('feature_names', []),
+                'num_features': len(feat_session.get('feature_names', [])),
+            }
+
+    # Augment feature selection from selection session if not already provided
+    selection_session_id = pipeline_config.get('selection_session_id')
+    if selection_session_id and not pipeline_config.get('feature_selection'):
+        from ..services.feature_extractor import _selection_sessions
+        sel_session = _selection_sessions.get(selection_session_id)
+        if sel_session:
+            pipeline_config['feature_selection'] = {
+                'method': sel_session.get('method'),
+                'fdr_level': sel_session.get('fdr_level'),
+                'selected_features': sel_session.get('selected_features', []),
+                'num_selected': len(sel_session.get('selected_features', [])),
+            }
+
+    # Add training info
+    pipeline_config['training'] = {
+        'algorithm': session.get('algorithm'),
+        'hyperparameters': session.get('hyperparameters', {}),
+    }
 
     model_id = SavedModel.save(
         name=name,
@@ -648,7 +699,7 @@ def save_benchmark():
         metrics=session.get('metrics', {}),
         model_path=session.get('model_path', ''),
         training_session_id=training_session_id,
-        pipeline_config=data.get('pipeline_config', {}),
+        pipeline_config=pipeline_config,
         dataset_info=data.get('dataset_info', {}),
         user_id=request.current_user['id']
     )
@@ -791,3 +842,90 @@ def evaluate_on_new_data():
     except Exception as e:
         logger.error(f"Evaluation error: {e}")
         return jsonify({'error': str(e)}), 400
+
+
+@training_bp.route('/evaluate-raw', methods=['POST'])
+@login_required
+def evaluate_raw_csv():
+    """Evaluate a saved model on a new raw CSV file.
+    Automatically replays the full saved pipeline (window → normalize → features → predict).
+    Accepts multipart form data: file (CSV) + saved_model_id.
+    """
+    import os
+    import tempfile
+
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file uploaded'}), 400
+
+    model_id = request.form.get('saved_model_id')
+    if not model_id:
+        return jsonify({'error': 'saved_model_id required'}), 400
+
+    saved = SavedModel.get_by_id(int(model_id))
+    if not saved:
+        return jsonify({'error': 'Saved model not found'}), 404
+
+    pipeline_config = saved.get('pipeline_config', {})
+    if not pipeline_config or not pipeline_config.get('normalization'):
+        return jsonify({
+            'error': 'This model was saved without full pipeline config. '
+                     'Re-save the model from a training session to enable raw CSV evaluation.'
+        }), 400
+
+    model_path = saved.get('model_path')
+    if not model_path or not os.path.exists(model_path):
+        return jsonify({'error': 'Model file not found on disk'}), 404
+
+    # Save uploaded file to temp location
+    file = request.files['file']
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.csv') as tmp:
+        file.save(tmp.name)
+        tmp_path = tmp.name
+
+    try:
+        with open(model_path, 'rb') as f:
+            model_data = pickle.load(f)
+
+        from ..services.pipeline_replay import replay_ml_pipeline, replay_dl_pipeline
+
+        approach = pipeline_config.get('training_approach', 'ml')
+
+        if approach == 'dl':
+            result = replay_dl_pipeline(tmp_path, pipeline_config, model_data)
+        else:
+            result = replay_ml_pipeline(tmp_path, pipeline_config, model_data)
+
+        # Build comparison with original metrics
+        original_metrics = saved.get('metrics', {})
+        if result.get('has_labels') and result.get('new_metrics'):
+            metric_keys = ['accuracy', 'precision', 'recall', 'f1']
+            comparison = []
+            for key in metric_keys:
+                orig = original_metrics.get(key)
+                new = result['new_metrics'].get(key)
+                diff = round(new - orig, 4) if orig is not None and new is not None else None
+                comparison.append({
+                    'metric': key,
+                    'original': round(orig, 4) if orig is not None else None,
+                    'new_data': round(new, 4) if new is not None else None,
+                    'diff': diff,
+                })
+            result['comparison'] = comparison
+            result['original_metrics'] = original_metrics
+
+        result['saved_model'] = {
+            'id': saved['id'],
+            'name': saved['name'],
+            'algorithm': saved['algorithm'],
+        }
+
+        return jsonify(_sanitize_nan(result))
+
+    except Exception as e:
+        logger.error(f"Raw CSV evaluation error: {e}")
+        return jsonify({'error': str(e)}), 400
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass

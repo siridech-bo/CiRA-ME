@@ -466,6 +466,10 @@ class MLTrainer:
         training_session_id = str(uuid.uuid4())
         model_path = os.path.join(self.models_path, f"{training_session_id}.pkl")
 
+        # Retrieve feature names for pipeline replay
+        _feat_session = _feature_sessions.get(feature_session_id, {})
+        _feat_names = _feat_session.get('feature_names', [])
+
         with open(model_path, 'wb') as f:
             pickle.dump({
                 'model': model,
@@ -473,7 +477,8 @@ class MLTrainer:
                 'algorithm': algorithm,
                 'mode': 'anomaly',
                 'hyperparameters': hyperparameters,
-                'feature_session_id': feature_session_id
+                'feature_session_id': feature_session_id,
+                'feature_names': _feat_names,
             }, f)
 
         # Store in session
@@ -756,9 +761,25 @@ class MLTrainer:
                 importances = model.feature_importances_
                 metrics['feature_importance'] = dict(zip(feature_names, importances.tolist()))
 
+        # Sanitize NaN/Inf values to prevent JSON serialization issues
+        import math
+        def _sanitize(v):
+            if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+                return 0.0
+            if isinstance(v, dict):
+                return {k: _sanitize(val) for k, val in v.items()}
+            if isinstance(v, list):
+                return [_sanitize(item) for item in v]
+            return v
+        metrics = _sanitize(metrics)
+
         # Generate session ID and save model
         training_session_id = str(uuid.uuid4())
         model_path = os.path.join(self.models_path, f"{training_session_id}.pkl")
+
+        # Retrieve feature names for pipeline replay
+        _feat_session = _feature_sessions.get(feature_session_id, {})
+        _feat_names = _feat_session.get('feature_names', [])
 
         with open(model_path, 'wb') as f:
             pickle.dump({
@@ -768,7 +789,8 @@ class MLTrainer:
                 'mode': 'classification',
                 'hyperparameters': hyperparameters,
                 'classes': classes.tolist() if hasattr(classes, 'tolist') else list(classes),
-                'feature_session_id': feature_session_id
+                'feature_session_id': feature_session_id,
+                'feature_names': _feat_names,
             }, f)
 
         # Store in session

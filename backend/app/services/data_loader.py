@@ -1388,6 +1388,86 @@ class DataLoader:
             for idx in test_idx:
                 categories[idx] = 'testing'
 
+        # --- Validate split: ensure test set has >= 2 classes ---
+        # If category-based split left test with < 2 classes, re-split with stratification
+        if labels and categories and num_windows > 1:
+            from sklearn.model_selection import train_test_split as sk_split
+            label_arr = np.array(labels)
+            cat_arr_check = np.array(categories)
+            test_mask = cat_arr_check == 'testing'
+            train_mask = cat_arr_check == 'training'
+
+            test_classes = set(label_arr[test_mask]) if test_mask.any() else set()
+            train_classes = set(label_arr[train_mask]) if train_mask.any() else set()
+            all_classes = set(label_arr)
+
+            if len(test_classes) < 2 and len(all_classes) >= 2:
+                print(f"[DataLoader] Split validation: test has only {len(test_classes)} class(es) "
+                      f"({test_classes}), need >= 2. Re-splitting with stratification...")
+                indices = np.arange(num_windows)
+                try:
+                    train_idx, test_idx = sk_split(
+                        indices, test_size=max(test_ratio or 0.2, 0.2),
+                        random_state=42, stratify=label_arr
+                    )
+                    categories = ['training'] * num_windows
+                    for idx in test_idx:
+                        categories[idx] = 'testing'
+                    split_method = 'stratified (auto-corrected)'
+                    print(f"[DataLoader] Re-split: train={len(train_idx)}, test={len(test_idx)}, "
+                          f"test classes={set(label_arr[test_idx])}")
+                except ValueError as e:
+                    # Still can't stratify — too few samples per class
+                    print(f"[DataLoader] Stratified re-split failed: {e}. "
+                          f"Need more data (record longer).")
+
+        # --- Per-channel min-max normalization (0-1) ---
+        # Compute stats from training data only to prevent leakage
+        all_windows = np.array(windows)  # (num_windows, window_size, num_channels)
+        cat_arr_temp = np.array(categories) if categories else None
+
+        if cat_arr_temp is not None and 'training' in cat_arr_temp:
+            train_mask = cat_arr_temp == 'training'
+            train_windows = all_windows[train_mask]
+        else:
+            train_windows = all_windows
+
+        # Flatten to (total_train_samples, num_channels) for stats
+        train_flat = train_windows.reshape(-1, all_windows.shape[2])
+        ch_min = train_flat.min(axis=0)
+        ch_max = train_flat.max(axis=0)
+        ch_range = ch_max - ch_min
+
+        # Identify and drop constant columns (range == 0)
+        active_mask = ch_range > 1e-10
+        dropped_cols = [sensor_cols[i] for i in range(len(sensor_cols)) if not active_mask[i]]
+        kept_cols = [sensor_cols[i] for i in range(len(sensor_cols)) if active_mask[i]]
+
+        if dropped_cols:
+            print(f"[DataLoader] Dropped {len(dropped_cols)} constant column(s): {dropped_cols}")
+
+        # Keep only non-constant channels
+        all_windows = all_windows[:, :, active_mask]
+        ch_min = ch_min[active_mask]
+        ch_max = ch_max[active_mask]
+        ch_range = ch_range[active_mask]
+
+        # Apply min-max normalization: (x - min) / (max - min) → [0, 1]
+        all_windows = (all_windows - ch_min) / ch_range
+
+        # Update sensor_cols in metadata
+        sensor_cols = kept_cols
+        windows = list(all_windows)
+
+        # Save normalization params for deployment
+        norm_params = {
+            'method': 'min_max',
+            'channel_min': ch_min.tolist(),
+            'channel_max': ch_max.tolist(),
+            'sensor_columns': kept_cols,
+            'dropped_columns': dropped_cols,
+        }
+
         # Store windowed data
         windowed_session_id = self._generate_session_id()
         overlap_pct = float((window_size - stride) / window_size * 100)
@@ -1412,11 +1492,13 @@ class DataLoader:
             'has_category_split': bool(categories),
             'category_distribution': category_dist,
             'split_method': split_method,
-            'test_ratio': float(test_ratio) if test_ratio else None
+            'test_ratio': float(test_ratio) if test_ratio else None,
+            'normalization': norm_params,
+            'sensor_columns': kept_cols,
         }
 
         _data_sessions[windowed_session_id] = {
-            'windows': np.array(windows),
+            'windows': all_windows,
             'labels': np.array(labels) if labels else None,
             'categories': np.array(categories) if categories else None,
             'metadata': windowed_metadata
@@ -1428,14 +1510,36 @@ class DataLoader:
             unique_labels, counts = np.unique(labels, return_counts=True)
             label_dist = {str(label): int(count) for label, count in zip(unique_labels, counts)}
 
+        # Build per-split class distributions
+        test_label_dist = None
+        train_label_dist = None
+        if labels and categories:
+            label_arr = np.array(labels)
+            cat_arr = np.array(categories)
+            for split_name, split_dist_ref in [('testing', 'test'), ('training', 'train')]:
+                mask = cat_arr == split_name
+                if mask.any():
+                    split_labels = label_arr[mask]
+                    ul, uc = np.unique(split_labels, return_counts=True)
+                    dist = {str(l): int(c) for l, c in zip(ul, uc)}
+                    if split_name == 'testing':
+                        test_label_dist = dist
+                    else:
+                        train_label_dist = dist
+
         return {
             'session_id': windowed_session_id,
             'metadata': windowed_metadata,
             'summary': {
                 'num_windows': int(num_windows),
-                'window_shape': list(windows[0].shape) if windows else None,
+                'window_shape': list(all_windows[0].shape) if len(all_windows) > 0 else None,
                 'label_distribution': label_dist,
-                'category_distribution': category_dist
+                'category_distribution': category_dist,
+                'train_label_distribution': train_label_dist,
+                'test_label_distribution': test_label_dist,
+                'normalization': 'min_max (0-1)',
+                'dropped_columns': dropped_cols,
+                'active_channels': len(kept_cols),
             }
         }
 
