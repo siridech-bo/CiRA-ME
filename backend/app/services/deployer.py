@@ -171,8 +171,12 @@ CMD ["tail", "-f", "/dev/null"]
         # Standard Python slim image
         if is_dl:
             if is_jetson:
-                # ARM64 (Jetson CPU) — omit --index-url (no ARM64 wheels there)
-                pip_install = "RUN pip install --no-cache-dir numpy scipy pandas torch"
+                # ARM64 (Jetson CPU) — pin torch<2.0 AND numpy<2.0.
+                # torch 2.x uses ARMv8.2-A instructions (SDOT/UDOT) → SIGILL on
+                # Cortex-A57/A53 (ARMv8.0-A, Jetson Nano).
+                # torch 1.13.x was compiled against NumPy 1.x; NumPy 2.x breaks its
+                # C ABI (_ARRAY_API not found → RuntimeError: "Could not infer dtype").
+                pip_install = "RUN pip install --no-cache-dir 'numpy<2.0' scipy pandas 'torch<2.0'"
             else:
                 # x86 — two separate RUN commands is REQUIRED here.
                 # --index-url overrides ALL pip sources (replaces PyPI entirely), so
@@ -587,6 +591,11 @@ CMD ["tail", "-f", "/dev/null"]
                            username=ssh_config['username'],
                            password=ssh_config.get('password'), timeout=10)
 
+            # Keep the SSH connection alive during slow operations (e.g. torch load on ARM).
+            # Without keepalive, the transport silently drops when no SSH packets arrive
+            # for > socket-timeout seconds (common on Jetson where torch import takes 30-60 s).
+            client.get_transport().set_keepalive(30)
+
             # Write CSV to temp file and SCP to remote data/input.csv
             with tempfile.NamedTemporaryFile(suffix='.csv', delete=False) as tmp:
                 tmp.write(csv_bytes)
@@ -601,12 +610,26 @@ CMD ["tail", "-f", "/dev/null"]
             scp.close()
             os.unlink(tmp_path)
 
-            # Run inference directly with python3 (most reliable over SSH/paramiko).
+            # Run a command over SSH and return (stdout, stderr).
+            # Uses threads so both streams are drained concurrently — prevents buffer
+            # deadlock when stderr fills up while we are waiting for exit status.
+            # No channel timeout is set; the thread join timeout acts as the wall-clock limit.
             def _ssh_run(cmd, timeout=120):
-                _, o, e = client.exec_command(cmd, timeout=timeout)
-                o.channel.recv_exit_status()
-                return (o.read().decode('utf-8', errors='replace'),
-                        e.read().decode('utf-8', errors='replace'))
+                import threading
+                _, o, e = client.exec_command(cmd)   # no per-channel timeout
+                out_buf, err_buf = [''], ['']
+
+                def _read(fh, buf):
+                    try:
+                        buf[0] = fh.read().decode('utf-8', errors='replace')
+                    except Exception:
+                        pass
+
+                t_out = threading.Thread(target=_read, args=(o, out_buf), daemon=True)
+                t_err = threading.Thread(target=_read, args=(e, err_buf), daemon=True)
+                t_out.start(); t_err.start()
+                t_out.join(timeout); t_err.join(timeout)
+                return out_buf[0], err_buf[0]
 
             # Names that are CiRA infrastructure (not inference containers)
             _INFRA_NAMES = {'cira-runtime', 'cira-backend', 'cira-frontend',
@@ -657,11 +680,36 @@ CMD ["tail", "-f", "/dev/null"]
                             f"'Watch build log' to monitor progress, then retry inference."
                         )
 
+                # Verify /data/input.csv is visible inside the container
+                # (comes from the volume mount; if the mount failed it won't exist).
+                data_check, _ = _ssh_run(
+                    f'docker exec {container_name} ls /data/input.csv 2>&1', timeout=15)
+                if 'No such file' in data_check or not data_check.strip():
+                    raise RuntimeError(
+                        f'/data/input.csv not found inside container {container_name}. '
+                        f'The volume mount may have failed — please redeploy the model.'
+                    )
+
+                # Quick sanity-check: verify docker exec can capture python3 output.
+                ping_out, ping_err = _ssh_run(
+                    f"docker exec {container_name} python3 -c \"print('CiRA_OK')\"",
+                    timeout=15)
+                if 'CiRA_OK' not in ping_out and 'CiRA_OK' not in ping_err:
+                    raise RuntimeError(
+                        f"docker exec output capture not working on this device.\n"
+                        f"python3 echo test: stdout={ping_out!r} stderr={ping_err!r}"
+                    )
+
+                # Use sh -c '... 2>&1' to merge Python stderr into stdout INSIDE
+                # the container before it hits the docker exec pipe — ensures
+                # tracebacks are always captured.  timeout=300 covers torch
+                # cold-start on ARM (30-60 s with no output).
                 infer_cmd = (
-                    f'docker exec {container_name} '
-                    f'python3 -u inference.py model.pkl /data/input.csv'
+                    f"docker exec {container_name} "
+                    f"sh -c 'python3 -u /app/inference.py /app/model.pkl /data/input.csv 2>&1'"
                 )
-                stdout_data, stderr_data = _ssh_run(infer_cmd)
+                stdout_data, stderr_data = _ssh_run(infer_cmd, timeout=300)
+
                 if 'No such container' in stderr_data or 'Error response from daemon' in stderr_data:
                     raise RuntimeError(
                         f"Docker error on remote: {stderr_data.strip()}\n"
