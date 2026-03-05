@@ -305,25 +305,9 @@
             type="info" variant="tonal" density="compact" class="mb-3 text-caption"
           >
             Requires Docker installed on the remote device.
-            Transfers Dockerfile + docker-compose.yml and runs
-            <code>docker compose up --build -d</code>.
+            Transfers Dockerfile, model, and inference script,
+            then runs <code>docker build</code> + <code>docker run</code> on the remote.
           </v-alert>
-
-          <v-checkbox
-            v-model="includeScaler"
-            label="Include feature scaler"
-            hide-details
-          />
-          <v-checkbox
-            v-model="includeInferenceScript"
-            label="Include inference script"
-            hide-details
-          />
-          <v-checkbox
-            v-model="includeRequirements"
-            label="Include requirements.txt"
-            hide-details
-          />
         </v-card>
       </v-col>
 
@@ -986,9 +970,7 @@ const targetDevice = ref('jetson_nano')
 const exportFormat = ref('onnx')
 const deployMode = ref<'docker' | 'files'>('docker')
 const enableGpu = ref(false)
-const includeScaler = ref(true)
-const includeInferenceScript = ref(true)
-const includeRequirements = ref(true)
+
 const showPassword = ref(false)
 
 const sshConfig = reactive({
@@ -1285,10 +1267,7 @@ async function deploy() {
       deploy_mode: deployMode.value,
       enable_gpu: enableGpu.value,
       jetpack_version: connectionStatus.value?.jetpack_version ?? null,
-      ...sshConfig,
-      include_scaler: includeScaler.value,
-      include_inference_script: includeInferenceScript.value,
-      include_requirements: includeRequirements.value
+      ...sshConfig
     }
 
     if (modelSource.value === 'session' && pipelineStore.trainingSession) {

@@ -115,9 +115,6 @@ def deploy_model():
 
     # Deployment options
     options = {
-        'include_scaler': data.get('include_scaler', True),
-        'include_inference_script': data.get('include_inference_script', True),
-        'include_requirements': data.get('include_requirements', True),
         'deploy_mode': data.get('deploy_mode', 'files'),  # 'files' | 'docker'
         'enable_gpu': data.get('enable_gpu', False),
         'jetpack_version': data.get('jetpack_version'),
