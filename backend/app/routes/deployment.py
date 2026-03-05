@@ -119,6 +119,8 @@ def deploy_model():
         'include_inference_script': data.get('include_inference_script', True),
         'include_requirements': data.get('include_requirements', True),
         'deploy_mode': data.get('deploy_mode', 'files'),  # 'files' | 'docker'
+        'enable_gpu': data.get('enable_gpu', False),
+        'jetpack_version': data.get('jetpack_version'),
     }
 
     if not training_session_id and not saved_model_id:
@@ -264,6 +266,34 @@ def list_remote_files():
         return jsonify({'error': str(e)}), 400
 
 
+@deployment_bp.route('/build-log', methods=['POST'])
+@login_required
+def get_build_log():
+    """Fetch the Docker build log from the remote device."""
+    data = request.get_json()
+    if not data:
+        return jsonify({'error': 'No data provided'}), 400
+
+    ssh_config = {
+        'host': data.get('host'),
+        'username': data.get('username'),
+        'password': data.get('password'),
+        'port': data.get('port', 22),
+    }
+    log_file = data.get('log_file')
+    container_name = data.get('container_name')
+
+    if not ssh_config['host'] or not log_file or not container_name:
+        return jsonify({'error': 'host, log_file, and container_name required'}), 400
+
+    try:
+        deployer = Deployer()
+        result = deployer.get_build_log(ssh_config, log_file, container_name)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+
 @deployment_bp.route('/run-inference', methods=['POST'])
 @login_required
 def run_inference_remote():
@@ -275,6 +305,7 @@ def run_inference_remote():
     remote_path = request.form.get('remote_path', '~/cira_models')
     deploy_mode = request.form.get('deploy_mode', 'docker')
     service_name = request.form.get('service_name', 'inference')
+    container_name_override = request.form.get('container_name', '').strip()
 
     if 'file' not in request.files:
         return jsonify({'error': 'No CSV file provided'}), 400
@@ -289,7 +320,8 @@ def run_inference_remote():
         deployer = Deployer()
         result = deployer.run_inference_remote(
             ssh_config, remote_path, deploy_mode, service_name,
-            csv_bytes, f.filename
+            csv_bytes, f.filename,
+            container_name_override=container_name_override
         )
         return jsonify(result)
     except Exception as e:

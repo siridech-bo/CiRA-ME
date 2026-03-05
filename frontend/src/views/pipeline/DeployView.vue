@@ -332,6 +332,54 @@
         <v-card class="pa-4">
           <h3 class="text-subtitle-1 font-weight-bold mb-4">SSH Configuration</h3>
 
+          <!-- Saved Devices -->
+          <div v-if="savedDevices.length > 0" class="mb-4">
+            <div class="text-caption text-medium-emphasis mb-2">
+              <v-icon size="x-small" class="mr-1">mdi-bookmark-multiple</v-icon>
+              Saved Devices
+            </div>
+            <div class="d-flex flex-wrap ga-2">
+              <v-chip
+                v-for="dev in savedDevices"
+                :key="dev.id"
+                :color="sshConfig.host === dev.host && sshConfig.username === dev.username ? 'primary' : 'default'"
+                variant="tonal"
+                size="small"
+                style="cursor: pointer"
+                @click="loadDevice(dev)"
+              >
+                <template v-if="renamingDeviceId === dev.id">
+                  <input
+                    :ref="el => { if (el) renameInputs[dev.id] = el as HTMLInputElement }"
+                    v-model="dev.name"
+                    class="rename-input"
+                    @blur="finishRename"
+                    @keyup.enter="finishRename"
+                    @keyup.escape="finishRename"
+                    @click.stop
+                  />
+                </template>
+                <template v-else>
+                  <v-icon start size="x-small">mdi-server-network</v-icon>
+                  {{ dev.name }}
+                </template>
+                <v-icon
+                  end size="x-small"
+                  class="ml-1"
+                  style="opacity: 0.6"
+                  @click.stop="startRename(dev)"
+                >mdi-pencil</v-icon>
+                <v-icon
+                  end size="x-small"
+                  class="ml-1"
+                  style="opacity: 0.6"
+                  @click.stop="deleteDevice(dev.id)"
+                >mdi-close</v-icon>
+              </v-chip>
+            </div>
+            <v-divider class="mt-3 mb-3" />
+          </div>
+
           <v-text-field
             v-model="sshConfig.host"
             label="Host / IP Address"
@@ -386,11 +434,100 @@
             variant="tonal"
             class="mt-4"
           >
-            {{ connectionStatus.message }}
-            <div v-if="connectionStatus.system_info" class="text-caption mt-2">
-              {{ connectionStatus.system_info }}
+            <div class="d-flex align-center justify-space-between flex-wrap ga-2">
+              <div>
+                {{ connectionStatus.message }}
+                <div v-if="connectionStatus.system_info" class="text-caption mt-1 opacity-80">
+                  {{ connectionStatus.system_info }}
+                </div>
+              </div>
+              <v-btn
+                v-if="connectionStatus.status === 'connected' && !isCurrentDeviceSaved"
+                size="x-small"
+                color="success"
+                variant="tonal"
+                @click="saveCurrentDevice"
+              >
+                <v-icon start size="x-small">mdi-bookmark-plus</v-icon>
+                Save device
+              </v-btn>
+              <v-chip
+                v-else-if="connectionStatus.status === 'connected' && isCurrentDeviceSaved"
+                size="x-small" color="success" variant="tonal"
+              >
+                <v-icon start size="x-small">mdi-bookmark-check</v-icon>
+                Saved
+              </v-chip>
             </div>
           </v-alert>
+
+          <!-- Detected device info panel -->
+          <v-card
+            v-if="connectionStatus?.status === 'connected'"
+            variant="outlined"
+            class="mt-3 pa-3"
+          >
+            <div class="text-caption font-weight-bold mb-2">Detected Device Info</div>
+            <div class="d-flex flex-wrap ga-2">
+              <v-chip
+                v-if="connectionStatus.is_jetson"
+                size="small" color="success" variant="tonal"
+              >
+                <v-icon start size="x-small">mdi-chip</v-icon>
+                Jetson
+                {{ connectionStatus.jetpack_version ? `JetPack ${connectionStatus.jetpack_version}` : '' }}
+                {{ connectionStatus.l4t_revision ? `(${connectionStatus.l4t_revision})` : '' }}
+              </v-chip>
+              <v-chip v-else size="small" variant="tonal">
+                <v-icon start size="x-small">mdi-desktop-tower</v-icon>
+                Non-Jetson
+              </v-chip>
+              <v-chip size="small" variant="tonal">
+                <v-icon start size="x-small">mdi-language-python</v-icon>
+                {{ connectionStatus.python_version || 'Python unknown' }}
+              </v-chip>
+              <v-chip
+                v-if="connectionStatus.cuda_version"
+                size="small" color="info" variant="tonal"
+              >
+                <v-icon start size="x-small">mdi-gpu</v-icon>
+                CUDA {{ connectionStatus.cuda_version }}
+              </v-chip>
+              <v-chip
+                :color="connectionStatus.nvidia_runtime ? 'success' : 'default'"
+                size="small" variant="tonal"
+              >
+                <v-icon start size="x-small">mdi-docker</v-icon>
+                nvidia runtime: {{ connectionStatus.nvidia_runtime ? 'yes' : 'no' }}
+              </v-chip>
+              <v-chip size="small" variant="tonal">
+                <v-icon start size="x-small">mdi-harddisk</v-icon>
+                Free: {{ connectionStatus.disk_free }}
+              </v-chip>
+              <v-chip size="small" variant="tonal">
+                <v-icon start size="x-small">mdi-memory</v-icon>
+                RAM free: {{ connectionStatus.ram_free }}
+              </v-chip>
+            </div>
+
+            <!-- GPU toggle (only visible in docker mode) -->
+            <div v-if="deployMode === 'docker'" class="mt-3">
+              <v-switch
+                v-model="enableGpu"
+                :label="enableGpu ? 'GPU inference enabled' : 'CPU inference (GPU disabled)'"
+                :color="enableGpu ? 'success' : 'default'"
+                density="compact"
+                hide-details
+                :disabled="!connectionStatus.nvidia_runtime"
+              />
+              <div
+                v-if="!connectionStatus.nvidia_runtime"
+                class="text-caption text-medium-emphasis mt-1"
+              >
+                nvidia runtime not detected — GPU disabled
+              </div>
+            </div>
+          </v-card>
         </v-card>
 
         <!-- Deployment Progress -->
@@ -417,17 +554,107 @@
             </div>
           </div>
 
+          <!-- Container started successfully -->
           <v-alert
-            v-if="deploymentResult.status === 'completed'"
+            v-if="deploymentResult.status === 'completed' && deploymentResult.container_started !== false"
             type="success"
             variant="tonal"
             class="mt-4"
           >
-            <strong>Deployment successful!</strong>
-            <div class="text-caption">
-              Model deployed to: {{ deploymentResult.remote_path }}
+            <div class="d-flex align-center justify-space-between flex-wrap ga-2">
+              <div>
+                <strong>Deployment successful!</strong>
+                <div class="text-caption mt-1">
+                  Path: {{ deploymentResult.remote_path }}
+                </div>
+                <div v-if="deploymentResult.container_name" class="text-caption">
+                  Container: <code>{{ deploymentResult.container_name }}</code>
+                </div>
+              </div>
+              <!-- Build log button always available for Docker mode -->
+              <v-btn
+                v-if="deploymentResult.deploy_mode === 'docker' && deploymentResult.build_log_file"
+                size="small"
+                variant="outlined"
+                color="success"
+                :loading="fetchingLog"
+                @click="buildLogInterval ? stopBuildLogPolling() : startBuildLogPolling()"
+              >
+                <v-icon start size="small">
+                  {{ buildLogInterval ? 'mdi-stop' : 'mdi-console' }}
+                </v-icon>
+                {{ buildLogInterval ? 'Stop watching' : 'View build log' }}
+              </v-btn>
             </div>
           </v-alert>
+
+          <!-- Build in background — container not yet up -->
+          <v-alert
+            v-if="deploymentResult.status === 'completed' && deploymentResult.container_started === false"
+            type="warning"
+            variant="tonal"
+            class="mt-4"
+          >
+            <div class="d-flex align-center justify-space-between flex-wrap ga-2">
+              <div>
+                <strong>Files transferred — Docker build in progress</strong>
+                <div class="text-body-2 mt-1">
+                  The container image is building on the remote device.
+                  First-time builds take <strong>~10 minutes</strong> (base image pull + packages).
+                </div>
+              </div>
+              <v-btn
+                size="small"
+                variant="flat"
+                color="warning"
+                :loading="fetchingLog"
+                @click="buildLogInterval ? stopBuildLogPolling() : startBuildLogPolling()"
+              >
+                <v-icon start size="small">
+                  {{ buildLogInterval ? 'mdi-stop' : 'mdi-console' }}
+                </v-icon>
+                {{ buildLogInterval ? 'Stop watching' : 'Watch build log' }}
+              </v-btn>
+            </div>
+          </v-alert>
+
+          <!-- Live build log panel (shown for both states) -->
+          <v-card
+            v-if="buildLog !== null && deploymentResult.deploy_mode === 'docker'"
+            variant="outlined"
+            class="mt-3"
+          >
+            <v-card-title class="text-subtitle-2 d-flex align-center pa-3 pb-0">
+              <v-icon size="small" class="mr-1" color="warning">mdi-console-line</v-icon>
+              Remote build log
+              <v-spacer />
+              <v-chip
+                v-if="buildLogInterval"
+                size="x-small"
+                color="warning"
+                variant="tonal"
+                class="mr-2"
+              >
+                <v-icon start size="x-small">mdi-refresh</v-icon>
+                auto-refresh 15s
+              </v-chip>
+              <v-btn
+                icon size="x-small"
+                variant="text"
+                :loading="fetchingLog"
+                @click="fetchBuildLog"
+              >
+                <v-icon size="small">mdi-refresh</v-icon>
+              </v-btn>
+            </v-card-title>
+            <v-card-text class="pa-3 pt-2">
+              <pre
+                style="white-space: pre-wrap; font-family: monospace; font-size: 0.72rem;
+                       max-height: 320px; overflow-y: auto; background: #111;
+                       color: #d4d4d4; padding: 12px; border-radius: 6px;"
+              >{{ buildLog || '(no output yet — build may just be starting)' }}</pre>
+            </v-card-text>
+          </v-card>
         </v-card>
 
         <!-- Post-Deployment: Validate & Run Inference -->
@@ -737,7 +964,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { usePipelineStore } from '@/stores/pipeline'
 import { useNotificationStore } from '@/stores/notification'
@@ -758,6 +985,7 @@ const loadingSavedModels = ref(false)
 const targetDevice = ref('jetson_nano')
 const exportFormat = ref('onnx')
 const deployMode = ref<'docker' | 'files'>('docker')
+const enableGpu = ref(false)
 const includeScaler = ref(true)
 const includeInferenceScript = ref(true)
 const includeRequirements = ref(true)
@@ -784,6 +1012,83 @@ const evaluating = ref(false)
 const evalResult = ref<any>(null)
 const evalFile = ref<File | null>(null)
 const downloadingPackage = ref(false)
+
+// Saved devices (persisted in localStorage)
+interface SavedDevice {
+  id: string
+  name: string
+  host: string
+  username: string
+  password: string
+  port: number
+  remote_path: string
+}
+
+const STORAGE_KEY = 'cira_saved_devices'
+
+function loadDevicesFromStorage(): SavedDevice[] {
+  try {
+    return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]')
+  } catch { return [] }
+}
+
+const savedDevices = ref<SavedDevice[]>(loadDevicesFromStorage())
+const renamingDeviceId = ref<string | null>(null)
+const renameInputs: Record<string, HTMLInputElement> = {}
+
+function persistDevices() {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(savedDevices.value))
+}
+
+const isCurrentDeviceSaved = computed(() =>
+  savedDevices.value.some(
+    d => d.host === sshConfig.host && d.username === sshConfig.username
+  )
+)
+
+function saveCurrentDevice() {
+  const id = `${sshConfig.host}_${sshConfig.username}_${Date.now()}`
+  const name = sshConfig.host  // default name = IP, user can rename
+  savedDevices.value.push({
+    id, name,
+    host: sshConfig.host,
+    username: sshConfig.username,
+    password: sshConfig.password,
+    port: sshConfig.port,
+    remote_path: sshConfig.remote_path,
+  })
+  persistDevices()
+  notificationStore.showSuccess(`Device "${name}" saved`)
+}
+
+function loadDevice(dev: SavedDevice) {
+  sshConfig.host = dev.host
+  sshConfig.username = dev.username
+  sshConfig.password = dev.password
+  sshConfig.port = dev.port
+  sshConfig.remote_path = dev.remote_path
+  connectionStatus.value = null
+}
+
+function deleteDevice(id: string) {
+  savedDevices.value = savedDevices.value.filter(d => d.id !== id)
+  persistDevices()
+}
+
+function startRename(dev: SavedDevice) {
+  renamingDeviceId.value = dev.id
+  setTimeout(() => renameInputs[dev.id]?.focus(), 50)
+}
+
+function finishRename() {
+  renamingDeviceId.value = null
+  persistDevices()
+}
+
+// Build log state
+const buildLog = ref<string | null>(null)
+const fetchingLog = ref(false)
+const buildLogInterval = ref<ReturnType<typeof setInterval> | null>(null)
 
 // Post-deployment state
 const checkingFiles = ref(false)
@@ -924,6 +1229,10 @@ async function testConnection() {
 
     if (response.data.status === 'connected') {
       notificationStore.showSuccess('Connection successful!')
+      // Auto-enable GPU if Jetson with nvidia runtime detected and docker mode
+      if (response.data.is_jetson && response.data.nvidia_runtime && deployMode.value === 'docker') {
+        enableGpu.value = true
+      }
     }
   } catch (e: any) {
     connectionStatus.value = {
@@ -974,6 +1283,8 @@ async function deploy() {
       target_type: targetDevice.value,
       export_format: exportFormat.value,
       deploy_mode: deployMode.value,
+      enable_gpu: enableGpu.value,
+      jetpack_version: connectionStatus.value?.jetpack_version ?? null,
       ...sshConfig,
       include_scaler: includeScaler.value,
       include_inference_script: includeInferenceScript.value,
@@ -988,11 +1299,53 @@ async function deploy() {
 
     const response = await api.post('/api/deployment/deploy', payload)
     deploymentResult.value = response.data
-    notificationStore.showSuccess('Deployment successful!')
+    if (response.data.container_started === false) {
+      notificationStore.showSuccess('Files transferred — container building in background')
+    } else {
+      notificationStore.showSuccess('Deployment successful!')
+    }
   } catch (e: any) {
     notificationStore.showError(e.response?.data?.error || 'Deployment failed')
   } finally {
     deploying.value = false
+  }
+}
+
+async function fetchBuildLog() {
+  if (!deploymentResult.value?.build_log_file || !deploymentResult.value?.container_name) return
+  fetchingLog.value = true
+  try {
+    const res = await api.post('/api/deployment/build-log', {
+      host: sshConfig.host,
+      username: sshConfig.username,
+      password: sshConfig.password,
+      port: sshConfig.port,
+      log_file: deploymentResult.value.build_log_file,
+      container_name: deploymentResult.value.container_name,
+    })
+    buildLog.value = res.data.log
+    if (res.data.container_started) {
+      // Container is now up — update result and stop polling
+      deploymentResult.value.container_started = true
+      stopBuildLogPolling()
+      notificationStore.showSuccess('Docker container is now running!')
+    }
+  } catch (e: any) {
+    buildLog.value = `Error fetching log: ${e.response?.data?.error || e.message}`
+  } finally {
+    fetchingLog.value = false
+  }
+}
+
+function startBuildLogPolling() {
+  fetchBuildLog()
+  buildLogInterval.value = setInterval(fetchBuildLog, 15000)
+}
+
+function stopBuildLogPolling() {
+  if (buildLogInterval.value) {
+    clearInterval(buildLogInterval.value)
+    buildLogInterval.value = null
   }
 }
 
@@ -1028,11 +1381,16 @@ async function runRemoteInference() {
     form.append('remote_path', deploymentResult.value.remote_path)
     form.append('deploy_mode', deploymentResult.value.deploy_mode || 'docker')
     form.append('service_name', deploymentResult.value.service_name || 'inference')
+    form.append('container_name', deploymentResult.value.container_name || '')
     const res = await api.post('/api/deployment/run-inference', form, {
       headers: { 'Content-Type': 'multipart/form-data' },
       timeout: 180000
     })
     inferenceOutput.value = res.data
+    // Update container_name in deploymentResult if backend resolved it via auto-discovery
+    if (res.data.container_name && deploymentResult.value) {
+      deploymentResult.value.container_name = res.data.container_name
+    }
     notificationStore.showSuccess('Inference completed on remote device')
   } catch (e: any) {
     inferenceError.value = e.response?.data?.error || 'Inference failed'
@@ -1044,4 +1402,20 @@ async function runRemoteInference() {
 onMounted(() => {
   loadSavedModels()
 })
+
+onUnmounted(() => {
+  stopBuildLogPolling()
+})
 </script>
+
+<style scoped>
+.rename-input {
+  background: transparent;
+  border: none;
+  outline: none;
+  color: inherit;
+  font-size: inherit;
+  width: 90px;
+  min-width: 50px;
+}
+</style>

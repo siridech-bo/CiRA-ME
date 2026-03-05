@@ -54,7 +54,8 @@ class Deployer:
         port: int = 22,
         key_path: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Test SSH connection to a remote host."""
+        """Test SSH connection and auto-detect JetPack version, Python, nvidia runtime."""
+        import re
         try:
             import paramiko
         except ImportError:
@@ -70,22 +71,63 @@ class Deployer:
             else:
                 client.connect(host, port=port, username=username, password=password, timeout=10)
 
-            # Get system info
-            stdin, stdout, stderr = client.exec_command('uname -a && cat /etc/os-release | head -5')
-            system_info = stdout.read().decode('utf-8').strip()
+            def _run(cmd):
+                _, o, e = client.exec_command(cmd, timeout=10)
+                o.channel.recv_exit_status()
+                return o.read().decode('utf-8', errors='replace').strip()
 
-            # Check for CUDA/Jetson
-            stdin, stdout, stderr = client.exec_command('nvcc --version 2>/dev/null || echo "No CUDA"')
-            cuda_info = stdout.read().decode('utf-8').strip()
+            # Basic system info
+            system_info = _run('uname -m && cat /etc/os-release 2>/dev/null | grep PRETTY_NAME | cut -d= -f2 | tr -d \'"\'')
 
-            client.close()
+            # Detect Jetson / L4T
+            l4t_release = _run('cat /etc/nv_tegra_release 2>/dev/null || echo ""')
+            is_jetson = bool(l4t_release)
+            jetpack_version = None
+            l4t_revision = None
+            if is_jetson:
+                m = re.search(r'R(\d+).*REVISION:\s*([\d.]+)', l4t_release)
+                if m:
+                    l4t_major = int(m.group(1))
+                    l4t_revision = f'R{l4t_major}.{m.group(2)}'
+                    if l4t_major == 32:
+                        jetpack_version = '4.6'
+                    elif l4t_major == 35:
+                        jetpack_version = '5.x'
+                    elif l4t_major == 36:
+                        jetpack_version = '6.x'
+                    else:
+                        jetpack_version = f'L4T-R{l4t_major}'
+
+            # Python version
+            python_version = _run('python3 --version 2>&1 | head -1')
+
+            # nvidia Docker runtime
+            docker_runtimes = _run('docker info 2>/dev/null | grep -i "runtimes:"')
+            nvidia_runtime = 'nvidia' in docker_runtimes.lower()
+
+            # CUDA
+            cuda_version = _run('nvcc --version 2>/dev/null | grep release | awk \'{print $5}\' | tr -d , || echo ""')
+
+            # Disk + RAM
+            disk_free = _run('df -h / | tail -1 | awk \'{print $4}\'')
+            ram_free  = _run('free -h | grep Mem | awk \'{print $7}\'')
 
             return {
                 'status': 'connected',
                 'host': host,
+                'message': 'Connection successful',
                 'system_info': system_info,
-                'cuda_info': cuda_info,
-                'message': 'Connection successful'
+                # Jetson-specific
+                'is_jetson': is_jetson,
+                'jetpack_version': jetpack_version,
+                'l4t_revision': l4t_revision,
+                # Runtime
+                'python_version': python_version,
+                'cuda_version': cuda_version if cuda_version else None,
+                'nvidia_runtime': nvidia_runtime,
+                # Resources
+                'disk_free': disk_free,
+                'ram_free': ram_free,
             }
 
         except Exception as e:
@@ -98,43 +140,86 @@ class Deployer:
         finally:
             client.close()
 
-    def generate_dockerfile(self, approach: str, algorithm: str) -> str:
+    def generate_dockerfile(self, approach: str, algorithm: str,
+                            target_type: str = '', jetpack_version: str = None,
+                            gpu: bool = False) -> str:
         """Generate a Dockerfile for the inference container."""
         is_dl = approach == 'dl' or algorithm.lower() == 'timesnet'
-        pyod_algorithms = {'iforest', 'lof', 'ocsvm', 'hbos', 'knn', 'copod', 'ecod', 'suod'}
-        needs_pyod = algorithm.lower() in pyod_algorithms
+        is_jetson = 'jetson' in target_type.lower()
 
-        base_pkgs = "numpy scipy pandas scikit-learn"
-        if needs_pyod:
-            base_pkgs += " pyod"
+        # Jetson + DL + GPU → L4T PyTorch base image (torch already installed)
+        if is_dl and is_jetson and gpu and jetpack_version:
+            l4t_tags = {
+                '4.6': 'r32.7.1-pth1.10-py3',
+                '5.x': 'r35.2.1-pth2.0-py3',
+                '6.x': 'r36.2.0-pth2.3.0-py3',
+            }
+            tag = l4t_tags.get(jetpack_version, 'r32.7.1-pth1.10-py3')
+            return f'''FROM nvcr.io/nvidia/l4t-pytorch:{tag}
+
+WORKDIR /app
+
+# PyTorch already in L4T base — install only lightweight deps
+RUN pip install --no-cache-dir numpy scipy pandas
+
+# Copy model artifacts
+COPY model.pkl inference.py pipeline_config.json ./
+
+CMD ["tail", "-f", "/dev/null"]
+'''
+
+        # Standard Python slim image
         if is_dl:
-            base_pkgs = "numpy scipy pandas torch --index-url https://download.pytorch.org/whl/cpu"
+            if is_jetson:
+                # ARM64 (Jetson CPU) — omit --index-url (no ARM64 wheels there)
+                pip_install = "RUN pip install --no-cache-dir numpy scipy pandas torch"
+            else:
+                # x86 — two separate RUN commands is REQUIRED here.
+                # --index-url overrides ALL pip sources (replaces PyPI entirely), so
+                # scipy/pandas/numpy cannot be found at download.pytorch.org/whl/cpu.
+                # Solution: install PyPI packages first, then torch with its own index.
+                pip_install = (
+                    "RUN pip install --no-cache-dir numpy scipy pandas && \\\n"
+                    "    pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu"
+                )
+        else:
+            pyod_algorithms = {'iforest', 'lof', 'ocsvm', 'hbos', 'knn', 'copod', 'ecod', 'suod'}
+            base_pkgs = "numpy scipy pandas scikit-learn"
+            if algorithm.lower() in pyod_algorithms:
+                base_pkgs += " pyod"
+            pip_install = f"RUN pip install --no-cache-dir {base_pkgs}"
 
         return f'''FROM python:3.10-slim
 
 WORKDIR /app
 
 # Install dependencies
-RUN pip install --no-cache-dir {base_pkgs}
+{pip_install}
 
 # Copy model artifacts
 COPY model.pkl inference.py pipeline_config.json ./
 
-# Default: run inference on /data/input.csv, write to /data/output.csv
-CMD ["python", "inference.py", "model.pkl", "/data/input.csv"]
+CMD ["tail", "-f", "/dev/null"]
 '''
 
-    def generate_docker_compose(self, service_name: str) -> str:
+    def generate_docker_compose(self, service_name: str, gpu: bool = False) -> str:
         """Generate a docker-compose.yml for the inference service."""
         safe_name = service_name.lower().replace(' ', '_').replace('-', '_')[:20]
+        container_name = f'cira-{safe_name}'
+        gpu_lines = (
+            '    runtime: nvidia\n'
+            '    environment:\n'
+            '      - NVIDIA_VISIBLE_DEVICES=all\n'
+        ) if gpu else ''
         return f'''services:
   {safe_name}:
     build: .
+    container_name: {container_name}
     restart: unless-stopped
     volumes:
       - ./data:/data
-    command: ["python", "inference.py", "model.pkl", "/data/input.csv"]
-'''
+    command: ["tail", "-f", "/dev/null"]
+{gpu_lines}'''
 
     def deploy(
         self,
@@ -187,6 +272,8 @@ CMD ["python", "inference.py", "model.pkl", "/data/input.csv"]
         _deployments[deployment_id] = deployment_status
 
         deploy_mode = options.get('deploy_mode', 'files')
+        enable_gpu = options.get('enable_gpu', False)
+        jetpack_version = options.get('jetpack_version')
         pipeline_config = pipeline_config or {}
 
         try:
@@ -237,14 +324,12 @@ CMD ["python", "inference.py", "model.pkl", "/data/input.csv"]
                 _json.dump(pipeline_config, f, indent=2, default=str)
 
             if deploy_mode == 'docker':
-                dockerfile_content = self.generate_dockerfile(approach, algorithm)
-                compose_content = self.generate_docker_compose(algorithm)
+                dockerfile_content = self.generate_dockerfile(
+                    approach, algorithm, target_type, jetpack_version, enable_gpu)
                 dockerfile_path = os.path.join(tmp_dir, 'Dockerfile')
-                compose_path = os.path.join(tmp_dir, 'docker-compose.yml')
                 with open(dockerfile_path, 'w') as f:
                     f.write(dockerfile_content)
-                with open(compose_path, 'w') as f:
-                    f.write(compose_content)
+                # build_script_path written after remote_path is known (Step 4)
 
             deployment_status['steps'][-1]['status'] = 'completed'
 
@@ -293,6 +378,54 @@ CMD ["python", "inference.py", "model.pkl", "/data/input.csv"]
 
             deployment_status['steps'][-1]['status'] = 'completed'
 
+            # Compute safe_name here so it's available for build script + Step 6
+            safe_name = algorithm.lower().replace(' ', '_').replace('-', '_')[:20] or 'model'
+
+            if deploy_mode == 'docker':
+                # Generate build script now that remote_path is resolved.
+                # Uses plain docker build + docker run — no docker-compose dependency.
+                container_name = f'cira-{safe_name}'
+                log_file = f'/tmp/cira_build_{safe_name}.log'
+                docker_cfg_path = f'/tmp/cira_dcfg_{safe_name}'
+                gpu_run_flags = '--runtime=nvidia -e NVIDIA_VISIBLE_DEVICES=all' if enable_gpu else ''
+                build_script = (
+                    '#!/bin/sh\n'
+                    f'LOG="{log_file}"\n'
+                    'echo "[CiRA] Build started at $(date)" >> "$LOG"\n'
+                    'export DOCKER_BUILDKIT=0\n'
+                    f'export DOCKER_CONFIG="{docker_cfg_path}"\n'
+                    f'mkdir -p "{docker_cfg_path}"\n'
+                    f'printf \'{{"auths":{{}}}}\' > "{docker_cfg_path}/config.json"\n'
+                    f'cd "{remote_path}"\n'
+                    f'echo "[CiRA] Building image cira-{safe_name}..." >> "$LOG"\n'
+                    f'docker build -t cira-{safe_name} . >> "$LOG" 2>&1\n'
+                    'BUILD_EXIT=$?\n'
+                    'if [ $BUILD_EXIT -ne 0 ]; then\n'
+                    '    echo "[CiRA] Build FAILED (exit $BUILD_EXIT)" >> "$LOG"\n'
+                    '    exit 1\n'
+                    'fi\n'
+                    f'echo "[CiRA] Removing old container {container_name}..." >> "$LOG"\n'
+                    f'docker stop {container_name} >> "$LOG" 2>&1 || true\n'
+                    f'docker rm   {container_name} >> "$LOG" 2>&1 || true\n'
+                    f'echo "[CiRA] Starting container {container_name}..." >> "$LOG"\n'
+                    f'docker run -d \\\n'
+                    f'    --name {container_name} \\\n'
+                    f'    --restart unless-stopped \\\n'
+                    f'    -v "{remote_path}/data:/data" \\\n'
+                    f'    {gpu_run_flags} \\\n'
+                    f'    cira-{safe_name} >> "$LOG" 2>&1\n'
+                    'RUN_EXIT=$?\n'
+                    'if [ $RUN_EXIT -eq 0 ]; then\n'
+                    f'    echo "[CiRA] Container {container_name} started OK" >> "$LOG"\n'
+                    f'    echo "{container_name}" > "{remote_path}/cira_container_name.txt"\n'
+                    'else\n'
+                    '    echo "[CiRA] docker run FAILED (exit $RUN_EXIT)" >> "$LOG"\n'
+                    'fi\n'
+                )
+                build_script_path = os.path.join(tmp_dir, 'cira_build.sh')
+                with open(build_script_path, 'w', newline='\n') as f:
+                    f.write(build_script)
+
             # Step 5: Transfer files
             deployment_status['steps'].append({'step': 'transfer', 'status': 'in_progress'})
 
@@ -305,7 +438,7 @@ CMD ["python", "inference.py", "model.pkl", "/data/input.csv"]
 
             if deploy_mode == 'docker':
                 scp.put(dockerfile_path, os.path.join(remote_path, 'Dockerfile'))
-                scp.put(compose_path, os.path.join(remote_path, 'docker-compose.yml'))
+                scp.put(build_script_path, os.path.join(remote_path, 'cira_build.sh'))
                 # Create data directory on remote for input/output CSVs
                 client.exec_command(f'mkdir -p {remote_path}/data')
 
@@ -316,20 +449,46 @@ CMD ["python", "inference.py", "model.pkl", "/data/input.csv"]
             deployment_status['steps'].append({'step': 'validate', 'status': 'in_progress'})
 
             if deploy_mode == 'docker':
-                # Build and start Docker container on remote
-                build_cmd = f'cd {remote_path} && docker compose up --build -d 2>&1'
-                stdin, stdout, stderr = client.exec_command(build_cmd, timeout=300)
-                build_output = stdout.read().decode('utf-8')
-                # Verify container is running
-                stdin2, stdout2, _ = client.exec_command(f'docker ps --filter "status=running" 2>&1')
-                ps_output = stdout2.read().decode('utf-8')
+                # Run build script in background (nohup survives SSH disconnect)
+                bg_cmd = (
+                    f'chmod +x {remote_path}/cira_build.sh && '
+                    f'nohup sh {remote_path}/cira_build.sh > {log_file} 2>&1 &'
+                )
+                _, bgout, _ = client.exec_command(bg_cmd, timeout=30)
+                bgout.channel.recv_exit_status()
+
+                # Poll for up to 60 s — covers re-deploys where image is already cached
+                import time as _time
+                container_started = False
+                ps_cmd = (
+                    f'docker ps --filter "name={container_name}" '
+                    f'--filter "status=running" --format "{{{{.Names}}}}" 2>/dev/null'
+                )
+                for _ in range(12):
+                    _time.sleep(5)
+                    _, psout, _ = client.exec_command(ps_cmd, timeout=10)
+                    psout.channel.recv_exit_status()
+                    if container_name in psout.read().decode().strip():
+                        container_started = True
+                        break
+
+                # Capture recent build log for UI
+                _, logout, _ = client.exec_command(
+                    f'tail -40 {log_file} 2>/dev/null || echo ""', timeout=10)
+                logout.channel.recv_exit_status()
+                build_log = logout.read().decode().strip()
+
                 deployment_status['steps'][-1]['result'] = {
-                    'build_output': build_output[-1000:],  # last 1000 chars
-                    'docker_ps': ps_output,
+                    'container_started': container_started,
+                    'build_log': build_log[-500:],
+                    'log_file': log_file,
                 }
             else:
-                stdin, stdout, stderr = client.exec_command(f'ls -la {remote_path}')
-                file_list = stdout.read().decode('utf-8')
+                container_name = None
+                container_started = True  # n/a for files mode
+                log_file = None
+                _, lstdout, _ = client.exec_command(f'ls -la {remote_path}')
+                file_list = lstdout.read().decode('utf-8')
                 deployment_status['steps'][-1]['result'] = {'files': file_list}
 
             deployment_status['steps'][-1]['status'] = 'completed'
@@ -341,13 +500,15 @@ CMD ["python", "inference.py", "model.pkl", "/data/input.csv"]
             deployment_status['completed_at'] = datetime.utcnow().isoformat()
             deployment_status['remote_path'] = remote_path
 
-            safe_name = algorithm.lower().replace(' ', '_').replace('-', '_')[:20]
             return {
                 'deployment_id': deployment_id,
                 'status': 'completed',
                 'remote_path': remote_path,
                 'deploy_mode': deploy_mode,
                 'service_name': safe_name,
+                'container_name': container_name,
+                'container_started': container_started,
+                'build_log_file': log_file,
                 'steps': deployment_status['steps'],
                 'message': 'Deployment successful'
             }
@@ -358,6 +519,37 @@ CMD ["python", "inference.py", "model.pkl", "/data/input.csv"]
             deployment_status['completed_at'] = datetime.utcnow().isoformat()
 
             raise
+
+    def get_build_log(self, ssh_config: Dict, log_file: str,
+                      container_name: str) -> Dict[str, Any]:
+        """Fetch the Docker build log from the remote device and check container status."""
+        import paramiko
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        try:
+            client.connect(ssh_config['host'], port=ssh_config.get('port', 22),
+                           username=ssh_config['username'],
+                           password=ssh_config.get('password'), timeout=10)
+
+            def _run(cmd):
+                _, o, _ = client.exec_command(cmd, timeout=15)
+                o.channel.recv_exit_status()
+                return o.read().decode('utf-8', errors='replace').strip()
+
+            log_text = _run(f'tail -150 {log_file} 2>/dev/null || echo "(log file not found)"')
+            ps_out = _run(
+                f'docker ps --filter "name={container_name}" '
+                f'--filter "status=running" --format "{{{{.Names}}}}" 2>/dev/null'
+            )
+            container_started = container_name in ps_out
+
+            return {
+                'log': log_text,
+                'container_started': container_started,
+                'container_name': container_name,
+            }
+        finally:
+            client.close()
 
     def list_remote_files(self, ssh_config: Dict, remote_path: str) -> Dict[str, Any]:
         """List files in the remote deployment directory."""
@@ -381,7 +573,8 @@ CMD ["python", "inference.py", "model.pkl", "/data/input.csv"]
 
     def run_inference_remote(self, ssh_config: Dict, remote_path: str,
                               deploy_mode: str, service_name: str,
-                              csv_bytes: bytes, csv_filename: str) -> Dict[str, Any]:
+                              csv_bytes: bytes, csv_filename: str,
+                              container_name_override: str = '') -> Dict[str, Any]:
         """Upload a CSV to the remote device and run inference."""
         import paramiko
         from scp import SCPClient
@@ -415,24 +608,84 @@ CMD ["python", "inference.py", "model.pkl", "/data/input.csv"]
                 return (o.read().decode('utf-8', errors='replace'),
                         e.read().decode('utf-8', errors='replace'))
 
-            infer_cmd = f'cd {remote_path} && python3 -u inference.py model.pkl data/input.csv'
-            stdout_data, stderr_data = _ssh_run(infer_cmd)
+            # Names that are CiRA infrastructure (not inference containers)
+            _INFRA_NAMES = {'cira-runtime', 'cira-backend', 'cira-frontend',
+                            'cira-nginx', 'cira-proxy', 'cira-db', 'cira-redis'}
 
-            # Detect numpy/sklearn version mismatch (model saved on newer numpy 2.x)
-            needs_upgrade = (
-                "numpy._core" in stderr_data or
-                "No module named 'numpy._core'" in stderr_data or
-                "binary incompatibility" in stderr_data or
-                "ModuleNotFoundError" in stderr_data
-            )
-            if needs_upgrade:
-                # Upgrade to numpy-2.x-compatible stack (works on Python 3.10+)
-                upgrade_cmd = (
-                    "pip3 install -q 'numpy>=2.0' 'pandas>=2.2' "
-                    "'scikit-learn>=1.5,<1.8' 'scipy>=1.13' && "
-                    f"cd {remote_path} && python3 -u inference.py model.pkl data/input.csv"
+            if deploy_mode == 'docker':
+                # Resolve container name: override > saved file > service_name fallback
+                if (container_name_override
+                        and container_name_override not in ('cira-', 'cira')
+                        and container_name_override not in _INFRA_NAMES):
+                    container_name = container_name_override
+                else:
+                    # Primary: read the name saved by cira_build.sh
+                    _, fnout, _ = client.exec_command(
+                        f'cat "{remote_path}/cira_container_name.txt" 2>/dev/null', timeout=10)
+                    fnout.channel.recv_exit_status()
+                    saved_name = fnout.read().decode().strip()
+                    if (saved_name and saved_name.startswith('cira-')
+                            and len(saved_name) > 5
+                            and saved_name not in _INFRA_NAMES):
+                        container_name = saved_name
+                    else:
+                        # Fallback: derive from service_name
+                        safe_sn = service_name.lower().replace(' ', '_').replace('-', '_')[:20]
+                        container_name = f'cira-{safe_sn}' if safe_sn else 'cira-inference'
+
+                # Check if container is running
+                ps_cmd = (
+                    f'docker ps --filter "name={container_name}" '
+                    f'--filter "status=running" --format "{{{{.Names}}}}" 2>/dev/null'
                 )
-                stdout_data, stderr_data = _ssh_run(upgrade_cmd, timeout=300)
+                _, csout, _ = client.exec_command(ps_cmd, timeout=10)
+                csout.channel.recv_exit_status()
+                is_running = container_name in csout.read().decode().strip()
+
+                if not is_running:
+                    # Image may be cached — try docker start (no rebuild needed)
+                    _, stout, _ = client.exec_command(
+                        f'docker start {container_name} 2>&1', timeout=30)
+                    stout.channel.recv_exit_status()
+                    # Re-check
+                    _, csout2, _ = client.exec_command(ps_cmd, timeout=10)
+                    csout2.channel.recv_exit_status()
+                    if container_name not in csout2.read().decode().strip():
+                        raise RuntimeError(
+                            f"Container '{container_name}' is not running on the remote device. "
+                            f"The Docker image may still be building — please use "
+                            f"'Watch build log' to monitor progress, then retry inference."
+                        )
+
+                infer_cmd = (
+                    f'docker exec {container_name} '
+                    f'python3 -u inference.py model.pkl /data/input.csv'
+                )
+                stdout_data, stderr_data = _ssh_run(infer_cmd)
+                if 'No such container' in stderr_data or 'Error response from daemon' in stderr_data:
+                    raise RuntimeError(
+                        f"Docker error on remote: {stderr_data.strip()}\n"
+                        f"Please redeploy the model and wait for the container to be ready."
+                    )
+            else:
+                infer_cmd = f'cd {remote_path} && python3 -u inference.py model.pkl data/input.csv'
+                stdout_data, stderr_data = _ssh_run(infer_cmd)
+
+                # Detect numpy/sklearn version mismatch (model saved on newer numpy 2.x)
+                needs_upgrade = (
+                    "numpy._core" in stderr_data or
+                    "No module named 'numpy._core'" in stderr_data or
+                    "binary incompatibility" in stderr_data or
+                    "ModuleNotFoundError" in stderr_data
+                )
+                if needs_upgrade:
+                    # Upgrade to numpy-2.x-compatible stack (works on Python 3.10+)
+                    upgrade_cmd = (
+                        "pip3 install -q 'numpy>=2.0' 'pandas>=2.2' "
+                        "'scikit-learn>=1.5,<1.8' 'scipy>=1.13' && "
+                        f"cd {remote_path} && python3 -u inference.py model.pkl data/input.csv"
+                    )
+                    stdout_data, stderr_data = _ssh_run(upgrade_cmd, timeout=300)
 
             output = stdout_data
             if stderr_data:
@@ -441,7 +694,11 @@ CMD ["python", "inference.py", "model.pkl", "/data/input.csv"]
                 output = 'No output from inference'
 
             parsed = self._parse_inference_output(output)
-            return {'success': True, 'output': output, 'csv': csv_filename, **parsed}
+            result = {'success': True, 'output': output, 'csv': csv_filename, **parsed}
+            # Return resolved container_name so frontend can update its state
+            if deploy_mode == 'docker':
+                result['container_name'] = container_name
+            return result
         finally:
             client.close()
 
@@ -1241,6 +1498,9 @@ def main():
         print("ERROR: PyTorch not found. Install with: pip install torch")
         sys.exit(1)
 
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"      Using device: {{device}}")
+
     print("[1/4] Loading CSV...")
     raw_data = load_csv(csv_path)
     print(f"      Loaded {{len(raw_data)}} rows, {{len(SENSOR_COLUMNS)}} channels")
@@ -1260,7 +1520,7 @@ def main():
     cfg        = inner.get("config",  model_data.get("config",  {{}}))
     mode       = inner.get("mode",    model_data.get("mode",    "anomaly"))
     state_dict = _load_state_dict(model_data)
-    x          = torch.FloatTensor(windows)
+    x          = torch.FloatTensor(windows).to(device)
 
     with torch.no_grad():
         if mode == "classification":
@@ -1269,9 +1529,10 @@ def main():
             num_cls = len(class_names) if class_names else cfg.get("num_classes", cfg.get("num_class", 2))
             model = _build_classifier(cfg, num_cls)
             model.load_state_dict(state_dict)
+            model.to(device)
             model.eval()
 
-            probs  = torch.softmax(model(x), dim=1).numpy()
+            probs  = torch.softmax(model(x), dim=1).cpu().numpy()
             preds  = np.argmax(probs, axis=1)
             labels = [class_names[p] if p < len(class_names) else str(p) for p in preds]
 
@@ -1285,9 +1546,10 @@ def main():
             threshold = float(inner.get("threshold", model_data.get("threshold", 0.5)))
             model = _build_encoder(cfg)
             model.load_state_dict(state_dict)
+            model.to(device)
             model.eval()
 
-            recon  = model(x).numpy()
+            recon  = model(x).cpu().numpy()
             errors = np.mean((windows - recon) ** 2, axis=(1, 2))
             labels = ["Anomaly" if e > threshold else "Normal" for e in errors]
 
