@@ -304,9 +304,17 @@
             v-if="deployMode === 'docker'"
             type="info" variant="tonal" density="compact" class="mb-3 text-caption"
           >
-            Requires Docker installed on the remote device.
-            Transfers Dockerfile, model, and inference script,
-            then runs <code>docker build</code> + <code>docker run</code> on the remote.
+            Requires Docker on the remote device. Transfers Dockerfile, model, and
+            inference script, then runs <code>docker build</code> +
+            <code>docker run</code> on the remote.
+          </v-alert>
+          <v-alert
+            v-else
+            type="info" variant="tonal" density="compact" class="mb-3 text-caption"
+          >
+            Transfers <code>model.pkl</code> and <code>inference.py</code> directly.
+            Run on the remote with:
+            <code>python3 inference.py model.pkl data.csv</code>
           </v-alert>
         </v-card>
       </v-col>
