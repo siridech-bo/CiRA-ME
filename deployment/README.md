@@ -89,12 +89,27 @@ http://localhost:3030
 | Task | Windows | Linux |
 |------|---------|-------|
 | Install images | `install.bat` | `bash install.sh` |
+| **Update to new version** | **`update.bat`** | **`bash update.sh`** |
 | Start (GPU) | `start.bat` | `bash start.sh` |
 | Start (no GPU) | `start-no-gpu.bat` | `bash start-no-gpu.sh` |
 | Stop | `stop.bat` | `bash stop.sh` |
 | View logs | `logs.bat` | `docker compose logs -f` |
 | Check status | `status.bat` | `docker compose ps` |
 | Uninstall | `uninstall.bat` | `bash uninstall.sh` |
+
+## Updating an Existing Installation
+
+When shipping a new version to a customer who already has CiRA ME installed:
+
+1. Copy the **new** `cirame-backend.tar` and `cirame-frontend.tar` into the customer's `deployment/` folder (replacing the old ones)
+2. Run the update script:
+   - Windows: `update.bat`
+   - Linux: `bash update.sh`
+3. Then restart: `start.bat` / `bash start.sh`
+
+**What is preserved:** All customer data (database, accounts, trained models, datasets) lives in Docker named volumes — they survive the update untouched.
+
+**What is replaced:** The application code (backend + frontend images). Old image layers are pruned automatically to free disk space.
 
 ---
 
@@ -186,6 +201,7 @@ deployment/
 ├── start-no-gpu.bat         # Start CPU only (Windows)
 ├── start-no-gpu.sh          # Start CPU only (Linux)
 ├── stop.bat / stop.sh       # Stop application
+├── update.bat / update.sh   # Update to new version (preserves data)
 ├── uninstall.bat / uninstall.sh  # Remove everything
 ├── logs.bat                 # View logs (Windows)
 ├── status.bat               # Check status (Windows)
