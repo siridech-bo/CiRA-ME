@@ -52,8 +52,10 @@ class Config:
         self.CUSTOM_DSP_FEATURES = [
             'rms', 'peak_to_peak', 'crest_factor', 'shape_factor',
             'impulse_factor', 'margin_factor', 'zero_crossing_rate',
+            'autocorr_lag1', 'autocorr_lag5', 'binned_entropy',
             'spectral_centroid', 'spectral_bandwidth', 'spectral_rolloff',
             'spectral_flatness', 'spectral_entropy', 'peak_frequency',
+            'spectral_skewness', 'spectral_kurtosis',
             'band_power_low', 'band_power_mid', 'band_power_high'
         ]
 

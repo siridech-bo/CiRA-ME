@@ -3,10 +3,13 @@ CiRA ME - Deployment Routes
 Handles model export and SSH deployment to edge devices (NVIDIA Jetson)
 """
 
+import logging
 from flask import Blueprint, request, jsonify
 from ..auth import login_required, admin_required
 from ..services.deployer import Deployer, load_saved_model_session
 from ..models import SavedModel
+
+logger = logging.getLogger(__name__)
 
 deployment_bp = Blueprint('deployment', __name__)
 
@@ -241,6 +244,44 @@ def generate_package(model_id):
         )
     except Exception as e:
         return jsonify({'error': str(e)}), 400
+
+
+@deployment_bp.route('/cira-claw-package/<int:model_id>', methods=['POST'])
+@login_required
+def export_cira_claw_package(model_id: int):
+    """Export a saved model as a CiRA CLAW deployment package.
+
+    Returns a zip containing:
+      - model.onnx       (model + scaler as unified ONNX graph)
+      - cira_model.json  (CiRA CLAW manifest)
+      - labels.txt       (class names, one per line)
+
+    HTTP 400 for: unsupported algorithms, tsfresh models, incomplete pipeline config.
+    HTTP 500 for: missing skl2onnx/onnx packages, unexpected errors.
+    """
+    from flask import send_file
+    from ..services.cira_claw_exporter import CiraCLAWExporter
+
+    try:
+        exporter = CiraCLAWExporter()
+        result = exporter.export(model_id)
+
+        return send_file(
+            result['path'],
+            as_attachment=True,
+            download_name=result['filename'],
+            mimetype='application/zip'
+        )
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except ImportError as e:
+        return jsonify({
+            'error': str(e),
+            'hint': 'Install required packages: pip install skl2onnx onnx'
+        }), 500
+    except Exception as e:
+        logger.error(f"CiRA CLAW export error for model {model_id}: {e}", exc_info=True)
+        return jsonify({'error': f'Export failed: {str(e)}'}), 500
 
 
 @deployment_bp.route('/remote-files', methods=['POST'])

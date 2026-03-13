@@ -60,5 +60,6 @@ nul
 # Docker
 docker-volumes/
 backups/
+deployment/*.tar
 *.tar.gz
 *.zip

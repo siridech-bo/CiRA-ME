@@ -101,7 +101,7 @@ class FeatureExtractor:
         pass
 
     def _compute_dsp_features(self, window: np.ndarray, sampling_rate: float = 100.0) -> Dict[str, np.ndarray]:
-        """Compute custom DSP features for a window (19 features)."""
+        """Compute custom DSP features for a window (21 features)."""
         features = {}
 
         # Time-domain features
@@ -832,8 +832,8 @@ class FeatureExtractor:
             'extraction_methods': {
                 'lightweight': {
                     'name': 'Lightweight (Custom)',
-                    'description': '44 curated features optimized for edge deployment',
-                    'features_per_channel': 44,
+                    'description': '46 curated features optimized for edge deployment',
+                    'features_per_channel': 46,
                     'speed': 'fast',
                     'includes': ['statistical', 'dsp', 'spectral']
                 },
