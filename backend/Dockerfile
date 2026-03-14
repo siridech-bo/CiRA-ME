@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # CiRA ME - Backend Dockerfile
 # Production-ready Python Flask API with ML dependencies
 
@@ -7,7 +8,6 @@ FROM python:3.11-slim as base
 # Set environment variables to prevent Python from writing pyc files and buffering stdout/stderr
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
 # Install system dependencies required for scientific Python packages
@@ -36,7 +36,9 @@ COPY requirements.txt .
 
 # Install Python dependencies
 # Use --user to install in user directory for better security
-RUN pip install --user --no-cache-dir -r requirements.txt
+# BuildKit cache mount keeps downloaded wheels across rebuilds
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --user -r requirements.txt
 
 # Stage 3: Runtime image
 FROM base as runtime

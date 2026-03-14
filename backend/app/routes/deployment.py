@@ -129,6 +129,57 @@ def deploy_model():
     if not ssh_config['host'] or not ssh_config['username']:
         return jsonify({'error': 'SSH host and username required'}), 400
 
+    # CiRA CLAW export: generate package locally, then SCP to remote
+    if export_format == 'cira_claw':
+        if not saved_model_id:
+            return jsonify({'error': 'CiRA CLAW export requires a saved model'}), 400
+        try:
+            from ..services.cira_claw_exporter import CiraCLAWExporter
+            import paramiko
+            from scp import SCPClient
+            import zipfile, tempfile, os
+
+            exporter = CiraCLAWExporter()
+            pkg = exporter.export(int(saved_model_id))
+
+            # Connect via SSH and transfer extracted files
+            ssh = paramiko.SSHClient()
+            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            ssh.connect(
+                hostname=ssh_config['host'],
+                port=ssh_config.get('port', 22),
+                username=ssh_config['username'],
+                password=ssh_config.get('password'),
+            )
+
+            remote_path = ssh_config.get('remote_path', '~/cira_models')
+            ssh.exec_command(f'mkdir -p {remote_path}/cira_claw')
+
+            # Extract zip to temp dir and SCP individual files
+            tmp_extract = tempfile.mkdtemp()
+            with zipfile.ZipFile(pkg['path'], 'r') as zf:
+                zf.extractall(tmp_extract)
+
+            with SCPClient(ssh.get_transport()) as scp_client:
+                for name in os.listdir(tmp_extract):
+                    local = os.path.join(tmp_extract, name)
+                    scp_client.put(local, f'{remote_path}/cira_claw/{name}')
+
+            ssh.close()
+
+            return jsonify({
+                'status': 'completed',
+                'message': f'CiRA CLAW package deployed to {remote_path}/cira_claw/',
+                'files': ['model.onnx', 'cira_model.json', 'labels.txt'],
+            })
+        except ValueError as e:
+            return jsonify({'error': str(e)}), 400
+        except ImportError as e:
+            return jsonify({'error': str(e), 'hint': 'pip install skl2onnx onnx onnxscript'}), 500
+        except Exception as e:
+            logger.error(f"CiRA CLAW deploy error: {e}", exc_info=True)
+            return jsonify({'error': f'CiRA CLAW deploy failed: {str(e)}'}), 500
+
     try:
         deployer = Deployer()
         saved_model_session = None

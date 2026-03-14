@@ -41,6 +41,7 @@ joblib>=1.3.0
 skl2onnx>=1.16
 onnx>=1.15
 onnxruntime>=1.17
+onnxscript>=0.1
 
 # LLM Integration (Optional)
 # ollama>=0.1.0  # For local Llama integration

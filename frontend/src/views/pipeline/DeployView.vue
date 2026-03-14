@@ -285,6 +285,19 @@
                 </div>
               </template>
             </v-radio>
+            <v-radio
+              v-if="modelSource === 'saved' && selectedModel?.pipeline_config?.normalization"
+              value="cira_claw"
+            >
+              <template #label>
+                <div>
+                  <div class="font-weight-medium" style="color: #FF5722;">CiRA CLAW Package</div>
+                  <div class="text-caption text-medium-emphasis">
+                    ONNX + manifest for CiRA CLAW C runtime
+                  </div>
+                </div>
+              </template>
+            </v-radio>
           </v-radio-group>
 
           <v-divider class="my-4" />
@@ -1198,6 +1211,7 @@ async function downloadPackage() {
   }
 }
 
+
 async function loadSavedModels() {
   try {
     loadingSavedModels.value = true
@@ -1244,20 +1258,67 @@ async function exportOnly() {
   try {
     exporting.value = true
 
-    let url: string
-    if (modelSource.value === 'session' && pipelineStore.trainingSession) {
-      url = `/api/training/export/${pipelineStore.trainingSession.training_session_id}`
-    } else {
-      url = `/api/training/export-saved/${selectedSavedModelId.value}`
+    // CiRA CLAW: download zip with model.onnx + manifest
+    if (exportFormat.value === 'cira_claw') {
+      if (!selectedSavedModelId.value) {
+        notificationStore.showError('CiRA CLAW export requires a saved model')
+        return
+      }
+      const response = await api.post(
+        `/api/deployment/cira-claw-package/${selectedSavedModelId.value}`,
+        {},
+        { responseType: 'blob' }
+      )
+      _downloadBlob(response, `cira_claw_${selectedSavedModelId.value}.zip`)
+      notificationStore.showSuccess('CiRA CLAW package downloaded (model.onnx + cira_model.json)')
+      return
     }
 
-    const response = await api.post(url, { format: exportFormat.value })
-    notificationStore.showSuccess(`Model exported as ${exportFormat.value}`)
+    // Other formats: download deployment package zip
+    if (modelSource.value === 'saved' && selectedSavedModelId.value) {
+      const response = await api.post(
+        `/api/deployment/package/${selectedSavedModelId.value}`,
+        {},
+        { responseType: 'blob' }
+      )
+      _downloadBlob(response, `deployment_package_${selectedSavedModelId.value}.zip`)
+      notificationStore.showSuccess(`Deployment package downloaded (${exportFormat.value})`)
+    } else {
+      // In-memory session: server-side export only (no download)
+      const url = `/api/training/export/${pipelineStore.trainingSession!.training_session_id}`
+      await api.post(url, { format: exportFormat.value })
+      notificationStore.showSuccess(`Model exported as ${exportFormat.value}`)
+    }
   } catch (e: any) {
-    notificationStore.showError(e.response?.data?.error || 'Export failed')
+    if (e.response?.data instanceof Blob) {
+      const text = await e.response.data.text()
+      try {
+        const json = JSON.parse(text)
+        notificationStore.showError(json.error || 'Export failed')
+      } catch {
+        notificationStore.showError('Export failed')
+      }
+    } else {
+      notificationStore.showError(e.response?.data?.error || 'Export failed')
+    }
   } finally {
     exporting.value = false
   }
+}
+
+function _downloadBlob(response: any, fallbackName: string) {
+  const blob = new Blob([response.data], { type: 'application/zip' })
+  const url = window.URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  const disposition = response.headers['content-disposition']
+  a.download = disposition
+    ? disposition.split('filename=')[1]?.replace(/"/g, '')
+    : fallbackName
+  document.body.appendChild(a)
+  a.click()
+  window.URL.revokeObjectURL(url)
+  document.body.removeChild(a)
 }
 
 async function deploy() {
