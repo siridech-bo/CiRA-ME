@@ -6,12 +6,21 @@ Handles loading and parsing of CSV, Edge Impulse JSON, Edge Impulse CBOR, and Ci
 import os
 import json
 import uuid
+import time
+import threading
 import pandas as pd
 import numpy as np
 from typing import Dict, List, Any, Optional
 
 # Global session storage for loaded data
+# NOTE: This is in-process memory — the WSGI server MUST run with a single
+# worker process (threads are fine) so all requests share this dict.
 _data_sessions: Dict[str, Dict] = {}
+_sessions_lock = threading.Lock()
+
+# Session limits
+_SESSION_TTL_SECONDS = 2 * 60 * 60  # 2 hours
+_MAX_SESSIONS = 50
 
 
 class DataLoader:
@@ -32,14 +41,35 @@ class DataLoader:
         else:
             metadata['min_sample_length'] = len(data)
 
-        _data_sessions[session_id] = {
-            'data': data,
-            'metadata': metadata
-        }
+        with _sessions_lock:
+            # Lazy cleanup: evict expired sessions
+            self._evict_expired()
+
+            _data_sessions[session_id] = {
+                'data': data,
+                'metadata': metadata,
+                'created_at': time.monotonic(),
+            }
+
+            # Cap enforcement: if still over limit, evict oldest
+            if len(_data_sessions) > _MAX_SESSIONS:
+                oldest_id = min(
+                    _data_sessions,
+                    key=lambda k: _data_sessions[k].get('created_at', 0),
+                )
+                if oldest_id != session_id:
+                    del _data_sessions[oldest_id]
 
     def _get_session(self, session_id: str) -> Optional[Dict]:
-        """Retrieve session data."""
-        return _data_sessions.get(session_id)
+        """Retrieve session data. Returns None for expired or missing sessions."""
+        with _sessions_lock:
+            session = _data_sessions.get(session_id)
+            if session is None:
+                return None
+            if time.monotonic() - session.get('created_at', 0) > _SESSION_TTL_SECONDS:
+                del _data_sessions[session_id]
+                return None
+            return session
 
     # Patterns to detect time/timestamp columns (case-insensitive)
     TIME_COLUMN_PATTERNS = [
@@ -839,8 +869,19 @@ class DataLoader:
 
     def cleanup_session(self, session_id: str) -> None:
         """Remove a session from memory."""
-        if session_id in _data_sessions:
-            del _data_sessions[session_id]
+        with _sessions_lock:
+            _data_sessions.pop(session_id, None)
+
+    @staticmethod
+    def _evict_expired() -> None:
+        """Remove all expired sessions. Caller must hold _sessions_lock."""
+        now = time.monotonic()
+        expired = [
+            sid for sid, s in _data_sessions.items()
+            if now - s.get('created_at', 0) > _SESSION_TTL_SECONDS
+        ]
+        for sid in expired:
+            del _data_sessions[sid]
 
     def _parse_cira_samples(self, cbor_data: Dict, file_label: str,
                              sample_id_offset: int = 0,
@@ -1497,12 +1538,15 @@ class DataLoader:
             'sensor_columns': kept_cols,
         }
 
-        _data_sessions[windowed_session_id] = {
-            'windows': all_windows,
-            'labels': np.array(labels) if labels else None,
-            'categories': np.array(categories) if categories else None,
-            'metadata': windowed_metadata
-        }
+        with _sessions_lock:
+            self._evict_expired()
+            _data_sessions[windowed_session_id] = {
+                'windows': all_windows,
+                'labels': np.array(labels) if labels else None,
+                'categories': np.array(categories) if categories else None,
+                'metadata': windowed_metadata,
+                'created_at': time.monotonic(),
+            }
 
         # Build label distribution with native Python types
         label_dist = None

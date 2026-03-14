@@ -61,4 +61,8 @@ if __name__ == '__main__':
     +-----------------------------------------------------------+
     """)
 
-    app.run(host=host, port=port, debug=debug)
+    # Use threaded=True for concurrency, but keep a single process.
+    # Session data (data_loader, ml_trainer) is stored in in-process memory,
+    # so multiple worker processes would each get their own copy and requests
+    # would randomly fail with "session not found".
+    app.run(host=host, port=port, debug=debug, threaded=True)

@@ -7,7 +7,7 @@ import os
 import uuid
 from flask import Blueprint, request, jsonify, current_app, send_file
 from werkzeug.utils import secure_filename
-from ..auth import login_required, validate_path, get_user_folders
+from ..auth import login_required, validate_path, get_user_folders, _is_path_within
 from ..services.data_loader import DataLoader
 
 data_sources_bp = Blueprint('data_sources', __name__)
@@ -326,7 +326,7 @@ def delete_uploaded_file():
     datasets_root_norm = os.path.normpath(os.path.abspath(datasets_root))
 
     # File must be within datasets root
-    if not file_path_norm.startswith(datasets_root_norm):
+    if not _is_path_within(file_path_norm, datasets_root_norm):
         return jsonify({'error': 'Access denied'}), 403
 
     # Check if user can delete this file
@@ -337,7 +337,7 @@ def delete_uploaded_file():
     user_uploads_path = os.path.normpath(
         os.path.join(datasets_root, shared_folder, 'uploads', f"user_{user['id']}")
     )
-    if file_path_norm.startswith(user_uploads_path):
+    if _is_path_within(file_path_norm, user_uploads_path):
         can_delete = True
         delete_reason = 'user_uploads'
 
@@ -345,7 +345,7 @@ def delete_uploaded_file():
     private_folder = user.get('private_folder')
     if private_folder:
         private_path = os.path.normpath(os.path.join(datasets_root, private_folder))
-        if file_path_norm.startswith(private_path):
+        if _is_path_within(file_path_norm, private_path):
             can_delete = True
             delete_reason = 'private_folder'
 
@@ -412,7 +412,7 @@ def admin_delete_file():
     datasets_root_norm = os.path.normpath(os.path.abspath(datasets_root))
 
     # Safety check: file must be within datasets root
-    if not file_path.startswith(datasets_root_norm):
+    if not _is_path_within(file_path, datasets_root_norm):
         return jsonify({'error': 'File must be within datasets directory'}), 403
 
     # Prevent deleting the datasets root itself

@@ -51,6 +51,20 @@ def admin_required(f):
     return decorated_function
 
 
+def _is_path_within(child: str, parent: str) -> bool:
+    """
+    Safe check: is `child` equal to or inside `parent`?
+
+    Uses os.path.normcase() so the comparison is case-insensitive on Windows
+    (NTFS) and appends os.sep to prevent prefix collisions
+    (e.g. /data/sets/ won't match /data/sets_evil/).
+    """
+    import os
+    c = os.path.normcase(child)
+    p = os.path.normcase(parent)
+    return c == p or c.startswith(p + os.sep)
+
+
 def validate_path(path: str, user: dict, datasets_root: str, shared_folder: str) -> bool:
     """
     Validate that a user has access to the given path.
@@ -64,7 +78,7 @@ def validate_path(path: str, user: dict, datasets_root: str, shared_folder: str)
     shared_path = os.path.normpath(os.path.join(datasets_root, shared_folder))
 
     # Path must be within datasets root
-    if not path.startswith(datasets_root):
+    if not _is_path_within(path, datasets_root):
         return False
 
     # Admins can access anything within datasets root
@@ -72,14 +86,14 @@ def validate_path(path: str, user: dict, datasets_root: str, shared_folder: str)
         return True
 
     # Annotators can access shared folder
-    if path.startswith(shared_path):
+    if _is_path_within(path, shared_path):
         return True
 
     # Annotators can access their private folder
     private_folder = user.get('private_folder')
     if private_folder:
         private_path = os.path.normpath(os.path.join(datasets_root, private_folder))
-        if path.startswith(private_path):
+        if _is_path_within(path, private_path):
             return True
 
     return False
