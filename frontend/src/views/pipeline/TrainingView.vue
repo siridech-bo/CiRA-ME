@@ -2727,6 +2727,10 @@ async function saveBenchmark() {
     await api.post('/api/training/save-benchmark', {
       training_session_id: sessionId,
       name: benchmarkName.value || undefined,
+      // For TI models: include metrics and algorithm since session is in TI container
+      metrics: trainingResult.value?.metrics || undefined,
+      algorithm: trainingResult.value?.algorithm || undefined,
+      mode: pipelineStore.mode,
       pipeline_config: {
         version: 1,
         training_approach: pipelineStore.trainingApproach,

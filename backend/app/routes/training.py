@@ -717,8 +717,26 @@ def save_benchmark():
     # Get the in-memory session (check both ML and TimesNet sessions)
     from ..services.timesnet_trainer import _timesnet_sessions
     session = _model_sessions.get(training_session_id) or _timesnet_sessions.get(training_session_id)
+
+    # For TI models: session won't exist in backend memory (trained in TI container)
+    # Use metrics/info provided by the frontend
     if not session:
-        return jsonify({'error': 'Training session not found (may have expired)'}), 404
+        ti_metrics = data.get('metrics')
+        ti_algorithm = data.get('algorithm', training_session_id)
+        ti_mode = data.get('mode', data.get('pipeline_config', {}).get('mode', 'regression'))
+
+        if ti_metrics:
+            # Create a virtual session from frontend data
+            session = {
+                'algorithm': ti_algorithm,
+                'mode': ti_mode,
+                'metrics': ti_metrics,
+                'model_path': '',
+                'hyperparameters': {},
+                'created_at': __import__('datetime').datetime.utcnow().isoformat(),
+            }
+        else:
+            return jsonify({'error': 'Training session not found (may have expired)'}), 404
 
     if not name:
         algo_name = session.get('algorithm', 'model')
