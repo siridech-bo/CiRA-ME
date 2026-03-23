@@ -14,7 +14,7 @@ from ..services.timesnet_trainer import TimesNetTrainer, TimesNetConfig
 from ..services.feature_extractor import FeatureExtractor
 from ..services.data_loader import _data_sessions
 from ..services.deployer import load_saved_model_session
-from ..config import ANOMALY_ALGORITHMS, CLASSIFICATION_ALGORITHMS
+from ..config import ANOMALY_ALGORITHMS, CLASSIFICATION_ALGORITHMS, REGRESSION_ALGORITHMS
 from ..models import SavedModel
 
 logger = logging.getLogger(__name__)
@@ -41,6 +41,7 @@ def get_algorithms():
     return jsonify({
         'anomaly_detection': ANOMALY_ALGORITHMS,
         'classification': CLASSIFICATION_ALGORITHMS,
+        'regression': REGRESSION_ALGORITHMS,
         'deep_learning': {
             'timesnet': {
                 'name': 'TimesNet',
@@ -312,6 +313,87 @@ def train_classification_compare():
         return jsonify(_sanitize_nan(result))
     except Exception as e:
         logger.error(f"Classification comparison training error: {e}")
+        return jsonify({'error': str(e)}), 400
+
+
+@training_bp.route('/train/regression', methods=['POST'])
+@login_required
+def train_regression_model():
+    """Train a regression model."""
+    data = request.get_json()
+
+    if not data:
+        return jsonify({'error': 'No data provided'}), 400
+
+    feature_session_id = data.get('feature_session_id')
+    algorithm = data.get('algorithm', 'rf_reg')
+    hyperparameters = data.get('hyperparameters', {})
+    project_id = data.get('project_id')
+    test_size = data.get('test_size', 0.2)
+    target_column = data.get('target_column')
+
+    if not feature_session_id:
+        return jsonify({'error': 'Feature session ID required'}), 400
+
+    if algorithm not in REGRESSION_ALGORITHMS:
+        return jsonify({'error': f'Unknown algorithm: {algorithm}'}), 400
+
+    try:
+        trainer = MLTrainer()
+        result = trainer.train_regression(
+            feature_session_id,
+            algorithm,
+            hyperparameters,
+            test_size=test_size,
+            target_column=target_column,
+            project_id=project_id,
+            user_id=request.current_user['id']
+        )
+        return jsonify(_sanitize_nan(result))
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+
+@training_bp.route('/train/regression/compare', methods=['POST'])
+@login_required
+def train_regression_compare():
+    """Train multiple regression algorithms and compare."""
+    data = request.get_json()
+
+    if not data:
+        return jsonify({'error': 'No data provided'}), 400
+
+    feature_session_id = data.get('feature_session_id')
+    algorithms = data.get('algorithms', [])
+    hyperparameters = data.get('hyperparameters', {})
+    project_id = data.get('project_id')
+    test_size = data.get('test_size', 0.2)
+    target_column = data.get('target_column')
+
+    if not feature_session_id:
+        return jsonify({'error': 'Feature session ID required'}), 400
+
+    if not algorithms or not isinstance(algorithms, list):
+        return jsonify({'error': 'algorithms must be a non-empty list'}), 400
+
+    invalid_algos = [a for a in algorithms if a not in REGRESSION_ALGORITHMS]
+    if invalid_algos:
+        return jsonify({'error': f'Unknown algorithms: {invalid_algos}'}), 400
+
+    try:
+        trainer = MLTrainer()
+        result = trainer.train_regression_compare(
+            feature_session_id,
+            algorithms,
+            hyperparameters,
+            test_size=test_size,
+            target_column=target_column,
+            project_id=project_id,
+            user_id=request.current_user['id']
+        )
+        return jsonify(_sanitize_nan(result))
+    except Exception as e:
+        logger.error(f"Regression comparison training error: {e}")
         return jsonify({'error': str(e)}), 400
 
 
@@ -929,3 +1011,362 @@ def evaluate_raw_csv():
             os.unlink(tmp_path)
         except OSError:
             pass
+
+
+# ─── Custom Model Editor ──────────────────────────────────────────
+
+@training_bp.route('/custom-model/execute', methods=['POST'])
+@login_required
+def execute_custom_model():
+    """Execute user-submitted custom model code."""
+    data = request.get_json()
+    if not data:
+        return jsonify({'error': 'No data provided'}), 400
+
+    code = data.get('code', '')
+    feature_session_id = data.get('feature_session_id')
+    task = data.get('task', 'classification')
+    test_size = data.get('test_size', 0.2)
+    user_config = data.get('config', {})
+    timeout = min(data.get('timeout', 300), 600)  # Max 10 minutes
+
+    if not code.strip():
+        return jsonify({'error': 'No code provided'}), 400
+
+    if not feature_session_id:
+        return jsonify({'error': 'Feature session ID required'}), 400
+
+    try:
+        from ..services.custom_model_runner import CustomModelRunner
+        runner = CustomModelRunner()
+        result = runner.execute(
+            code=code,
+            feature_session_id=feature_session_id,
+            task=task,
+            test_size=test_size,
+            user_config=user_config,
+            timeout=timeout,
+            user_id=request.current_user['id']
+        )
+
+        if result.get('status') == 'success':
+            # Store in pipeline for downstream deploy
+            if result.get('training_session_id'):
+                training_session = {
+                    'training_session_id': result['training_session_id'],
+                    'algorithm': 'custom',
+                    'mode': task,
+                    'metrics': result.get('metrics', {}),
+                }
+
+            return jsonify(_sanitize_nan(result))
+        else:
+            return jsonify(result), 400
+
+    except Exception as e:
+        logger.error(f"Custom model execution error: {e}")
+        return jsonify({'error': str(e)}), 400
+
+
+@training_bp.route('/custom-model/templates', methods=['GET'])
+@login_required
+def get_custom_model_templates():
+    """Get available custom model templates."""
+    return jsonify(CUSTOM_MODEL_TEMPLATES)
+
+
+# Template library
+CUSTOM_MODEL_TEMPLATES = [
+    {
+        'id': 'sklearn_classifier',
+        'name': 'Sklearn Classifier',
+        'description': 'Classification with scikit-learn (Random Forest, SVM, etc.)',
+        'task': 'classification',
+        'code': '''from cira_base import CiraModel
+from sklearn.ensemble import GradientBoostingClassifier
+from sklearn.metrics import accuracy_score, f1_score
+import numpy as np
+
+class MyClassifier(CiraModel):
+    def build(self, config):
+        self.model = GradientBoostingClassifier(
+            n_estimators=config.get('n_estimators', 200),
+            max_depth=config.get('max_depth', 5),
+            learning_rate=config.get('learning_rate', 0.05),
+            random_state=42
+        )
+
+    def train(self, X_train, y_train, X_val, y_val):
+        self.model.fit(X_train, y_train)
+        y_pred = self.model.predict(X_val)
+        return {
+            "accuracy": accuracy_score(y_val, y_pred),
+            "f1": f1_score(y_val, y_pred, average="weighted", zero_division=0),
+        }
+
+    def predict(self, X):
+        return self.model.predict(X)
+
+    def get_model(self):
+        return self.model
+'''
+    },
+    {
+        'id': 'sklearn_regressor',
+        'name': 'Sklearn Regressor',
+        'description': 'Regression with scikit-learn (SVR, ElasticNet, etc.)',
+        'task': 'regression',
+        'code': '''from cira_base import CiraModel
+from sklearn.ensemble import GradientBoostingRegressor
+from sklearn.metrics import r2_score, mean_squared_error
+import numpy as np
+
+class MyRegressor(CiraModel):
+    def build(self, config):
+        self.model = GradientBoostingRegressor(
+            n_estimators=config.get('n_estimators', 200),
+            max_depth=config.get('max_depth', 5),
+            learning_rate=config.get('learning_rate', 0.05),
+            random_state=42
+        )
+
+    def train(self, X_train, y_train, X_val, y_val):
+        self.model.fit(X_train, y_train)
+        y_pred = self.model.predict(X_val)
+        return {
+            "r2": r2_score(y_val, y_pred),
+            "rmse": float(np.sqrt(mean_squared_error(y_val, y_pred))),
+        }
+
+    def predict(self, X):
+        return self.model.predict(X)
+
+    def get_model(self):
+        return self.model
+'''
+    },
+    {
+        'id': 'pytorch_mlp',
+        'name': 'PyTorch MLP',
+        'description': 'Custom neural network with PyTorch',
+        'task': 'classification',
+        'code': '''from cira_base import CiraModel
+import numpy as np
+
+class MyNeuralNet(CiraModel):
+    def build(self, config):
+        import torch
+        import torch.nn as nn
+
+        self.epochs = config.get('epochs', 100)
+        self.lr = config.get('learning_rate', 1e-3)
+
+        self.net = nn.Sequential(
+            nn.Linear(self.n_features, 128),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(64, self.n_classes)
+        )
+
+    def train(self, X_train, y_train, X_val, y_val):
+        import torch
+        import torch.nn as nn
+
+        X_t = torch.FloatTensor(X_train)
+        y_t = torch.LongTensor(y_train.astype(int))
+        optimizer = torch.optim.Adam(self.net.parameters(), lr=self.lr)
+        loss_fn = nn.CrossEntropyLoss()
+
+        for epoch in range(self.epochs):
+            optimizer.zero_grad()
+            out = self.net(X_t)
+            loss = loss_fn(out, y_t)
+            loss.backward()
+            optimizer.step()
+
+            if (epoch + 1) % 20 == 0:
+                print(f"Epoch {epoch+1}/{self.epochs}, Loss: {loss.item():.4f}")
+
+        # Validation
+        with torch.no_grad():
+            preds = self.net(torch.FloatTensor(X_val)).argmax(dim=1).numpy()
+
+        acc = (preds == y_val.astype(int)).mean()
+        return {"accuracy": float(acc)}
+
+    def predict(self, X):
+        import torch
+        with torch.no_grad():
+            return self.net(torch.FloatTensor(X)).argmax(dim=1).numpy()
+
+    def get_model(self):
+        return self.net
+'''
+    },
+    {
+        'id': 'xgboost_model',
+        'name': 'XGBoost',
+        'description': 'XGBoost gradient boosting (classification or regression)',
+        'task': 'classification',
+        'code': '''from cira_base import CiraModel
+from xgboost import XGBClassifier
+from sklearn.metrics import accuracy_score, f1_score
+import numpy as np
+
+class MyXGBoost(CiraModel):
+    def build(self, config):
+        self.model = XGBClassifier(
+            n_estimators=config.get('n_estimators', 300),
+            max_depth=config.get('max_depth', 6),
+            learning_rate=config.get('learning_rate', 0.1),
+            subsample=0.8,
+            colsample_bytree=0.8,
+            random_state=42,
+            verbosity=0,
+            use_label_encoder=False,
+            eval_metric='mlogloss'
+        )
+
+    def train(self, X_train, y_train, X_val, y_val):
+        self.model.fit(X_train, y_train,
+                       eval_set=[(X_val, y_val)],
+                       verbose=False)
+        y_pred = self.model.predict(X_val)
+        return {
+            "accuracy": accuracy_score(y_val, y_pred),
+            "f1": f1_score(y_val, y_pred, average="weighted", zero_division=0),
+        }
+
+    def predict(self, X):
+        return self.model.predict(X)
+
+    def get_model(self):
+        return self.model
+'''
+    },
+    {
+        'id': 'ensemble_model',
+        'name': 'Voting Ensemble',
+        'description': 'Combine multiple models via voting/averaging',
+        'task': 'classification',
+        'code': '''from cira_base import CiraModel
+from sklearn.ensemble import VotingClassifier, RandomForestClassifier, GradientBoostingClassifier
+from sklearn.svm import SVC
+from sklearn.metrics import accuracy_score, f1_score
+import numpy as np
+
+class MyEnsemble(CiraModel):
+    def build(self, config):
+        self.model = VotingClassifier(
+            estimators=[
+                ('rf', RandomForestClassifier(n_estimators=100, random_state=42)),
+                ('gb', GradientBoostingClassifier(n_estimators=100, random_state=42)),
+                ('svm', SVC(probability=True, random_state=42)),
+            ],
+            voting='soft'
+        )
+
+    def train(self, X_train, y_train, X_val, y_val):
+        self.model.fit(X_train, y_train)
+        y_pred = self.model.predict(X_val)
+        return {
+            "accuracy": accuracy_score(y_val, y_pred),
+            "f1": f1_score(y_val, y_pred, average="weighted", zero_division=0),
+        }
+
+    def predict(self, X):
+        return self.model.predict(X)
+
+    def get_model(self):
+        return self.model
+'''
+    },
+    {
+        'id': 'anomaly_autoencoder',
+        'name': 'Custom AutoEncoder',
+        'description': 'PyTorch autoencoder for anomaly detection via reconstruction error',
+        'task': 'anomaly',
+        'code': '''from cira_base import CiraModel
+import numpy as np
+
+class MyAutoEncoder(CiraModel):
+    def build(self, config):
+        import torch
+        import torch.nn as nn
+
+        self.epochs = config.get('epochs', 100)
+        self.lr = config.get('learning_rate', 1e-3)
+        self.threshold_percentile = config.get('threshold_percentile', 95)
+
+        hidden = config.get('hidden_dim', 32)
+        latent = config.get('latent_dim', 8)
+
+        self.encoder = nn.Sequential(
+            nn.Linear(self.n_features, hidden),
+            nn.ReLU(),
+            nn.Linear(hidden, latent),
+            nn.ReLU(),
+        )
+        self.decoder = nn.Sequential(
+            nn.Linear(latent, hidden),
+            nn.ReLU(),
+            nn.Linear(hidden, self.n_features),
+        )
+        self.threshold = 0.0
+
+    def train(self, X_train, y_train, X_val, y_val):
+        import torch
+        import torch.nn as nn
+
+        X_t = torch.FloatTensor(X_train)
+        params = list(self.encoder.parameters()) + list(self.decoder.parameters())
+        optimizer = torch.optim.Adam(params, lr=self.lr)
+        loss_fn = nn.MSELoss()
+
+        for epoch in range(self.epochs):
+            optimizer.zero_grad()
+            encoded = self.encoder(X_t)
+            decoded = self.decoder(encoded)
+            loss = loss_fn(decoded, X_t)
+            loss.backward()
+            optimizer.step()
+
+            if (epoch + 1) % 25 == 0:
+                print(f"Epoch {epoch+1}/{self.epochs}, Reconstruction Loss: {loss.item():.6f}")
+
+        # Set threshold from training data reconstruction errors
+        with torch.no_grad():
+            recon = self.decoder(self.encoder(X_t))
+            errors = ((recon - X_t) ** 2).mean(dim=1).numpy()
+            self.threshold = float(np.percentile(errors, self.threshold_percentile))
+
+        # Evaluate on validation
+        with torch.no_grad():
+            X_v = torch.FloatTensor(X_val)
+            recon_v = self.decoder(self.encoder(X_v))
+            val_errors = ((recon_v - X_v) ** 2).mean(dim=1).numpy()
+            anomalies = (val_errors > self.threshold).sum()
+
+        return {
+            "reconstruction_loss": float(loss.item()),
+            "threshold": self.threshold,
+            "val_anomalies": int(anomalies),
+            "val_total": len(X_val),
+        }
+
+    def predict(self, X):
+        import torch
+        with torch.no_grad():
+            X_t = torch.FloatTensor(X)
+            recon = self.decoder(self.encoder(X_t))
+            errors = ((recon - X_t) ** 2).mean(dim=1).numpy()
+            return (errors > self.threshold).astype(int)
+
+    def get_model(self):
+        return {"encoder": self.encoder, "decoder": self.decoder, "threshold": self.threshold}
+'''
+    },
+]

@@ -55,6 +55,78 @@
             Try {{ recommendedWindowSize }} or smaller.
           </v-alert>
 
+          <!-- Smart Recommendation -->
+          <v-alert
+            v-if="windowRecommendation && windowRecommendation.status === 'bad'"
+            type="error"
+            variant="tonal"
+            density="compact"
+            class="mb-4"
+          >
+            <div class="d-flex align-center">
+              <v-icon class="mr-2" size="small">mdi-lightbulb</v-icon>
+              <div class="flex-grow-1">
+                <div class="font-weight-medium">{{ windowRecommendation.message }}</div>
+                <div v-if="windowRecommendation.needsChange" class="text-caption mt-1">
+                  Suggested: window_size=<strong>{{ windowRecommendation.suggestedWindowSize }}</strong>,
+                  stride=<strong>{{ windowRecommendation.suggestedStride }}</strong>
+                  → {{ windowRecommendation.suggestedTrainWindows }} train / {{ windowRecommendation.suggestedTestWindows }} test windows
+                </div>
+              </div>
+              <v-btn
+                v-if="windowRecommendation.needsChange"
+                size="small"
+                color="error"
+                variant="flat"
+                class="ml-2"
+                @click="applyRecommendation"
+              >
+                Apply
+              </v-btn>
+            </div>
+          </v-alert>
+
+          <v-alert
+            v-else-if="windowRecommendation && windowRecommendation.status === 'warning'"
+            type="warning"
+            variant="tonal"
+            density="compact"
+            class="mb-4"
+          >
+            <div class="d-flex align-center">
+              <v-icon class="mr-2" size="small">mdi-alert</v-icon>
+              <div class="flex-grow-1">
+                <div>{{ windowRecommendation.message }}</div>
+                <div v-if="windowRecommendation.needsChange" class="text-caption mt-1">
+                  Suggested: window_size=<strong>{{ windowRecommendation.suggestedWindowSize }}</strong>,
+                  stride=<strong>{{ windowRecommendation.suggestedStride }}</strong>
+                  → {{ windowRecommendation.suggestedTrainWindows }} train / {{ windowRecommendation.suggestedTestWindows }} test windows
+                </div>
+              </div>
+              <v-btn
+                v-if="windowRecommendation.needsChange"
+                size="small"
+                color="warning"
+                variant="flat"
+                class="ml-2"
+                @click="applyRecommendation"
+              >
+                Apply
+              </v-btn>
+            </div>
+          </v-alert>
+
+          <v-alert
+            v-else-if="windowRecommendation && windowRecommendation.status === 'good' && totalSamples > 0"
+            type="success"
+            variant="tonal"
+            density="compact"
+            class="mb-4"
+          >
+            <v-icon class="mr-1" size="small">mdi-check-circle</v-icon>
+            {{ windowRecommendation.message }}
+          </v-alert>
+
           <!-- Stride -->
           <div class="mb-6">
             <div class="d-flex justify-space-between align-center mb-2">
@@ -127,50 +199,91 @@
             </div>
           </div>
 
-          <!-- Label Preservation -->
-          <h4 class="text-subtitle-2 font-weight-bold mb-3">Label Preservation</h4>
-          <v-radio-group v-model="windowingConfig.label_method" hide-details>
-            <v-radio value="majority">
-              <template #label>
-                <div>
-                  <div class="font-weight-medium">Majority Voting</div>
-                  <div class="text-caption text-medium-emphasis">
-                    Assign most common label in window
-                  </div>
-                </div>
+          <!-- Regression: Target Column Selector -->
+          <template v-if="pipelineStore.mode === 'regression'">
+            <h4 class="text-subtitle-2 font-weight-bold mb-3">
+              <v-icon size="small" class="mr-1">mdi-target</v-icon>
+              Prediction Target
+            </h4>
+            <v-alert type="info" variant="tonal" density="compact" class="mb-3">
+              Select the sensor column to predict. The remaining columns will be used as input features.
+            </v-alert>
+            <v-select
+              v-model="pipelineStore.targetColumn"
+              :items="sensorColumns"
+              label="Target Column (to predict)"
+              variant="outlined"
+              density="comfortable"
+              hide-details
+              clearable
+              :rules="[v => !!v || 'Target column required for regression']"
+            >
+              <template #item="{ item, props: itemProps }">
+                <v-list-item v-bind="itemProps">
+                  <template #append>
+                    <v-chip size="x-small" color="purple" variant="tonal">sensor</v-chip>
+                  </template>
+                </v-list-item>
               </template>
-            </v-radio>
-            <v-radio value="first">
-              <template #label>
-                <div>
-                  <div class="font-weight-medium">First Label</div>
-                  <div class="text-caption text-medium-emphasis">
-                    Use label from first sample
+            </v-select>
+            <div v-if="pipelineStore.targetColumn" class="mt-3">
+              <v-chip color="purple" variant="tonal" size="small" class="mr-1">
+                <v-icon start size="small">mdi-target</v-icon>
+                Target: {{ pipelineStore.targetColumn }}
+              </v-chip>
+              <v-chip color="primary" variant="tonal" size="small">
+                <v-icon start size="small">mdi-arrow-right</v-icon>
+                Input: {{ sensorColumns.filter(c => c !== pipelineStore.targetColumn).length }} columns
+              </v-chip>
+            </div>
+          </template>
+
+          <!-- Anomaly/Classification: Label Preservation -->
+          <template v-else>
+            <h4 class="text-subtitle-2 font-weight-bold mb-3">Label Preservation</h4>
+            <v-radio-group v-model="windowingConfig.label_method" hide-details>
+              <v-radio value="majority">
+                <template #label>
+                  <div>
+                    <div class="font-weight-medium">Majority Voting</div>
+                    <div class="text-caption text-medium-emphasis">
+                      Assign most common label in window
+                    </div>
                   </div>
-                </div>
-              </template>
-            </v-radio>
-            <v-radio value="last">
-              <template #label>
-                <div>
-                  <div class="font-weight-medium">Last Label</div>
-                  <div class="text-caption text-medium-emphasis">
-                    Use label from last sample
+                </template>
+              </v-radio>
+              <v-radio value="first">
+                <template #label>
+                  <div>
+                    <div class="font-weight-medium">First Label</div>
+                    <div class="text-caption text-medium-emphasis">
+                      Use label from first sample
+                    </div>
                   </div>
-                </div>
-              </template>
-            </v-radio>
-            <v-radio value="threshold">
-              <template #label>
-                <div>
-                  <div class="font-weight-medium">Threshold (>50%)</div>
-                  <div class="text-caption text-medium-emphasis">
-                    Label if majority exceeds 50%
+                </template>
+              </v-radio>
+              <v-radio value="last">
+                <template #label>
+                  <div>
+                    <div class="font-weight-medium">Last Label</div>
+                    <div class="text-caption text-medium-emphasis">
+                      Use label from last sample
+                    </div>
                   </div>
-                </div>
-              </template>
-            </v-radio>
-          </v-radio-group>
+                </template>
+              </v-radio>
+              <v-radio value="threshold">
+                <template #label>
+                  <div>
+                    <div class="font-weight-medium">Threshold (>50%)</div>
+                    <div class="text-caption text-medium-emphasis">
+                      Label if majority exceeds 50%
+                    </div>
+                  </div>
+                </template>
+              </v-radio>
+            </v-radio-group>
+          </template>
         </v-card>
       </v-col>
 
@@ -243,7 +356,7 @@
             <v-col cols="6">
               <v-card variant="tonal" class="pa-3 text-center">
                 <div class="text-caption text-medium-emphasis">Sensor Channels</div>
-                <div class="text-h6">{{ sensorColumns }}</div>
+                <div class="text-h6">{{ sensorColumnCount }}</div>
               </v-card>
             </v-col>
           </v-row>
@@ -757,8 +870,10 @@ const minSampleLength = computed(() =>
 )
 
 const sensorColumns = computed(() =>
-  pipelineStore.dataSession?.metadata?.sensor_columns?.length || 0
+  pipelineStore.dataSession?.metadata?.sensor_columns || []
 )
+
+const sensorColumnCount = computed(() => sensorColumns.value.length)
 
 const sliderMaxWindowSize = computed(() => {
   if (minSampleLength.value <= 0) return 512
@@ -772,6 +887,97 @@ const recommendedWindowSize = computed(() => {
   let size = 16
   while (size * 2 <= maxValid) size *= 2
   return size
+})
+
+// Smart recommendation based on dataset size, mode, and desired min windows
+const windowRecommendation = computed(() => {
+  const dataLen = minSampleLength.value
+  if (dataLen <= 0) return null
+
+  const testRatio = windowingConfig.test_ratio || 0.2
+  const numSamples = pipelineStore.dataSession?.metadata?.total_samples || 1
+  const mode = pipelineStore.mode
+
+  // Target: enough windows for meaningful evaluation
+  const minTestWindows = mode === 'regression' ? 5 : 3
+  const minTrainWindows = mode === 'regression' ? 10 : 5
+  const minTotalWindows = minTrainWindows + minTestWindows
+
+  // Calculate for current settings
+  const currentWS = windowingConfig.window_size
+  const currentStride = windowingConfig.stride
+  const gap = mode === 'regression' ? 0 : currentWS  // regression can skip gap
+  const testRows = Math.max(currentWS, Math.round(dataLen * testRatio))
+  const trainRows = dataLen - testRows - gap
+  const trainWindows = trainRows >= currentWS ? Math.floor((trainRows - currentWS) / currentStride) + 1 : 0
+  const testWindows = testRows >= currentWS ? Math.floor((testRows - currentWS) / currentStride) + 1 : 0
+  const totalWindows = (trainWindows + testWindows) * numSamples
+
+  // Find optimal window size
+  // Try powers of 2: 16, 32, 64, 128, 256...
+  const candidates = [16, 32, 64, 128, 256, 512]
+  let bestSize = 64
+  let bestStride = 32
+  let bestTotal = 0
+  let bestTrain = 0
+  let bestTest = 0
+
+  for (const ws of candidates) {
+    if (ws > dataLen * 0.5) continue  // window shouldn't exceed half the data
+    const stride = Math.max(16, Math.floor(ws / 2))
+    const gapR = mode === 'regression' ? 0 : Math.min(ws, Math.floor(dataLen * 0.05))
+    const tRows = Math.max(ws, Math.round(dataLen * testRatio))
+    const trRows = dataLen - tRows - gapR
+    if (trRows < ws) continue
+
+    const trW = Math.floor((trRows - ws) / stride) + 1
+    const teW = tRows >= ws ? Math.floor((tRows - ws) / stride) + 1 : 0
+    const total = (trW + teW) * numSamples
+
+    if (total >= minTotalWindows && ws > bestSize) {
+      // Prefer larger window that still meets minimum
+      bestSize = ws
+      bestStride = stride
+      bestTotal = total
+      bestTrain = trW * numSamples
+      bestTest = teW * numSamples
+    } else if (bestTotal < minTotalWindows && total > bestTotal) {
+      // Haven't met minimum yet, take whatever gives more windows
+      bestSize = ws
+      bestStride = stride
+      bestTotal = total
+      bestTrain = trW * numSamples
+      bestTest = teW * numSamples
+    }
+  }
+
+  // Determine status
+  let status: 'good' | 'warning' | 'bad' = 'good'
+  let message = ''
+
+  if (totalWindows < minTotalWindows) {
+    status = 'bad'
+    message = `Current settings produce only ${trainWindows} train / ${testWindows} test windows — too few for reliable ${mode} evaluation.`
+  } else if (testWindows < minTestWindows) {
+    status = 'warning'
+    message = `Only ${testWindows} test window(s) — metrics like R² may be unreliable.`
+  } else {
+    message = `${trainWindows} train / ${testWindows} test windows — good for ${mode}.`
+  }
+
+  return {
+    status,
+    message,
+    currentTrainWindows: trainWindows,
+    currentTestWindows: testWindows,
+    currentTotal: totalWindows,
+    suggestedWindowSize: bestSize,
+    suggestedStride: bestStride,
+    suggestedTrainWindows: bestTrain,
+    suggestedTestWindows: bestTest,
+    suggestedTotal: bestTotal,
+    needsChange: status !== 'good' && (bestSize !== currentWS || bestStride !== currentStride),
+  }
 })
 
 const overlapPercent = computed(() => {
@@ -854,7 +1060,25 @@ watch(sliderMaxWindowSize, (newMax) => {
   }
 })
 
+function applyRecommendation() {
+  if (windowRecommendation.value) {
+    windowingConfig.window_size = windowRecommendation.value.suggestedWindowSize
+    windowingConfig.stride = windowRecommendation.value.suggestedStride
+    pipelineStore.windowingConfig.window_size = windowRecommendation.value.suggestedWindowSize
+    pipelineStore.windowingConfig.stride = windowRecommendation.value.suggestedStride
+    notificationStore.showSuccess(
+      `Applied: window_size=${windowRecommendation.value.suggestedWindowSize}, stride=${windowRecommendation.value.suggestedStride}`
+    )
+  }
+}
+
 async function applyWindowing() {
+  // Validate regression target
+  if (pipelineStore.mode === 'regression' && !pipelineStore.targetColumn) {
+    notificationStore.showError('Please select a target column for regression')
+    return
+  }
+
   // Update store config
   pipelineStore.windowingConfig.window_size = windowingConfig.window_size
   pipelineStore.windowingConfig.stride = windowingConfig.stride

@@ -31,6 +31,10 @@
           <v-icon start>mdi-shape</v-icon>
           Classification
         </v-btn>
+        <v-btn value="regression" size="small">
+          <v-icon start>mdi-chart-timeline-variant</v-icon>
+          Regression
+        </v-btn>
       </v-btn-toggle>
 
       <v-spacer />
@@ -173,7 +177,7 @@
         <v-divider vertical class="mx-4" />
 
         <span class="text-caption text-medium-emphasis">
-          Mode: <strong>{{ pipelineStore.mode === 'anomaly' ? 'Anomaly Detection' : 'Classification' }}</strong>
+          Mode: <strong>{{ pipelineStore.mode === 'anomaly' ? 'Anomaly Detection' : pipelineStore.mode === 'regression' ? 'Regression' : 'Classification' }}</strong>
         </span>
 
         <v-spacer />

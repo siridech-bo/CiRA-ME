@@ -46,6 +46,7 @@ def create_app(config=None):
     from .routes.training import training_bp
     from .routes.deployment import deployment_bp
     from .routes.sensor_recording import sensor_bp
+    from .routes.ti_tinyml import ti_bp
 
     app.register_blueprint(auth_bp, url_prefix='/api/auth')
     app.register_blueprint(admin_bp, url_prefix='/api/admin')
@@ -54,6 +55,7 @@ def create_app(config=None):
     app.register_blueprint(training_bp, url_prefix='/api/training')
     app.register_blueprint(deployment_bp, url_prefix='/api/deployment')
     app.register_blueprint(sensor_bp, url_prefix='/api/sensors')
+    app.register_blueprint(ti_bp, url_prefix='/api/ti')
 
     # Health check endpoint
     @app.route('/api/health')

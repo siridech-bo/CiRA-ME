@@ -85,3 +85,13 @@ CLASSIFICATION_ALGORITHMS = {
     'nb': {'name': 'Naive Bayes', 'class': 'GaussianNB'},
     'lr': {'name': 'Logistic Regression', 'class': 'LogisticRegression'},
 }
+
+# Regression algorithms (Scikit-learn + XGBoost + LightGBM)
+REGRESSION_ALGORITHMS = {
+    'knn_reg': {'name': 'KNN Regressor', 'class': 'KNeighborsRegressor'},
+    'dt_reg': {'name': 'Decision Tree Regressor', 'class': 'DecisionTreeRegressor'},
+    'rf_reg': {'name': 'Random Forest Regressor', 'class': 'RandomForestRegressor'},
+    'xgb_reg': {'name': 'XGBoost Regressor', 'class': 'XGBRegressor', 'package': 'xgboost'},
+    'lgbm_reg': {'name': 'LightGBM Regressor', 'class': 'LGBMRegressor', 'package': 'lightgbm'},
+    'svr': {'name': 'Support Vector Regressor', 'class': 'SVR'},
+}

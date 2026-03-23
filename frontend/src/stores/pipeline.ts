@@ -8,9 +8,9 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import api from '@/services/api'
 
-export type PipelineMode = 'anomaly' | 'classification'
+export type PipelineMode = 'anomaly' | 'classification' | 'regression'
 export type PipelineStep = 'data' | 'windowing' | 'features' | 'training' | 'deploy'
-export type TrainingApproach = 'ml' | 'dl'
+export type TrainingApproach = 'ml' | 'dl' | 'custom' | 'ti'
 
 interface DataSession {
   session_id: string
@@ -123,6 +123,9 @@ export const usePipelineStore = defineStore('pipeline', () => {
     selectionApplied: false
   })
 
+  // Regression target column
+  const targetColumn = ref<string | null>(null)
+
   // Training
   const selectedAlgorithm = ref<string>('')
   const hyperparameters = ref<Record<string, any>>({})
@@ -137,6 +140,7 @@ export const usePipelineStore = defineStore('pipeline', () => {
   const canProceedToFeatures = computed(() => !!windowedSession.value)
 
   // For DL mode, we can proceed to training directly from windowing (skip features)
+  // For custom and ML modes, features are required
   const canProceedToTraining = computed(() => {
     if (trainingApproach.value === 'dl') {
       return !!windowedSession.value
@@ -200,7 +204,8 @@ export const usePipelineStore = defineStore('pipeline', () => {
 
       const response = await api.post('/api/data/windowing', {
         session_id: dataSession.value.session_id,
-        ...windowingConfig.value
+        ...windowingConfig.value,
+        target_column: targetColumn.value || undefined
       })
 
       windowedSession.value = response.data
@@ -256,6 +261,8 @@ export const usePipelineStore = defineStore('pipeline', () => {
 
       const endpoint = mode.value === 'anomaly'
         ? '/api/training/train/anomaly'
+        : mode.value === 'regression'
+        ? '/api/training/train/regression'
         : '/api/training/train/classification'
 
       const response = await api.post(endpoint, {
@@ -336,6 +343,7 @@ export const usePipelineStore = defineStore('pipeline', () => {
     selectedFeatures.value = []
     selectedAlgorithm.value = ''
     hyperparameters.value = {}
+    targetColumn.value = null
     currentStep.value = 'data'
     error.value = null
     // Reset feature selection state
@@ -418,6 +426,7 @@ export const usePipelineStore = defineStore('pipeline', () => {
     selectedFeatures,
     featureSession,
     selectedAlgorithm,
+    targetColumn,
     hyperparameters,
     trainingSession,
     loading,

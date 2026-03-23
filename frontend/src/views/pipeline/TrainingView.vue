@@ -5,7 +5,7 @@
 
     <h2 class="text-h5 font-weight-bold mb-2">Model Training</h2>
     <p class="text-body-2 text-medium-emphasis mb-6">
-      Train a {{ pipelineStore.mode === 'anomaly' ? 'anomaly detection' : 'classification' }} model
+      Train a {{ pipelineStore.mode === 'anomaly' ? 'anomaly detection' : pipelineStore.mode === 'regression' ? 'regression' : 'classification' }} model
     </p>
 
     <!-- Feature Status Warning -->
@@ -116,11 +116,19 @@
             <v-icon start>mdi-brain</v-icon>
             Deep Learning (TimesNet)
           </v-btn>
+          <v-btn value="custom" size="small">
+            <v-icon start>mdi-code-braces</v-icon>
+            Custom Model
+          </v-btn>
+          <v-btn value="ti" size="small">
+            <v-icon start>mdi-chip</v-icon>
+            TI TinyML
+          </v-btn>
         </v-btn-toggle>
       </div>
 
       <v-alert
-        :type="trainingApproach === 'ml' ? 'info' : 'warning'"
+        :type="trainingApproach === 'ml' ? 'info' : trainingApproach === 'custom' ? 'success' : 'warning'"
         variant="tonal"
         density="compact"
         class="mt-4"
@@ -128,6 +136,14 @@
         <template v-if="trainingApproach === 'ml'">
           <strong>Traditional ML:</strong> Uses extracted features (TSFresh + DSP) with PyOD/Scikit-learn algorithms.
           Best for interpretability and specific sensor metrics.
+        </template>
+        <template v-else-if="trainingApproach === 'custom'">
+          <strong>Custom Model:</strong> Write your own model in Python using any library (scikit-learn, PyTorch, XGBoost, etc.).
+          Your code runs in an isolated subprocess with full access to the pipeline's extracted features.
+        </template>
+        <template v-else-if="trainingApproach === 'ti'">
+          <strong>TI TinyML:</strong> Train quantized models from TI's model zoo for deployment on TMS320 MCUs.
+          Uses TI's tinyml-modelmaker with Haar/Hadamard feature extraction and MCU Neural Network Compiler.
         </template>
         <template v-else>
           <strong>Deep Learning (TimesNet):</strong> End-to-end learning directly from windowed data.
@@ -146,11 +162,11 @@
               <h3 class="text-subtitle-1 font-weight-bold">Algorithms</h3>
               <v-spacer />
               <v-chip
-                :color="pipelineStore.mode === 'anomaly' ? 'error' : 'success'"
+                :color="pipelineStore.mode === 'anomaly' ? 'error' : pipelineStore.mode === 'regression' ? 'purple' : 'success'"
                 size="small"
                 variant="flat"
               >
-                {{ pipelineStore.mode === 'anomaly' ? 'Anomaly Detection' : 'Classification' }}
+                {{ pipelineStore.mode === 'anomaly' ? 'Anomaly Detection' : pipelineStore.mode === 'regression' ? 'Regression' : 'Classification' }}
               </v-chip>
             </div>
 
@@ -168,10 +184,10 @@
               </v-chip>
             </div>
 
-            <!-- Anomaly Algorithms (Checkboxes) -->
-            <div v-if="pipelineStore.mode === 'anomaly'" class="algorithm-list">
+            <!-- Algorithm Checkboxes (mode-dependent) -->
+            <div class="algorithm-list">
               <v-checkbox
-                v-for="algo in availableAnomalyAlgorithms"
+                v-for="algo in currentAlgorithmList"
                 :key="algo.id"
                 v-model="selectedAlgorithms"
                 :value="algo.id"
@@ -194,36 +210,14 @@
                     >
                       Recommended
                     </v-chip>
-                  </div>
-                </template>
-              </v-checkbox>
-            </div>
-
-            <!-- Classification Algorithms (Checkboxes) -->
-            <div v-else class="algorithm-list">
-              <v-checkbox
-                v-for="algo in classificationAlgorithms"
-                :key="algo.id"
-                v-model="selectedAlgorithms"
-                :value="algo.id"
-                density="compact"
-                hide-details
-                class="algorithm-checkbox"
-              >
-                <template #label>
-                  <div class="d-flex align-center flex-grow-1">
-                    <div class="flex-grow-1">
-                      <div class="font-weight-medium">{{ algo.name }}</div>
-                      <div class="text-caption text-medium-emphasis">{{ algo.description }}</div>
-                    </div>
                     <v-chip
-                      v-if="algo.recommended"
+                      v-if="algo.noOnnx"
                       size="x-small"
-                      color="warning"
-                      variant="flat"
-                      class="ml-2"
+                      color="grey"
+                      variant="tonal"
+                      class="ml-1"
                     >
-                      Recommended
+                      No ONNX
                     </v-chip>
                   </div>
                 </template>
@@ -237,6 +231,7 @@
           <v-card class="pa-4">
             <h3 class="text-subtitle-1 font-weight-bold mb-4">Hyperparameters</h3>
 
+            <!-- Anomaly hyperparameters -->
             <template v-if="pipelineStore.mode === 'anomaly'">
               <v-text-field
                 v-model.number="mlHyperparameters.n_estimators"
@@ -263,6 +258,44 @@
               </div>
             </template>
 
+            <!-- Regression hyperparameters -->
+            <template v-else-if="pipelineStore.mode === 'regression'">
+              <v-text-field
+                v-model.number="mlHyperparameters.n_estimators"
+                label="Number of Estimators"
+                type="number"
+                :min="10"
+                :max="500"
+                hint="For tree-based models (RF, XGBoost, LightGBM)"
+              />
+
+              <v-text-field
+                v-model.number="mlHyperparameters.max_depth"
+                label="Max Depth"
+                type="number"
+                :min="1"
+                :max="50"
+                hint="Leave empty for unlimited depth"
+                clearable
+              />
+
+              <div class="mb-4">
+                <div class="d-flex justify-space-between mb-2">
+                  <span class="text-body-2">Test Split</span>
+                  <span class="font-weight-medium">{{ (mlHyperparameters.test_size * 100).toFixed(0) }}%</span>
+                </div>
+                <v-slider
+                  v-model="mlHyperparameters.test_size"
+                  :min="0.1"
+                  :max="0.4"
+                  :step="0.05"
+                  color="info"
+                  hide-details
+                />
+              </div>
+            </template>
+
+            <!-- Classification hyperparameters -->
             <template v-else>
               <v-text-field
                 v-model.number="mlHyperparameters.n_estimators"
@@ -299,8 +332,263 @@
         </v-col>
       </template>
 
+      <!-- TI TinyML Section -->
+      <template v-else-if="trainingApproach === 'ti'">
+        <!-- Device + Model Selection -->
+        <v-col cols="12" md="6">
+          <v-card class="pa-4">
+            <!-- TI Service Status -->
+            <v-alert
+              v-if="!tiServiceAvailable"
+              type="warning"
+              variant="tonal"
+              density="compact"
+              class="mb-3"
+            >
+              TI ModelMaker service is not running. Start it with:
+              <code>docker compose up -d ti-modelmaker</code>
+            </v-alert>
+
+            <h3 class="text-subtitle-1 font-weight-bold mb-3">
+              <v-icon size="small" class="mr-1">mdi-developer-board</v-icon>
+              Target Device
+            </h3>
+            <v-select
+              v-model="tiSelectedDevice"
+              :items="tiDeviceList"
+              item-title="label"
+              item-value="id"
+              label="TI MCU Device"
+              variant="outlined"
+              density="comfortable"
+              hide-details
+              class="mb-4"
+              @update:model-value="fetchTiModels"
+            >
+              <template #item="{ item, props: itemProps }">
+                <v-list-item v-bind="itemProps">
+                  <v-list-item-subtitle>
+                    {{ item.raw.family }} | {{ item.raw.flash_kb }}KB Flash
+                    <v-chip v-if="item.raw.npu" size="x-small" color="success" variant="tonal" class="ml-1">NPU</v-chip>
+                  </v-list-item-subtitle>
+                </v-list-item>
+              </template>
+            </v-select>
+
+            <!-- Model Zoo with checkboxes -->
+            <div class="d-flex align-center mb-3">
+              <h3 class="text-subtitle-1 font-weight-bold">Models</h3>
+              <v-spacer />
+              <v-btn-toggle
+                v-model="tiModelSource"
+                mandatory
+                density="compact"
+                rounded="lg"
+                color="primary"
+                class="mr-2"
+                @update:model-value="fetchTiModels"
+              >
+                <v-btn value="all" size="x-small">All</v-btn>
+                <v-btn value="ti_zoo" size="x-small">TI NN</v-btn>
+                <v-btn value="traditional_ml" size="x-small">Trad. ML</v-btn>
+              </v-btn-toggle>
+            </div>
+
+            <div class="d-flex align-center mb-2">
+              <v-btn size="small" variant="tonal" @click="tiSelectAll" class="mr-2">
+                Select All
+              </v-btn>
+              <v-btn size="small" variant="tonal" @click="tiSelectedModels = []">
+                Clear
+              </v-btn>
+              <v-spacer />
+              <v-chip size="small" color="primary" variant="flat">
+                {{ tiSelectedModels.length }} selected
+              </v-chip>
+            </div>
+
+            <div v-if="Object.keys(tiModels).length > 0" class="algorithm-list" style="max-height: 350px; overflow-y: auto;">
+              <v-checkbox
+                v-for="(model, key) in tiModels"
+                :key="key"
+                v-model="tiSelectedModels"
+                :value="key"
+                density="compact"
+                hide-details
+                class="algorithm-checkbox"
+              >
+                <template #label>
+                  <div class="d-flex align-center flex-grow-1">
+                    <div class="flex-grow-1">
+                      <div class="font-weight-medium">{{ model.name }}</div>
+                      <div class="text-caption text-medium-emphasis">
+                        {{ model.architecture }}
+                        <template v-if="model.params > 0"> | {{ model.params.toLocaleString() }} params</template>
+                        <template v-if="model.estimated_flash_kb"> | ~{{ model.estimated_flash_kb }}KB</template>
+                      </div>
+                    </div>
+                    <v-chip v-if="model.npu_only" size="x-small" color="success" variant="tonal" class="ml-1">NPU</v-chip>
+                    <v-chip v-if="model.source === 'traditional_ml'" size="x-small" color="orange" variant="tonal" class="ml-1">emlearn</v-chip>
+                    <v-chip v-else-if="model.source === 'ti_zoo'" size="x-small" color="info" variant="tonal" class="ml-1">TI NN</v-chip>
+                  </div>
+                </template>
+              </v-checkbox>
+            </div>
+            <div v-else-if="tiSelectedDevice" class="text-body-2 text-medium-emphasis pa-4 text-center">
+              No compatible models for this device
+            </div>
+            <div v-else class="text-body-2 text-medium-emphasis pa-4 text-center">
+              Select a target device first
+            </div>
+          </v-card>
+        </v-col>
+
+        <!-- TI Hyperparameters -->
+        <v-col cols="12" md="6">
+          <v-card class="pa-4">
+            <h3 class="text-subtitle-1 font-weight-bold mb-4">Hyperparameters</h3>
+
+            <v-text-field
+              v-model.number="tiConfig.epochs"
+              label="Epochs (for Neural Net models)"
+              type="number"
+              :min="10"
+              :max="500"
+              hint="Ignored for Traditional ML models"
+            />
+
+            <v-text-field
+              v-model.number="tiConfig.max_depth"
+              label="Max Depth"
+              type="number"
+              :min="1"
+              :max="50"
+              hint="For tree-based models"
+              clearable
+            />
+
+            <v-select
+              v-model="tiConfig.quantization"
+              :items="[
+                { title: '8-bit (default)', value: '8bit' },
+                { title: '4-bit weights', value: '4bit' },
+                { title: '2-bit weights', value: '2bit' },
+              ]"
+              label="Quantization (for Neural Net models)"
+              variant="outlined"
+              density="compact"
+              class="mb-2"
+            />
+
+            <div class="mb-4">
+              <div class="d-flex justify-space-between mb-2">
+                <span class="text-body-2">Test Split</span>
+                <span class="font-weight-medium">{{ (tiConfig.test_size * 100).toFixed(0) }}%</span>
+              </div>
+              <v-slider
+                v-model="tiConfig.test_size"
+                :min="0.1"
+                :max="0.4"
+                :step="0.05"
+                color="info"
+                hide-details
+              />
+            </div>
+
+            <!-- Dataset info -->
+            <v-alert
+              v-if="pipelineStore.dataSession"
+              type="success"
+              variant="tonal"
+              density="compact"
+            >
+              <v-icon size="small" class="mr-1">mdi-database</v-icon>
+              Dataset: {{ pipelineStore.dataSession.metadata.file_path?.split(/[/\\]/).pop() }}
+              ({{ pipelineStore.dataSession.metadata.total_rows?.toLocaleString() }} rows)
+            </v-alert>
+          </v-card>
+        </v-col>
+      </template>
+
+      <!-- Custom Model Editor Section -->
+      <template v-else-if="trainingApproach === 'custom'">
+        <v-col cols="12">
+          <v-card class="pa-4">
+            <div class="d-flex align-center mb-4">
+              <h3 class="text-subtitle-1 font-weight-bold">Custom Model Editor</h3>
+              <v-spacer />
+              <v-select
+                v-model="selectedTemplate"
+                :items="customTemplates"
+                item-title="name"
+                item-value="id"
+                label="Template"
+                density="compact"
+                variant="outlined"
+                style="max-width: 250px"
+                hide-details
+                class="mr-2"
+                @update:model-value="loadTemplate"
+              >
+                <template #item="{ item, props: itemProps }">
+                  <v-list-item v-bind="itemProps">
+                    <v-list-item-subtitle>{{ item.raw.description }}</v-list-item-subtitle>
+                  </v-list-item>
+                </template>
+              </v-select>
+            </div>
+
+            <CodeEditor
+              v-model="customModelCode"
+              height="450px"
+            />
+
+            <div class="d-flex align-center mt-4">
+              <v-chip
+                v-if="pipelineStore.featureSession"
+                size="small"
+                color="primary"
+                variant="tonal"
+                class="mr-2"
+              >
+                {{ pipelineStore.featureSession.num_features }} features
+              </v-chip>
+              <v-chip
+                size="small"
+                :color="pipelineStore.mode === 'anomaly' ? 'error' : pipelineStore.mode === 'regression' ? 'purple' : 'success'"
+                variant="tonal"
+                class="mr-2"
+              >
+                Task: {{ pipelineStore.mode }}
+              </v-chip>
+              <v-spacer />
+              <v-btn
+                color="primary"
+                size="large"
+                :loading="training"
+                :disabled="!pipelineStore.featureSession || !customModelCode.trim()"
+                @click="trainCustomModel"
+              >
+                <v-icon start>mdi-play</v-icon>
+                Run Custom Model
+              </v-btn>
+            </div>
+
+            <!-- Execution Logs -->
+            <v-expand-transition>
+              <div v-if="customModelLogs.length > 0" class="mt-4">
+                <h4 class="text-subtitle-2 font-weight-bold mb-2">Execution Logs</h4>
+                <v-card variant="outlined" class="pa-3" style="background: #1e1e1e; max-height: 200px; overflow-y: auto;">
+                  <pre class="text-caption" style="color: #d4d4d4; white-space: pre-wrap; margin: 0;">{{ customModelLogs.join('\n') }}</pre>
+                </v-card>
+              </div>
+            </v-expand-transition>
+          </v-card>
+        </v-col>
+      </template>
+
       <!-- Deep Learning (TimesNet) Section -->
-      <template v-else>
+      <template v-else-if="trainingApproach === 'dl'">
         <!-- GPU Status Card -->
         <v-col cols="12">
           <v-card class="pa-4 mb-4">
@@ -552,7 +840,12 @@
           <div>
             <strong>Best Performer:</strong> {{ comparisonResult.best_algorithm.algorithm_name }}
             <span class="text-medium-emphasis ml-2">
-              ({{ comparisonResult.best_algorithm.metric }}: {{ (comparisonResult.best_algorithm.score * 100).toFixed(1) }}%)
+              <template v-if="pipelineStore.mode === 'regression'">
+                ({{ comparisonResult.best_algorithm.metric }}: {{ comparisonResult.best_algorithm.score.toFixed(4) }})
+              </template>
+              <template v-else>
+                ({{ comparisonResult.best_algorithm.metric }}: {{ (comparisonResult.best_algorithm.score * 100).toFixed(1) }}%)
+              </template>
             </span>
           </div>
         </div>
@@ -563,11 +856,7 @@
         <thead>
           <tr>
             <th class="text-left">Algorithm</th>
-            <th class="text-center">Accuracy</th>
-            <th class="text-center">Precision</th>
-            <th class="text-center">Recall</th>
-            <th class="text-center">F1 Score</th>
-            <th class="text-center">ROC-AUC</th>
+            <th v-for="header in comparisonHeaders" :key="header.key" class="text-center">{{ header.label }}</th>
             <th class="text-center">Status</th>
           </tr>
         </thead>
@@ -575,7 +864,12 @@
           <tr
             v-for="result in comparisonResult.comparison?.rows || []"
             :key="result.algorithm"
-            :class="{ 'best-row': comparisonResult.best_algorithm?.algorithm === result.algorithm }"
+            :class="{
+              'best-row': comparisonResult.best_algorithm?.algorithm === result.algorithm,
+              'selected-row': selectedComparisonAlgo === result.algorithm,
+            }"
+            style="cursor: pointer;"
+            @click="selectComparisonModel(result.algorithm)"
           >
             <td class="font-weight-medium">
               {{ result.algorithm_name }}
@@ -584,26 +878,24 @@
                 size="small"
                 color="warning"
                 class="ml-1"
+                title="Best performer"
               >
                 mdi-star
               </v-icon>
+              <v-icon
+                v-if="selectedComparisonAlgo === result.algorithm"
+                size="small"
+                color="primary"
+                class="ml-1"
+              >
+                mdi-check-circle
+              </v-icon>
             </td>
-            <td class="text-center">
-              {{ result.values.accuracy != null ? (result.values.accuracy * 100).toFixed(1) + '%' : '-' }}
-            </td>
-            <td class="text-center">
-              {{ result.values.precision != null ? (result.values.precision * 100).toFixed(1) + '%' : '-' }}
-            </td>
-            <td class="text-center">
-              {{ result.values.recall != null ? (result.values.recall * 100).toFixed(1) + '%' : '-' }}
-            </td>
-            <td class="text-center">
-              <span :class="getF1Class(result.values.f1)">
-                {{ result.values.f1 != null ? (result.values.f1 * 100).toFixed(1) + '%' : '-' }}
-              </span>
-            </td>
-            <td class="text-center">
-              {{ result.values.roc_auc != null ? result.values.roc_auc.toFixed(3) : '-' }}
+            <td v-for="header in comparisonHeaders" :key="'v-'+header.key" class="text-center">
+              <template v-if="result.values[header.key] != null">
+                {{ header.format(result.values[header.key]) }}
+              </template>
+              <template v-else>-</template>
             </td>
             <td class="text-center">
               <v-chip size="x-small" color="success" variant="flat">OK</v-chip>
@@ -611,7 +903,7 @@
           </tr>
           <tr v-for="error in comparisonResult.errors || []" :key="'err-'+error.algorithm" class="error-row">
             <td class="font-weight-medium text-error">{{ error.algorithm_name }}</td>
-            <td colspan="5" class="text-center text-caption text-error">
+            <td :colspan="comparisonHeaders.length" class="text-center text-caption text-error">
               <v-tooltip location="top" max-width="400">
                 <template #activator="{ props }">
                   <span v-bind="props" class="error-message-truncate">
@@ -632,18 +924,24 @@
 
       <div class="d-flex align-center justify-space-between">
         <p class="text-caption text-medium-emphasis mb-0">
-          The best performing model ({{ comparisonResult.best_algorithm?.algorithm_name }})
-          has been selected for deployment. You can view detailed metrics below.
+          <template v-if="selectedComparisonAlgo">
+            <v-icon size="small" color="primary" class="mr-1">mdi-check-circle</v-icon>
+            <strong>{{ getSelectedAlgoName() }}</strong> selected.
+            Click any row to switch. Details shown below.
+          </template>
+          <template v-else>
+            Click any algorithm row to select it for deployment and view detailed metrics below.
+          </template>
         </p>
         <v-btn
-          v-if="comparisonResult.best_algorithm"
+          v-if="selectedComparisonAlgo || comparisonResult.best_algorithm"
           color="warning"
           variant="flat"
           size="small"
           @click="showSaveBenchmarkDialog = true"
         >
           <v-icon start size="small">mdi-content-save</v-icon>
-          Save as Benchmark
+          Save {{ getSelectedAlgoName() }}
         </v-btn>
       </div>
     </v-card>
@@ -884,8 +1182,181 @@
         {{ trainingResult.metrics.metrics_info }}
       </v-alert>
 
-      <!-- Primary Metrics Row -->
-      <v-row dense>
+      <!-- Regression Metrics Row -->
+      <v-row v-if="pipelineStore.mode === 'regression'" dense>
+        <v-col cols="6" md="2">
+          <v-card variant="tonal" class="pa-3 text-center">
+            <div class="text-caption text-medium-emphasis">R² Score</div>
+            <div class="text-h5" :class="trainingResult.metrics.r2 >= 0.8 ? 'text-success' : trainingResult.metrics.r2 >= 0.5 ? 'text-info' : 'text-warning'">
+              {{ (trainingResult.metrics.r2 || 0).toFixed(4) }}
+            </div>
+          </v-card>
+        </v-col>
+        <v-col cols="6" md="2">
+          <v-card variant="tonal" class="pa-3 text-center">
+            <div class="text-caption text-medium-emphasis">RMSE</div>
+            <div class="text-h5 text-info">
+              {{ (trainingResult.metrics.rmse || 0).toFixed(4) }}
+            </div>
+          </v-card>
+        </v-col>
+        <v-col cols="6" md="2">
+          <v-card variant="tonal" class="pa-3 text-center">
+            <div class="text-caption text-medium-emphasis">MAE</div>
+            <div class="text-h6">
+              {{ (trainingResult.metrics.mae || 0).toFixed(4) }}
+            </div>
+          </v-card>
+        </v-col>
+        <v-col cols="6" md="2">
+          <v-card variant="tonal" class="pa-3 text-center">
+            <div class="text-caption text-medium-emphasis">MSE</div>
+            <div class="text-h6">
+              {{ (trainingResult.metrics.mse || 0).toFixed(4) }}
+            </div>
+          </v-card>
+        </v-col>
+        <v-col cols="6" md="2" v-if="trainingResult.metrics.mape !== undefined">
+          <v-card variant="tonal" class="pa-3 text-center">
+            <div class="text-caption text-medium-emphasis">MAPE</div>
+            <div class="text-h6">
+              {{ ((trainingResult.metrics.mape || 0) * 100).toFixed(1) }}%
+            </div>
+          </v-card>
+        </v-col>
+        <v-col cols="6" md="2">
+          <v-card variant="tonal" class="pa-3 text-center">
+            <div class="text-caption text-medium-emphasis">Train R²</div>
+            <div class="text-h6 text-purple">
+              {{ (trainingResult.metrics.train_r2 || 0).toFixed(4) }}
+            </div>
+          </v-card>
+        </v-col>
+      </v-row>
+
+      <!-- Regression Scatter Plot (Predicted vs Actual) -->
+      <v-row v-if="pipelineStore.mode === 'regression' && trainingResult.metrics.scatter_data" class="mt-4">
+        <v-col cols="12" md="6">
+          <v-card variant="outlined" class="pa-4">
+            <h4 class="text-subtitle-2 font-weight-bold mb-3">
+              <v-icon size="small" class="mr-1">mdi-chart-scatter-plot</v-icon>
+              Predicted vs Actual
+            </h4>
+            <svg viewBox="0 0 300 280" class="w-100" style="max-height: 280px;">
+              <!-- Grid lines -->
+              <line x1="50" y1="10" x2="50" y2="250" stroke="currentColor" stroke-opacity="0.2"/>
+              <line x1="50" y1="250" x2="290" y2="250" stroke="currentColor" stroke-opacity="0.2"/>
+              <!-- Perfect prediction line -->
+              <line x1="50" y1="250" x2="290" y2="10" stroke="#888" stroke-dasharray="4" stroke-opacity="0.5"/>
+              <!-- Scatter points -->
+              <circle
+                v-for="(actual, idx) in trainingResult.metrics.scatter_data.actual"
+                :key="'scatter'+idx"
+                :cx="50 + ((actual - scatterMin) / (scatterMax - scatterMin || 1)) * 240"
+                :cy="250 - ((trainingResult.metrics.scatter_data.predicted[idx] - scatterMin) / (scatterMax - scatterMin || 1)) * 240"
+                r="3"
+                fill="#6366f1"
+                fill-opacity="0.6"
+              />
+              <!-- Axis labels -->
+              <text x="170" y="275" text-anchor="middle" fill="currentColor" font-size="11" opacity="0.7">Actual</text>
+              <text x="15" y="130" text-anchor="middle" fill="currentColor" font-size="11" opacity="0.7" transform="rotate(-90,15,130)">Predicted</text>
+            </svg>
+          </v-card>
+        </v-col>
+
+        <v-col cols="12" md="6">
+          <v-card variant="outlined" class="pa-4">
+            <h4 class="text-subtitle-2 font-weight-bold mb-3">
+              <v-icon size="small" class="mr-1">mdi-chart-bar</v-icon>
+              Target Statistics
+            </h4>
+            <v-table density="compact">
+              <tbody>
+                <tr><td>Target Mean</td><td class="text-right font-weight-medium">{{ (trainingResult.metrics.target_mean || 0).toFixed(4) }}</td></tr>
+                <tr><td>Target Std</td><td class="text-right font-weight-medium">{{ (trainingResult.metrics.target_std || 0).toFixed(4) }}</td></tr>
+                <tr><td>Target Min</td><td class="text-right font-weight-medium">{{ (trainingResult.metrics.target_min || 0).toFixed(4) }}</td></tr>
+                <tr><td>Target Max</td><td class="text-right font-weight-medium">{{ (trainingResult.metrics.target_max || 0).toFixed(4) }}</td></tr>
+                <tr v-if="trainingResult.metrics.residuals">
+                  <td>Residual Mean</td>
+                  <td class="text-right font-weight-medium">{{ (trainingResult.metrics.residuals.mean || 0).toFixed(4) }}</td>
+                </tr>
+                <tr v-if="trainingResult.metrics.residuals">
+                  <td>Residual Std</td>
+                  <td class="text-right font-weight-medium">{{ (trainingResult.metrics.residuals.std || 0).toFixed(4) }}</td>
+                </tr>
+              </tbody>
+            </v-table>
+          </v-card>
+        </v-col>
+      </v-row>
+
+      <!-- Regression Time-Series Overlay (Actual vs Predicted over time) -->
+      <v-row v-if="pipelineStore.mode === 'regression' && trainingResult.metrics.timeseries_data" class="mt-4">
+        <v-col cols="12">
+          <v-card variant="outlined" class="pa-4">
+            <div class="d-flex align-center mb-3">
+              <h4 class="text-subtitle-2 font-weight-bold">
+                <v-icon size="small" class="mr-1">mdi-chart-line</v-icon>
+                Actual vs Predicted (Time Series)
+              </h4>
+              <v-spacer />
+              <v-btn-toggle v-model="tsViewMode" mandatory density="compact" rounded="lg" class="mr-2">
+                <v-btn value="test" size="x-small">Test Only</v-btn>
+                <v-btn value="all" size="x-small">Train + Test</v-btn>
+              </v-btn-toggle>
+            </div>
+            <div style="width: 100%; overflow-x: auto;">
+              <svg :viewBox="`0 0 ${tsChartWidth} 220`" style="width: 100%; min-width: 500px; height: 220px;">
+                <!-- Grid lines -->
+                <line v-for="i in 4" :key="'grid'+i" :x1="50" :x2="tsChartWidth - 10"
+                  :y1="30 + (i-1) * 45" :y2="30 + (i-1) * 45"
+                  stroke="currentColor" stroke-opacity="0.1" />
+                <!-- Y axis -->
+                <line x1="50" y1="20" x2="50" y2="195" stroke="currentColor" stroke-opacity="0.3" />
+                <!-- X axis -->
+                <line x1="50" :x2="tsChartWidth - 10" y1="195" y2="195" stroke="currentColor" stroke-opacity="0.3" />
+
+                <!-- Y axis labels -->
+                <text v-for="(label, i) in tsYLabels" :key="'yl'+i"
+                  x="45" :y="35 + i * 45" text-anchor="end" fill="currentColor" font-size="9" opacity="0.5">
+                  {{ label }}
+                </text>
+
+                <!-- Train/Test separator line -->
+                <line v-if="tsViewMode === 'all' && tsTrainLength > 0"
+                  :x1="50 + tsTrainLength * tsXScale" :x2="50 + tsTrainLength * tsXScale"
+                  y1="20" y2="195"
+                  stroke="#FF9800" stroke-width="1" stroke-dasharray="4" />
+                <text v-if="tsViewMode === 'all' && tsTrainLength > 0"
+                  :x="50 + tsTrainLength * tsXScale + 4" y="30"
+                  fill="#FF9800" font-size="9">Test →</text>
+
+                <!-- Actual line -->
+                <polyline :points="tsActualPoints" fill="none" stroke="#22D3EE" stroke-width="1.5" stroke-opacity="0.9" />
+                <!-- Predicted line -->
+                <polyline :points="tsPredictedPoints" fill="none" stroke="#F472B6" stroke-width="1.5" stroke-opacity="0.9" stroke-dasharray="4" />
+
+                <!-- Axis labels -->
+                <text :x="tsChartWidth / 2" y="215" text-anchor="middle" fill="currentColor" font-size="10" opacity="0.6">
+                  Window Index (time →)
+                </text>
+                <text x="12" y="110" text-anchor="middle" fill="currentColor" font-size="10" opacity="0.6"
+                  transform="rotate(-90, 12, 110)">Value</text>
+
+                <!-- Legend -->
+                <line :x1="tsChartWidth - 180" :x2="tsChartWidth - 160" y1="12" y2="12" stroke="#22D3EE" stroke-width="2" />
+                <text :x="tsChartWidth - 155" y="16" fill="#22D3EE" font-size="10">Actual</text>
+                <line :x1="tsChartWidth - 100" :x2="tsChartWidth - 80" y1="12" y2="12" stroke="#F472B6" stroke-width="2" stroke-dasharray="4" />
+                <text :x="tsChartWidth - 75" y="16" fill="#F472B6" font-size="10">Predicted</text>
+              </svg>
+            </div>
+          </v-card>
+        </v-col>
+      </v-row>
+
+      <!-- Classification/Anomaly Primary Metrics Row -->
+      <v-row v-if="pipelineStore.mode !== 'regression'" dense>
         <v-col cols="6" md="2">
           <v-card variant="tonal" class="pa-3 text-center">
             <div class="text-caption text-medium-emphasis">Accuracy</div>
@@ -1124,6 +1595,7 @@ import { useRouter } from 'vue-router'
 import { usePipelineStore } from '@/stores/pipeline'
 import { useNotificationStore } from '@/stores/notification'
 import PipelineStepper from '@/components/PipelineStepper.vue'
+import CodeEditor from '@/components/CodeEditor.vue'
 import api from '@/services/api'
 
 const router = useRouter()
@@ -1133,7 +1605,7 @@ const notificationStore = useNotificationStore()
 // Training approach synced with pipeline store
 const trainingApproach = computed({
   get: () => pipelineStore.trainingApproach,
-  set: (val) => pipelineStore.setTrainingApproach(val as 'ml' | 'dl')
+  set: (val) => pipelineStore.setTrainingApproach(val as 'ml' | 'dl' | 'custom')
 })
 
 // ML state
@@ -1160,11 +1632,46 @@ const evalModel = ref<any>(null)
 const evaluating = ref(false)
 const evalResult = ref<any>(null)
 
+// Selected comparison algorithm
+const selectedComparisonAlgo = ref<string | null>(null)
+
+// TI TinyML state
+const tiServiceAvailable = ref(false)
+const tiDevices = ref<Record<string, any>>({})
+const tiDeviceList = computed(() => {
+  return Object.entries(tiDevices.value).map(([id, dev]: [string, any]) => ({
+    id,
+    label: `${dev.name} (${dev.family})`,
+    ...dev,
+  }))
+})
+const tiSelectedDevice = ref('')
+const tiModels = ref<Record<string, any>>({})
+const tiModelSource = ref('all')
+const tiSelectedModels = ref<string[]>([])
+const tiComparisonResult = ref<any>(null)
+const tiConfig = reactive({
+  epochs: 100,
+  batch_size: 32,
+  learning_rate: 0.001,
+  quantization: '8bit',
+  max_depth: 10 as number | null,
+  test_size: 0.2,
+})
+const tiLogs = ref<string[]>([])
+const tiRunId = ref('')
+
+// Custom model state
+const customModelCode = ref('')
+const customModelLogs = ref<string[]>([])
+const customTemplates = ref<any[]>([])
+const selectedTemplate = ref('')
+
 const mlHyperparameters = reactive({
   n_estimators: 100,
   contamination: 0.1,
   max_depth: null as number | null,
-  test_size: 0.2
+  test_size: pipelineStore.windowingConfig.test_ratio || 0.2
 })
 
 // TimesNet state
@@ -1223,9 +1730,22 @@ const classificationAlgorithms = [
   { id: 'lr', name: 'Logistic Regression', description: 'Linear classifier' },
 ]
 
+const regressionAlgorithms = [
+  { id: 'rf_reg', name: 'Random Forest Regressor', description: 'Ensemble of decision trees for regression', recommended: true },
+  { id: 'xgb_reg', name: 'XGBoost Regressor', description: 'Gradient boosting with regularization', recommended: true },
+  { id: 'lgbm_reg', name: 'LightGBM Regressor', description: 'Fast gradient boosting framework' },
+  { id: 'dt_reg', name: 'Decision Tree Regressor', description: 'Single tree, smallest MCU footprint' },
+  { id: 'knn_reg', name: 'KNN Regressor', description: 'Instance-based prediction', noOnnx: true },
+  { id: 'svr', name: 'Support Vector Regressor', description: 'Kernel-based regression' },
+]
+
 const canTrain = computed(() => {
   if (trainingApproach.value === 'ml') {
     return selectedAlgorithms.value.length > 0 && !!pipelineStore.featureSession
+  } else if (trainingApproach.value === 'custom') {
+    return !!pipelineStore.featureSession && !!customModelCode.value.trim()
+  } else if (trainingApproach.value === 'ti') {
+    return !!tiSelectedDevice.value && tiSelectedModels.value.length > 0 && !!pipelineStore.dataSession
   } else {
     return !!pipelineStore.windowedSession
   }
@@ -1236,10 +1756,16 @@ const availableAnomalyAlgorithms = computed(() => {
   return anomalyAlgorithms.filter(algo => !algo.requiresPytorch || pytorchAvailable.value)
 })
 
+// Unified algorithm list based on current mode
+const currentAlgorithmList = computed(() => {
+  if (pipelineStore.mode === 'anomaly') return availableAnomalyAlgorithms.value
+  if (pipelineStore.mode === 'regression') return regressionAlgorithms
+  return classificationAlgorithms
+})
+
 // Algorithm selection helpers
 function selectAllAlgorithms() {
-  const algorithms = pipelineStore.mode === 'anomaly' ? availableAnomalyAlgorithms.value : classificationAlgorithms
-  selectedAlgorithms.value = algorithms.map(a => a.id)
+  selectedAlgorithms.value = currentAlgorithmList.value.map(a => a.id)
 }
 
 function clearAlgorithmSelection() {
@@ -1307,6 +1833,109 @@ const rocAreaPoints = computed(() => {
   points.push('290,250')  // Bottom right
   points.push('50,250')   // Bottom left
   return points.join(' ')
+})
+
+// Time-series chart state and computeds
+const tsViewMode = ref<'test' | 'all'>('all')
+
+const tsChartWidth = computed(() => {
+  const n = tsViewMode.value === 'all'
+    ? (trainingResult.value?.metrics?.timeseries_data?.train_actual?.length || 0)
+      + (trainingResult.value?.metrics?.timeseries_data?.test_actual?.length || 0)
+    : (trainingResult.value?.metrics?.timeseries_data?.test_actual?.length || 0)
+  return Math.max(500, Math.min(60 + n * 6, 1200))
+})
+
+const tsTrainLength = computed(() => {
+  if (tsViewMode.value !== 'all') return 0
+  return trainingResult.value?.metrics?.timeseries_data?.train_actual?.length || 0
+})
+
+const tsAllData = computed(() => {
+  const ts = trainingResult.value?.metrics?.timeseries_data
+  if (!ts) return { actual: [], predicted: [] }
+  if (tsViewMode.value === 'all') {
+    return {
+      actual: [...(ts.train_actual || []), ...(ts.test_actual || [])],
+      predicted: [...(ts.train_predicted || []), ...(ts.test_predicted || [])],
+    }
+  }
+  return { actual: ts.test_actual || [], predicted: ts.test_predicted || [] }
+})
+
+const tsYMin = computed(() => {
+  const all = [...tsAllData.value.actual, ...tsAllData.value.predicted]
+  return all.length > 0 ? Math.min(...all) : 0
+})
+
+const tsYMax = computed(() => {
+  const all = [...tsAllData.value.actual, ...tsAllData.value.predicted]
+  return all.length > 0 ? Math.max(...all) : 1
+})
+
+const tsYRange = computed(() => tsYMax.value - tsYMin.value || 1)
+
+const tsXScale = computed(() => {
+  const n = tsAllData.value.actual.length
+  return n > 1 ? (tsChartWidth.value - 60) / (n - 1) : 1
+})
+
+const tsYLabels = computed(() => {
+  const labels = []
+  for (let i = 0; i < 4; i++) {
+    labels.push((tsYMax.value - (i / 3) * tsYRange.value).toFixed(1))
+  }
+  return labels
+})
+
+function tsToSvgY(val: number): number {
+  return 195 - ((val - tsYMin.value) / tsYRange.value) * 165
+}
+
+const tsActualPoints = computed(() => {
+  return tsAllData.value.actual.map((v, i) =>
+    `${50 + i * tsXScale.value},${tsToSvgY(v)}`
+  ).join(' ')
+})
+
+const tsPredictedPoints = computed(() => {
+  return tsAllData.value.predicted.map((v, i) =>
+    `${50 + i * tsXScale.value},${tsToSvgY(v)}`
+  ).join(' ')
+})
+
+// Comparison table headers based on mode
+const comparisonHeaders = computed(() => {
+  if (pipelineStore.mode === 'regression') {
+    return [
+      { key: 'r2', label: 'R²', format: (v: number) => v.toFixed(4) },
+      { key: 'rmse', label: 'RMSE', format: (v: number) => v.toFixed(4) },
+      { key: 'mae', label: 'MAE', format: (v: number) => v.toFixed(4) },
+      { key: 'mape', label: 'MAPE', format: (v: number) => (v * 100).toFixed(1) + '%' },
+    ]
+  }
+  return [
+    { key: 'accuracy', label: 'Accuracy', format: (v: number) => (v * 100).toFixed(1) + '%' },
+    { key: 'precision', label: 'Precision', format: (v: number) => (v * 100).toFixed(1) + '%' },
+    { key: 'recall', label: 'Recall', format: (v: number) => (v * 100).toFixed(1) + '%' },
+    { key: 'f1', label: 'F1 Score', format: (v: number) => (v * 100).toFixed(1) + '%' },
+    { key: 'roc_auc', label: 'ROC-AUC', format: (v: number) => v.toFixed(3) },
+  ]
+})
+
+// Scatter plot helpers for regression
+const scatterMin = computed(() => {
+  if (!trainingResult.value?.metrics?.scatter_data) return 0
+  const actual = trainingResult.value.metrics.scatter_data.actual
+  const predicted = trainingResult.value.metrics.scatter_data.predicted
+  return Math.min(...actual, ...predicted)
+})
+
+const scatterMax = computed(() => {
+  if (!trainingResult.value?.metrics?.scatter_data) return 1
+  const actual = trainingResult.value.metrics.scatter_data.actual
+  const predicted = trainingResult.value.metrics.scatter_data.predicted
+  return Math.max(...actual, ...predicted)
 })
 
 function goBack() {
@@ -1383,6 +2012,10 @@ async function trainModel() {
   try {
     if (trainingApproach.value === 'ml') {
       await trainMLModel()
+    } else if (trainingApproach.value === 'custom') {
+      await trainCustomModel()
+    } else if (trainingApproach.value === 'ti') {
+      await trainTiModel()
     } else {
       await trainTimesNetModel()
     }
@@ -1407,6 +2040,7 @@ async function trainMLModel() {
   // Reset previous results
   trainingResult.value = null
   comparisonResult.value = null
+  selectedComparisonAlgo.value = null
 
   // Decide whether to do single or comparison training
   if (selectedAlgorithms.value.length === 1) {
@@ -1427,6 +2061,8 @@ async function trainMLModel() {
     try {
       const endpoint = pipelineStore.mode === 'anomaly'
         ? '/api/training/train/anomaly/compare'
+        : pipelineStore.mode === 'regression'
+        ? '/api/training/train/regression/compare'
         : '/api/training/train/classification/compare'
 
       const response = await api.post(endpoint, {
@@ -1438,8 +2074,9 @@ async function trainMLModel() {
 
       comparisonResult.value = response.data
 
-      // Set the best algorithm's result as the main training result
+      // Auto-select the best algorithm
       if (response.data.best_algorithm) {
+        selectedComparisonAlgo.value = response.data.best_algorithm.algorithm
         const bestResult = response.data.results.find(
           (r: any) => r.algorithm === response.data.best_algorithm.algorithm
         )
@@ -1470,6 +2107,11 @@ async function trainMLModel() {
 async function trainTimesNetModel() {
   if (!pipelineStore.windowedSession) {
     notificationStore.showError('No windowed data. Please go back and apply windowing first.')
+    return
+  }
+
+  if (pipelineStore.mode === 'regression') {
+    notificationStore.showError('TimesNet does not support regression yet. Please use Traditional ML approach.')
     return
   }
 
@@ -1504,6 +2146,253 @@ async function trainTimesNetModel() {
   notificationStore.showSuccess('TimesNet model trained successfully!')
 }
 
+// ─── Comparison Model Selection ──────────────────────────────────
+
+function selectComparisonModel(algorithmId: string) {
+  if (!comparisonResult.value) return
+
+  selectedComparisonAlgo.value = algorithmId
+
+  // Find the result for this algorithm
+  const result = comparisonResult.value.results.find(
+    (r: any) => r.algorithm === algorithmId
+  )
+  if (!result) return
+
+  // Update trainingResult to show this model's details
+  trainingResult.value = {
+    training_session_id: result.training_session_id,
+    algorithm: result.algorithm_name,
+    mode: pipelineStore.mode,
+    metrics: result.metrics,
+  }
+  pipelineStore.trainingSession = trainingResult.value
+}
+
+function getSelectedAlgoName(): string {
+  if (!selectedComparisonAlgo.value || !comparisonResult.value) return ''
+  const result = comparisonResult.value.results.find(
+    (r: any) => r.algorithm === selectedComparisonAlgo.value
+  )
+  return result?.algorithm_name || selectedComparisonAlgo.value
+}
+
+// ─── TI TinyML Functions ─────────────────────────────────────────
+
+async function fetchTiStatus() {
+  try {
+    const resp = await api.get('/api/ti/status')
+    tiServiceAvailable.value = resp.data.status === 'healthy'
+  } catch {
+    tiServiceAvailable.value = false
+  }
+}
+
+async function fetchTiDevices() {
+  try {
+    const resp = await api.get('/api/ti/devices')
+    tiDevices.value = resp.data
+
+    // Filter devices by current mode
+    const tiTask = pipelineStore.mode === 'anomaly' ? 'timeseries_anomalydetection'
+      : pipelineStore.mode === 'regression' ? 'timeseries_regression'
+      : 'timeseries_classification'
+
+    const filtered: Record<string, any> = {}
+    for (const [id, dev] of Object.entries(resp.data) as [string, any][]) {
+      if (dev.tasks?.includes(tiTask)) {
+        filtered[id] = dev
+      }
+    }
+    tiDevices.value = filtered
+  } catch {
+    tiDevices.value = {}
+  }
+}
+
+async function fetchTiModels() {
+  if (!tiSelectedDevice.value) return
+  const tiTask = pipelineStore.mode === 'anomaly' ? 'timeseries_anomalydetection'
+    : pipelineStore.mode === 'regression' ? 'timeseries_regression'
+    : 'timeseries_classification'
+
+  try {
+    const resp = await api.get('/api/ti/models', {
+      params: {
+        task: tiTask,
+        device: tiSelectedDevice.value,
+        source: tiModelSource.value,
+      }
+    })
+    tiModels.value = resp.data
+    tiSelectedModels.value = []
+  } catch {
+    tiModels.value = {}
+  }
+}
+
+function tiSelectAll() {
+  tiSelectedModels.value = Object.keys(tiModels.value)
+}
+
+async function trainTiModel() {
+  if (!tiSelectedDevice.value || tiSelectedModels.value.length === 0 || !pipelineStore.dataSession) return
+
+  training.value = true
+  trainingResult.value = null
+  comparisonResult.value = null
+  tiComparisonResult.value = null
+  selectedComparisonAlgo.value = null
+  tiLogs.value = []
+  tiRunId.value = ''
+
+  try {
+    const resp = await api.post('/api/ti/train', {
+      mode: pipelineStore.mode,
+      model_names: tiSelectedModels.value,
+      target_device: tiSelectedDevice.value,
+      dataset_path: pipelineStore.dataSession.metadata.file_path,
+      config: { ...tiConfig },
+    })
+
+    const data = resp.data
+    tiRunId.value = data.run_id || ''
+
+    // Collect all logs
+    for (const r of (data.results || [])) {
+      tiLogs.value.push(`--- ${r.algorithm_name} ---`)
+      tiLogs.value.push(...(r.logs || []))
+    }
+
+    // Build comparison result (same format as ML comparison)
+    tiComparisonResult.value = data
+    comparisonResult.value = {
+      successful: data.successful,
+      failed: data.failed,
+      best_algorithm: data.best_algorithm,
+      comparison: {
+        rows: data.results.map((r: any) => ({
+          algorithm: r.model_name,
+          algorithm_name: r.algorithm_name,
+          values: r.metrics,
+        })),
+      },
+      results: data.results.map((r: any) => ({
+        algorithm: r.model_name,
+        algorithm_name: r.algorithm_name,
+        training_session_id: r.model_name,  // use model_name as ID for TI
+        metrics: r.metrics,
+      })),
+      errors: data.errors || [],
+    }
+
+    // Auto-select best
+    if (data.best_algorithm) {
+      selectedComparisonAlgo.value = data.best_algorithm.model_name
+      const bestResult = data.results.find((r: any) => r.model_name === data.best_algorithm.model_name)
+      if (bestResult) {
+        trainingResult.value = {
+          training_session_id: data.run_id,
+          algorithm: bestResult.algorithm_name,
+          mode: pipelineStore.mode,
+          metrics: bestResult.metrics,
+        }
+        pipelineStore.trainingSession = trainingResult.value
+      }
+    }
+
+    if (data.failed > 0) {
+      notificationStore.showWarning(`Trained ${data.successful} models, ${data.failed} failed`)
+    } else {
+      notificationStore.showSuccess(`Trained ${data.successful} models successfully!`)
+    }
+  } catch (e: any) {
+    const errData = e.response?.data
+    notificationStore.showError(errData?.error || 'TI training failed')
+  } finally {
+    training.value = false
+  }
+}
+
+// ─── Custom Model Functions ───────────────────────────────────────
+
+async function trainCustomModel() {
+  if (!pipelineStore.featureSession) {
+    notificationStore.showError('No features extracted. Please go back and extract features first.')
+    return
+  }
+
+  training.value = true
+  trainingResult.value = null
+  comparisonResult.value = null
+  customModelLogs.value = []
+
+  try {
+    const response = await api.post('/api/training/custom-model/execute', {
+      code: customModelCode.value,
+      feature_session_id: pipelineStore.featureSession.session_id,
+      task: pipelineStore.mode,
+      test_size: mlHyperparameters.test_size,
+    })
+
+    const data = response.data
+    customModelLogs.value = data.logs || []
+
+    if (data.status === 'success') {
+      trainingResult.value = {
+        training_session_id: data.training_session_id,
+        algorithm: 'Custom Model',
+        mode: pipelineStore.mode,
+        metrics: data.metrics,
+      }
+      pipelineStore.trainingSession = trainingResult.value
+      notificationStore.showSuccess('Custom model trained successfully!')
+    } else {
+      const errorMsg = data.error || 'Custom model execution failed'
+      if (data.traceback) {
+        customModelLogs.value.push('--- Traceback ---')
+        customModelLogs.value.push(data.traceback)
+      }
+      notificationStore.showError(errorMsg)
+    }
+  } catch (e: any) {
+    const errorData = e.response?.data
+    if (errorData?.logs) {
+      customModelLogs.value = errorData.logs
+    }
+    if (errorData?.traceback) {
+      customModelLogs.value.push('--- Traceback ---')
+      customModelLogs.value.push(errorData.traceback)
+    }
+    notificationStore.showError(errorData?.error || 'Custom model execution failed')
+  } finally {
+    training.value = false
+  }
+}
+
+async function fetchCustomTemplates() {
+  try {
+    const response = await api.get('/api/training/custom-model/templates')
+    customTemplates.value = response.data
+    // Load first template matching current mode
+    const match = customTemplates.value.find(t => t.task === pipelineStore.mode)
+    if (match && !customModelCode.value) {
+      selectedTemplate.value = match.id
+      customModelCode.value = match.code
+    }
+  } catch {
+    customTemplates.value = []
+  }
+}
+
+function loadTemplate(templateId: string) {
+  const template = customTemplates.value.find(t => t.id === templateId)
+  if (template) {
+    customModelCode.value = template.code
+    customModelLogs.value = []
+  }
+}
+
 // Fetch GPU status
 async function fetchGpuStatus() {
   try {
@@ -1522,9 +2411,13 @@ async function fetchGpuStatus() {
 watch(trainingApproach, (newVal) => {
   trainingResult.value = null
   comparisonResult.value = null
-  // Fetch GPU status when switching to deep learning
   if (newVal === 'dl') {
     fetchGpuStatus()
+  } else if (newVal === 'custom') {
+    fetchCustomTemplates()
+  } else if (newVal === 'ti') {
+    fetchTiStatus()
+    fetchTiDevices()
   }
 })
 
@@ -1532,11 +2425,21 @@ watch(trainingApproach, (newVal) => {
 watch(() => pipelineStore.mode, (newMode) => {
   if (newMode === 'anomaly') {
     selectedAlgorithms.value = ['iforest']
+  } else if (newMode === 'regression') {
+    selectedAlgorithms.value = ['rf_reg']
   } else {
     selectedAlgorithms.value = ['rf']
   }
   trainingResult.value = null
   comparisonResult.value = null
+  // Re-fetch templates/models when mode changes
+  if (trainingApproach.value === 'custom') {
+    fetchCustomTemplates()
+  } else if (trainingApproach.value === 'ti') {
+    fetchTiDevices()
+    tiSelectedModel.value = ''
+    tiModels.value = {}
+  }
 })
 
 // ─── Saved Models / Benchmark Functions ───────────────────────────
@@ -1553,9 +2456,14 @@ async function loadSavedModels() {
 }
 
 async function saveBenchmark() {
-  // Determine training_session_id from comparison best or single training result
+  // Determine training_session_id: selected model > best model > single training
   let sessionId: string | undefined
-  if (comparisonResult.value?.best_algorithm) {
+  if (selectedComparisonAlgo.value && comparisonResult.value) {
+    const selected = comparisonResult.value.results.find(
+      (r: any) => r.algorithm === selectedComparisonAlgo.value
+    )
+    sessionId = selected?.training_session_id
+  } else if (comparisonResult.value?.best_algorithm) {
     sessionId = comparisonResult.value.best_algorithm.training_session_id
   } else if (trainingResult.value?.training_session_id) {
     sessionId = trainingResult.value.training_session_id
@@ -1690,9 +2598,11 @@ async function runEvaluation() {
 onMounted(async () => {
   // Set default algorithm selection (recommended ones)
   if (pipelineStore.mode === 'anomaly') {
-    selectedAlgorithms.value = ['iforest']  // Default to recommended
+    selectedAlgorithms.value = ['iforest']
+  } else if (pipelineStore.mode === 'regression') {
+    selectedAlgorithms.value = ['rf_reg']
   } else {
-    selectedAlgorithms.value = ['rf']  // Default to recommended
+    selectedAlgorithms.value = ['rf']
   }
 
   // Check GPU/PyTorch availability
@@ -1709,6 +2619,11 @@ onMounted(async () => {
   // Fetch GPU status if starting with deep learning approach
   if (trainingApproach.value === 'dl') {
     fetchGpuStatus()
+  } else if (trainingApproach.value === 'custom') {
+    fetchCustomTemplates()
+  } else if (trainingApproach.value === 'ti') {
+    fetchTiStatus()
+    fetchTiDevices()
   }
 
   // Load saved models
@@ -1909,7 +2824,17 @@ onMounted(async () => {
 // Comparison table styles
 .comparison-table {
   .best-row {
-    background: rgba(16, 185, 129, 0.1);
+    background: rgba(16, 185, 129, 0.05);
+  }
+
+  .selected-row {
+    background: rgba(99, 102, 241, 0.15) !important;
+    outline: 2px solid rgba(99, 102, 241, 0.5);
+    outline-offset: -2px;
+  }
+
+  tbody tr:hover {
+    background: rgba(99, 102, 241, 0.08) !important;
   }
 
   .error-row {

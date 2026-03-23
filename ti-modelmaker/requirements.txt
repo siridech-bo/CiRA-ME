@@ -1,0 +1,11 @@
+# Minimal Flask API for TI ModelMaker bridge
+Flask>=3.0.0
+Flask-CORS>=4.0.0
+PyYAML>=6.0
+
+# Traditional ML → C code for MCU
+emlearn>=0.20.0
+xgboost>=2.0.0
+lightgbm>=4.0.0
+onnxmltools>=1.12.0
+skl2onnx>=1.16

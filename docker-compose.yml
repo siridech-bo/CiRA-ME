@@ -101,10 +101,46 @@ services:
           cpus: '0.5'
           memory: 256M
 
+  # TI TinyML ModelMaker - Separate Python 3.10 container
+  ti-modelmaker:
+    build:
+      context: ./ti-modelmaker
+      dockerfile: Dockerfile
+    container_name: cirame-ti-modelmaker
+    restart: unless-stopped
+
+    volumes:
+      # Share datasets with backend
+      - ./shared:/app/data/datasets/shared
+      - ti-projects:/app/data/projects
+
+    ports:
+      - "5200:5200"
+
+    networks:
+      - cirame-network
+
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5200/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 8G
+        reservations:
+          cpus: '1.0'
+          memory: 2G
+
 # Named volumes for persistent data
 volumes:
   backend-data:
   backend-models:
+  ti-projects:
 
 # Network for service communication
 networks:

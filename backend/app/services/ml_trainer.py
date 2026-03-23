@@ -1,6 +1,6 @@
 """
 CiRA ME - ML Training Service
-Handles Anomaly Detection (PyOD) and Classification (Scikit-learn)
+Handles Anomaly Detection (PyOD), Classification (Scikit-learn), and Regression
 """
 
 import os
@@ -15,7 +15,9 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import (
     accuracy_score, precision_score, recall_score, f1_score,
     confusion_matrix, classification_report, roc_auc_score,
-    roc_curve, auc, precision_recall_curve, average_precision_score
+    roc_curve, auc, precision_recall_curve, average_precision_score,
+    mean_squared_error, mean_absolute_error, r2_score,
+    mean_absolute_percentage_error
 )
 from sklearn.preprocessing import label_binarize
 
@@ -189,6 +191,65 @@ class MLTrainer:
             )
         else:
             raise ValueError(f"Unknown Scikit-learn algorithm: {algorithm}")
+
+    def _get_regression_model(self, algorithm: str, hyperparameters: Dict):
+        """Get regression model instance."""
+        if algorithm == 'knn_reg':
+            from sklearn.neighbors import KNeighborsRegressor
+            n_neighbors = hyperparameters.get('n_neighbors', 5)
+            # Will be clamped to n_samples in train_regression if needed
+            return KNeighborsRegressor(
+                n_neighbors=n_neighbors,
+                weights=hyperparameters.get('weights', 'uniform')
+            )
+        elif algorithm == 'dt_reg':
+            from sklearn.tree import DecisionTreeRegressor
+            return DecisionTreeRegressor(
+                max_depth=hyperparameters.get('max_depth', None),
+                min_samples_split=hyperparameters.get('min_samples_split', 2),
+                random_state=42
+            )
+        elif algorithm == 'rf_reg':
+            from sklearn.ensemble import RandomForestRegressor
+            return RandomForestRegressor(
+                n_estimators=hyperparameters.get('n_estimators', 100),
+                max_depth=hyperparameters.get('max_depth', None),
+                min_samples_split=hyperparameters.get('min_samples_split', 2),
+                random_state=42
+            )
+        elif algorithm == 'xgb_reg':
+            try:
+                from xgboost import XGBRegressor
+                return XGBRegressor(
+                    n_estimators=hyperparameters.get('n_estimators', 100),
+                    max_depth=hyperparameters.get('max_depth', 6),
+                    learning_rate=hyperparameters.get('learning_rate', 0.1),
+                    random_state=42,
+                    verbosity=0
+                )
+            except ImportError:
+                raise ImportError("XGBoost required. Install with: pip install xgboost")
+        elif algorithm == 'lgbm_reg':
+            try:
+                from lightgbm import LGBMRegressor
+                return LGBMRegressor(
+                    n_estimators=hyperparameters.get('n_estimators', 100),
+                    max_depth=hyperparameters.get('max_depth', -1),
+                    learning_rate=hyperparameters.get('learning_rate', 0.1),
+                    random_state=42,
+                    verbose=-1
+                )
+            except ImportError:
+                raise ImportError("LightGBM required. Install with: pip install lightgbm")
+        elif algorithm == 'svr':
+            from sklearn.svm import SVR
+            return SVR(
+                kernel=hyperparameters.get('kernel', 'rbf'),
+                C=hyperparameters.get('C', 1.0),
+                epsilon=hyperparameters.get('epsilon', 0.1)
+            )
+        else:
+            raise ValueError(f"Unknown regression algorithm: {algorithm}")
 
     def train_anomaly(
         self,
@@ -814,6 +875,281 @@ class MLTrainer:
             'model_path': model_path
         }
 
+    def train_regression(
+        self,
+        feature_session_id: str,
+        algorithm: str,
+        hyperparameters: Dict = None,
+        test_size: float = 0.2,
+        target_column: str = None,
+        project_id: Optional[int] = None,
+        user_id: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """Train a regression model.
+
+        For regression, the labels (y) must be continuous numeric values.
+        The target_column specifies which sensor column to predict.
+        """
+        hyperparameters = hyperparameters or {}
+
+        # Get feature data with categories
+        X, y, categories = FeatureExtractor.get_features_for_training(feature_session_id)
+
+        if y is None:
+            raise ValueError("Target values required for regression training. "
+                             "Ensure your dataset has a numeric target/label column.")
+
+        # Convert labels to float for regression
+        try:
+            y = np.array(y, dtype=np.float64)
+        except (ValueError, TypeError):
+            raise ValueError("Regression requires numeric target values. "
+                             "Labels must be continuous numbers, not categories.")
+
+        # Use category-based split if available
+        split_method = 'category'
+        if categories is not None:
+            train_mask = np.isin(categories, ['training', 'train'])
+            test_mask = np.isin(categories, ['testing', 'test'])
+
+            if np.sum(train_mask) > 0 and np.sum(test_mask) > 0:
+                X_train, X_test = X[train_mask], X[test_mask]
+                y_train, y_test = y[train_mask], y[test_mask]
+            else:
+                X_train, X_test, y_train, y_test = train_test_split(
+                    X, y, test_size=test_size, random_state=42
+                )
+                split_method = 'random'
+        else:
+            X_train, X_test, y_train, y_test = train_test_split(
+                X, y, test_size=test_size, random_state=42
+            )
+            split_method = 'random'
+
+        # Scale features
+        scaler = StandardScaler()
+        X_train_scaled = scaler.fit_transform(X_train)
+        X_test_scaled = scaler.transform(X_test)
+
+        # Get model (clamp KNN n_neighbors to training set size)
+        model = self._get_regression_model(algorithm, hyperparameters)
+        if algorithm == 'knn_reg' and hasattr(model, 'n_neighbors'):
+            model.n_neighbors = min(model.n_neighbors, len(X_train))
+
+        # Train
+        model.fit(X_train_scaled, y_train)
+
+        # Predict
+        y_pred_train = model.predict(X_train_scaled)
+        y_pred_test = model.predict(X_test_scaled)
+
+        # Calculate regression metrics
+        # R² requires >1 test sample; with 1 sample SS_tot=0 → R²=0
+        if len(y_test) > 1:
+            r2_test = float(r2_score(y_test, y_pred_test))
+        else:
+            r2_test = None  # Undefined for single sample
+
+        if len(y_train) > 1:
+            r2_train = float(r2_score(y_train, y_pred_train))
+        else:
+            r2_train = None
+
+        metrics = {
+            'mse': float(mean_squared_error(y_test, y_pred_test)),
+            'rmse': float(np.sqrt(mean_squared_error(y_test, y_pred_test))),
+            'mae': float(mean_absolute_error(y_test, y_pred_test)),
+            'r2': r2_test,
+            'train_r2': r2_train,
+            'train_samples': len(X_train),
+            'test_samples': len(X_test),
+            'split_method': split_method,
+            'target_mean': float(np.mean(y)),
+            'target_std': float(np.std(y)),
+            'target_min': float(np.min(y)),
+            'target_max': float(np.max(y)),
+        }
+
+        if len(y_test) <= 1:
+            metrics['metrics_info'] = (
+                f'R² is unreliable with only {len(y_test)} test sample(s). '
+                f'Record more data for meaningful evaluation.'
+            )
+
+        # MAPE (handle zero values)
+        try:
+            non_zero_mask = y_test != 0
+            if np.any(non_zero_mask):
+                metrics['mape'] = float(mean_absolute_percentage_error(
+                    y_test[non_zero_mask], y_pred_test[non_zero_mask]
+                ))
+        except Exception:
+            pass
+
+        # Prediction vs actual scatter data (downsample for UI)
+        max_points = 200
+        if len(y_test) > max_points:
+            indices = np.linspace(0, len(y_test) - 1, max_points, dtype=int)
+            scatter_actual = y_test[indices]
+            scatter_pred = y_pred_test[indices]
+        else:
+            scatter_actual = y_test
+            scatter_pred = y_pred_test
+
+        metrics['scatter_data'] = {
+            'actual': scatter_actual.tolist(),
+            'predicted': scatter_pred.tolist()
+        }
+
+        # Time-series overlay: actual vs predicted for test set (in order)
+        # Also include train predictions for full picture
+        max_ts_points = 300
+        # Test set time-series
+        ts_test_actual = y_test.tolist()
+        ts_test_pred = y_pred_test.tolist()
+        if len(ts_test_actual) > max_ts_points:
+            indices = np.linspace(0, len(ts_test_actual) - 1, max_ts_points, dtype=int)
+            ts_test_actual = [ts_test_actual[i] for i in indices]
+            ts_test_pred = [ts_test_pred[i] for i in indices]
+
+        # Train set time-series
+        ts_train_actual = y_train.tolist()
+        ts_train_pred = y_pred_train.tolist()
+        if len(ts_train_actual) > max_ts_points:
+            indices = np.linspace(0, len(ts_train_actual) - 1, max_ts_points, dtype=int)
+            ts_train_actual = [ts_train_actual[i] for i in indices]
+            ts_train_pred = [ts_train_pred[i] for i in indices]
+
+        metrics['timeseries_data'] = {
+            'train_actual': ts_train_actual,
+            'train_predicted': ts_train_pred,
+            'test_actual': ts_test_actual,
+            'test_predicted': ts_test_pred,
+        }
+
+        # Residual distribution
+        residuals = y_pred_test - y_test
+        metrics['residuals'] = {
+            'mean': float(np.mean(residuals)),
+            'std': float(np.std(residuals)),
+            'min': float(np.min(residuals)),
+            'max': float(np.max(residuals)),
+        }
+
+        # Feature importance (if available)
+        if hasattr(model, 'feature_importances_'):
+            feature_session = _feature_sessions.get(feature_session_id)
+            if feature_session:
+                feature_names = feature_session.get('feature_names', [])
+                importances = model.feature_importances_
+                metrics['feature_importance'] = dict(zip(feature_names, importances.tolist()))
+
+        # Sanitize NaN/Inf
+        import math
+        def _sanitize(v):
+            if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+                return 0.0
+            if isinstance(v, dict):
+                return {k: _sanitize(val) for k, val in v.items()}
+            if isinstance(v, list):
+                return [_sanitize(item) for item in v]
+            return v
+        metrics = _sanitize(metrics)
+
+        # Generate session ID and save model
+        training_session_id = str(uuid.uuid4())
+        model_path = os.path.join(self.models_path, f"{training_session_id}.pkl")
+
+        _feat_session = _feature_sessions.get(feature_session_id, {})
+        _feat_names = _feat_session.get('feature_names', [])
+
+        with open(model_path, 'wb') as f:
+            pickle.dump({
+                'model': model,
+                'scaler': scaler,
+                'algorithm': algorithm,
+                'mode': 'regression',
+                'hyperparameters': hyperparameters,
+                'feature_session_id': feature_session_id,
+                'feature_names': _feat_names,
+                'target_column': target_column,
+            }, f)
+
+        # Store in session
+        _model_sessions[training_session_id] = {
+            'model': model,
+            'scaler': scaler,
+            'algorithm': algorithm,
+            'mode': 'regression',
+            'metrics': metrics,
+            'model_path': model_path,
+            'hyperparameters': hyperparameters,
+            'target_column': target_column,
+            'created_at': datetime.utcnow().isoformat()
+        }
+
+        return {
+            'training_session_id': training_session_id,
+            'algorithm': algorithm,
+            'mode': 'regression',
+            'metrics': metrics,
+            'model_path': model_path
+        }
+
+    def train_regression_compare(
+        self,
+        feature_session_id: str,
+        algorithms: list,
+        hyperparameters: Dict = None,
+        test_size: float = 0.2,
+        target_column: str = None,
+        project_id: Optional[int] = None,
+        user_id: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """Train multiple regression algorithms and compare."""
+        hyperparameters = hyperparameters or {}
+        results = []
+        errors = []
+
+        for algorithm in algorithms:
+            try:
+                result = self.train_regression(
+                    feature_session_id,
+                    algorithm,
+                    hyperparameters.copy(),
+                    test_size=test_size,
+                    target_column=target_column,
+                    project_id=project_id,
+                    user_id=user_id
+                )
+                results.append({
+                    'algorithm': algorithm,
+                    'algorithm_name': self._get_algorithm_name(algorithm, 'regression'),
+                    'training_session_id': result['training_session_id'],
+                    'metrics': result['metrics'],
+                    'status': 'success'
+                })
+            except Exception as e:
+                errors.append({
+                    'algorithm': algorithm,
+                    'algorithm_name': self._get_algorithm_name(algorithm, 'regression'),
+                    'error': str(e),
+                    'status': 'failed'
+                })
+
+        comparison = self._build_comparison_table(results, 'regression')
+
+        return {
+            'mode': 'regression',
+            'total_algorithms': len(algorithms),
+            'successful': len(results),
+            'failed': len(errors),
+            'results': results,
+            'errors': errors,
+            'comparison': comparison,
+            'best_algorithm': self._get_best_algorithm(results, 'regression')
+        }
+
     def predict(self, training_session_id: str, feature_session_id: str) -> Dict[str, Any]:
         """Make predictions using a trained model."""
         session = _model_sessions.get(training_session_id)
@@ -836,6 +1172,14 @@ class MLTrainer:
                 'decision_scores': scores.tolist(),
                 'anomaly_count': int(np.sum(predictions)),
                 'total_samples': len(predictions)
+            }
+        elif mode == 'regression':
+            predictions = model.predict(X_scaled)
+            return {
+                'predictions': predictions.tolist(),
+                'total_samples': len(predictions),
+                'prediction_mean': float(np.mean(predictions)),
+                'prediction_std': float(np.std(predictions)),
             }
         else:
             predictions = model.predict(X_scaled)
@@ -1071,7 +1415,20 @@ class MLTrainer:
             'nb': 'Naive Bayes',
             'lr': 'Logistic Regression'
         }
-        names = anomaly_names if mode == 'anomaly' else classification_names
+        regression_names = {
+            'knn_reg': 'KNN Regressor',
+            'dt_reg': 'Decision Tree Regressor',
+            'rf_reg': 'Random Forest Regressor',
+            'xgb_reg': 'XGBoost Regressor',
+            'lgbm_reg': 'LightGBM Regressor',
+            'svr': 'Support Vector Regressor',
+        }
+        if mode == 'anomaly':
+            names = anomaly_names
+        elif mode == 'regression':
+            names = regression_names
+        else:
+            names = classification_names
         return names.get(algorithm_id, algorithm_id)
 
     def _build_comparison_table(self, results: list, mode: str) -> Dict[str, Any]:
@@ -1080,7 +1437,9 @@ class MLTrainer:
             return {'headers': [], 'rows': []}
 
         # Define metrics to compare
-        if mode == 'anomaly':
+        if mode == 'regression':
+            metric_keys = ['r2', 'rmse', 'mae', 'mape']
+        elif mode == 'anomaly':
             metric_keys = ['accuracy', 'precision', 'recall', 'f1', 'roc_auc']
         else:
             metric_keys = ['accuracy', 'precision', 'recall', 'f1', 'roc_auc']
@@ -1103,8 +1462,11 @@ class MLTrainer:
                     row['values'][key] = None
             rows.append(row)
 
-        # Sort by F1 score (or accuracy if F1 not available)
-        rows.sort(key=lambda x: x['values'].get('f1') or x['values'].get('accuracy') or 0, reverse=True)
+        # Sort by best metric (R² for regression, F1 for others)
+        if mode == 'regression':
+            rows.sort(key=lambda x: x['values'].get('r2') or 0, reverse=True)
+        else:
+            rows.sort(key=lambda x: x['values'].get('f1') or x['values'].get('accuracy') or 0, reverse=True)
 
         return {
             'headers': headers,
@@ -1113,17 +1475,25 @@ class MLTrainer:
         }
 
     def _get_best_algorithm(self, results: list, mode: str) -> Optional[Dict[str, Any]]:
-        """Determine the best performing algorithm based on F1 score."""
+        """Determine the best performing algorithm."""
         if not results:
             return None
 
         best = None
-        best_score = -1
+        best_score = float('-inf')
 
         for r in results:
             metrics = r.get('metrics', {})
-            # Use F1 as primary metric, fallback to accuracy
-            score = metrics.get('f1') or metrics.get('accuracy') or 0
+            if mode == 'regression':
+                # R² can be negative; None means undefined
+                score = metrics.get('r2')
+                if score is None:
+                    score = float('-inf')
+                metric_name = 'r2'
+            else:
+                score = metrics.get('f1') or metrics.get('accuracy') or 0
+                metric_name = 'f1' if metrics.get('f1') else 'accuracy'
+
             if score > best_score:
                 best_score = score
                 best = {
@@ -1131,7 +1501,7 @@ class MLTrainer:
                     'algorithm_name': r['algorithm_name'],
                     'training_session_id': r['training_session_id'],
                     'score': score,
-                    'metric': 'f1' if metrics.get('f1') else 'accuracy'
+                    'metric': metric_name
                 }
 
         return best

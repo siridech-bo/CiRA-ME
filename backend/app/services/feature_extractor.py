@@ -15,7 +15,10 @@ import warnings
 from typing import Dict, List, Any, Optional, Tuple
 from scipy import stats
 from scipy.fft import fft, fftfreq
-from sklearn.feature_selection import VarianceThreshold, mutual_info_classif, SelectKBest, f_classif
+from sklearn.feature_selection import (
+    VarianceThreshold, mutual_info_classif, mutual_info_regression,
+    SelectKBest, f_classif, f_regression
+)
 from sklearn.preprocessing import StandardScaler
 
 logger = logging.getLogger(__name__)
@@ -766,10 +769,15 @@ class FeatureExtractor:
         else:
             # Use mutual information to rank and select top n_features
             X_fresh = features_after_fresh.values
-            y_encoded = pd.factorize(y)[0]
+            y_arr = np.array(y)
+            is_regression = y_arr.dtype.kind == 'f'
 
-            # Compute mutual information scores
-            mi_scores = mutual_info_classif(X_fresh, y_encoded, random_state=42)
+            if is_regression:
+                y_encoded = y_arr.astype(float)
+                mi_scores = mutual_info_regression(X_fresh, y_encoded, random_state=42)
+            else:
+                y_encoded = pd.factorize(y)[0]
+                mi_scores = mutual_info_classif(X_fresh, y_encoded, random_state=42)
             mi_ranking = sorted(zip(fresh_features, mi_scores), key=lambda x: x[1], reverse=True)
 
             # Select top n_features
@@ -1161,34 +1169,40 @@ class FeatureExtractor:
         feature_scores = {}
 
         if labels is not None and len(np.unique(labels)) > 1:
+            # Detect if labels are continuous (regression) or categorical
+            labels_arr = np.array(labels)
+            is_regression = labels_arr.dtype.kind == 'f'  # float labels = regression
+
             # Use mutual information for scoring
             if method in ['mutual_info', 'combined']:
                 try:
-                    mi_scores = mutual_info_classif(
+                    mi_func = mutual_info_regression if is_regression else mutual_info_classif
+                    mi_scores = mi_func(
                         features_df.values,
-                        labels,
+                        labels_arr,
                         random_state=42,
                         n_neighbors=5
                     )
                     for feat, score in zip(features_df.columns, mi_scores):
                         feature_scores[feat] = feature_scores.get(feat, 0) + score
-                    selection_log.append("Computed mutual information scores")
+                    selection_log.append(f"Computed mutual information scores ({'regression' if is_regression else 'classification'})")
                 except Exception as e:
                     selection_log.append(f"MI scoring failed: {str(e)}")
 
-            # Use ANOVA F-score
+            # Use F-score (ANOVA for classification, F-regression for regression)
             if method in ['anova', 'combined']:
                 try:
-                    f_scores, _ = f_classif(features_df.values, labels)
+                    f_func = f_regression if is_regression else f_classif
+                    f_scores, _ = f_func(features_df.values, labels_arr)
                     # Normalize scores
                     f_scores = np.nan_to_num(f_scores, nan=0.0)
                     if f_scores.max() > 0:
                         f_scores = f_scores / f_scores.max()
                     for feat, score in zip(features_df.columns, f_scores):
                         feature_scores[feat] = feature_scores.get(feat, 0) + score
-                    selection_log.append("Computed ANOVA F-scores")
+                    selection_log.append(f"Computed {'F-regression' if is_regression else 'ANOVA F'}-scores")
                 except Exception as e:
-                    selection_log.append(f"ANOVA scoring failed: {str(e)}")
+                    selection_log.append(f"F-scoring failed: {str(e)}")
         else:
             # No labels - use variance as importance
             for col in features_df.columns:

@@ -1228,7 +1228,8 @@ class DataLoader:
         window_size: int = 128,
         stride: int = 64,
         label_method: str = 'majority',
-        test_ratio: float = 0.2
+        test_ratio: float = 0.2,
+        target_column: str = None
     ) -> Dict[str, Any]:
         """
         Apply windowing to loaded data, respecting sample boundaries.
@@ -1259,10 +1260,18 @@ class DataLoader:
         df = session['data']
         metadata = session['metadata']
 
-        sensor_cols = metadata['sensor_columns']
+        sensor_cols = list(metadata['sensor_columns'])
         label_col = metadata.get('label_column')
         has_sample_id = 'sample_id' in df.columns
         has_category = 'category' in df.columns
+
+        # Regression mode: target_column is a sensor column to predict
+        # Remove it from input features and use it to generate continuous targets
+        regression_target = None
+        if target_column and target_column in sensor_cols:
+            regression_target = target_column
+            sensor_cols = [c for c in sensor_cols if c != target_column]
+            label_col = None  # Override — use target_column values, not categorical labels
 
         # --- Auto train/test split for CSV data without pre-existing categories ---
         split_method = None
@@ -1329,6 +1338,21 @@ class DataLoader:
                     gap = 0
                     train_rows = total_rows - test_rows
 
+                # Ensure both splits can produce at least 2 windows each
+                min_rows_for_2_windows = window_size + stride
+                if train_rows < min_rows_for_2_windows or test_rows < min_rows_for_2_windows:
+                    # Reduce gap to half, redistribute
+                    gap = max(0, gap // 2)
+                    desired_test = max(min_rows_for_2_windows, round(total_rows * test_ratio))
+                    train_rows = total_rows - desired_test - gap
+                    test_rows = desired_test
+                    if train_rows < min_rows_for_2_windows:
+                        # Last resort: no gap, split proportionally
+                        gap = 0
+                        test_rows = max(min_rows_for_2_windows, round(total_rows * test_ratio))
+                        train_rows = total_rows - test_rows
+                    split_method = 'temporal (with gap)' if gap > 0 else 'temporal (no gap)'
+
                 df = df.copy()
                 df['category'] = 'gap'
                 df.iloc[:train_rows, df.columns.get_loc('category')] = 'training'
@@ -1355,6 +1379,9 @@ class DataLoader:
                 if has_category:
                     sample_category = sample_df['category'].iloc[0]
 
+                # Pre-extract target column data for regression
+                sample_target = sample_df[regression_target].values if regression_target else None
+
                 n_windows = (n_rows - window_size) // stride + 1
 
                 for i in range(n_windows):
@@ -1363,7 +1390,10 @@ class DataLoader:
 
                     windows.append(sample_data[start:end])
 
-                    if label_col:
+                    if regression_target:
+                        # Regression: use mean of target column in window
+                        labels.append(float(np.mean(sample_target[start:end])))
+                    elif label_col:
                         window_labels = sample_df.iloc[start:end][label_col].values
                         labels.append(self._get_window_label(window_labels, label_method))
 
@@ -1378,19 +1408,26 @@ class DataLoader:
                     if n_rows < window_size:
                         continue
 
+                    cat_target = cat_df[regression_target].values if regression_target else None
+
                     n_windows = (n_rows - window_size) // stride + 1
                     for i in range(n_windows):
                         start = i * stride
                         end = start + window_size
                         windows.append(cat_data[start:end])
                         categories.append(cat)
-                        if label_col:
+                        if regression_target:
+                            labels.append(float(np.mean(cat_target[start:end])))
+                        elif label_col:
                             window_labels = cat_df.iloc[start:end][label_col].values
                             labels.append(self._get_window_label(window_labels, label_method))
             else:
                 # No category, no sample_id — plain sequential windowing
                 num_samples = len(df)
                 n_windows = max(0, (num_samples - window_size) // stride + 1)
+
+                # Pre-extract target column for regression
+                plain_target = df[regression_target].values if regression_target else None
 
                 for i in range(n_windows):
                     start = i * stride
@@ -1399,7 +1436,9 @@ class DataLoader:
                     window_data = df.iloc[start:end][sensor_cols].values
                     windows.append(window_data)
 
-                    if label_col:
+                    if regression_target:
+                        labels.append(float(np.mean(plain_target[start:end])))
+                    elif label_col:
                         window_labels = df.iloc[start:end][label_col].values
                         labels.append(self._get_window_label(window_labels, label_method))
 
@@ -1410,8 +1449,19 @@ class DataLoader:
                 f"larger than individual samples. Try a smaller window size."
             )
 
+        # --- Post-windowing random split for regression (can't stratify continuous targets) ---
+        if split_method == 'stratified' and regression_target and labels and num_windows > 1:
+            from sklearn.model_selection import train_test_split as sk_split
+            indices = np.arange(num_windows)
+            train_idx, test_idx = sk_split(indices, test_size=test_ratio, random_state=42)
+            categories = ['training'] * num_windows
+            for idx in test_idx:
+                categories[idx] = 'testing'
+            split_method = 'random (regression)'
+
         # --- Post-windowing stratified split (for few-file multi-CSV) ---
-        if split_method == 'stratified' and labels and num_windows > 1:
+        # Skip stratified split for regression (continuous labels can't be stratified)
+        if split_method == 'stratified' and labels and num_windows > 1 and not regression_target:
             from sklearn.model_selection import train_test_split as sk_split
             label_arr = np.array(labels)
             indices = np.arange(num_windows)
@@ -1431,7 +1481,8 @@ class DataLoader:
 
         # --- Validate split: ensure test set has >= 2 classes ---
         # If category-based split left test with < 2 classes, re-split with stratification
-        if labels and categories and num_windows > 1:
+        # Skip for regression (continuous targets, not categorical classes)
+        if labels and categories and num_windows > 1 and not regression_target:
             from sklearn.model_selection import train_test_split as sk_split
             label_arr = np.array(labels)
             cat_arr_check = np.array(categories)
@@ -1536,6 +1587,7 @@ class DataLoader:
             'test_ratio': float(test_ratio) if test_ratio else None,
             'normalization': norm_params,
             'sensor_columns': kept_cols,
+            'target_column': regression_target,
         }
 
         with _sessions_lock:
