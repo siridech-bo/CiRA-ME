@@ -464,8 +464,10 @@
                       </div>
                     </div>
                     <v-chip v-if="model.npu_only" size="x-small" color="success" variant="tonal" class="ml-1">NPU</v-chip>
-                    <v-chip v-if="model.source === 'traditional_ml'" size="x-small" color="orange" variant="tonal" class="ml-1">emlearn</v-chip>
-                    <v-chip v-else-if="model.source === 'ti_zoo'" size="x-small" color="info" variant="tonal" class="ml-1">TI NN</v-chip>
+                    <v-chip v-if="model.source === 'traditional_ml'" size="x-small" color="orange" variant="tonal" class="ml-1"
+                      title="Uses CiRA ME's extracted features → emlearn C export">CiRA Features</v-chip>
+                    <v-chip v-else-if="model.source === 'ti_zoo'" size="x-small" color="info" variant="tonal" class="ml-1"
+                      title="Uses TI's own pipeline with raw windowed data">TI Pipeline</v-chip>
                   </div>
                 </template>
               </v-checkbox>
@@ -545,6 +547,29 @@
               <v-icon size="small" class="mr-1">mdi-database</v-icon>
               Dataset: {{ pipelineStore.dataSession.metadata.file_path?.split(/[/\\]/).pop() }}
               ({{ pipelineStore.dataSession.metadata.total_rows?.toLocaleString() }} rows)
+            </v-alert>
+
+            <!-- Feature pipeline info -->
+            <v-alert
+              v-if="tiModelSource !== 'ti_zoo' && pipelineStore.featureSession"
+              type="info"
+              variant="tonal"
+              density="compact"
+              class="mt-2"
+            >
+              <v-icon size="small" class="mr-1">mdi-auto-fix</v-icon>
+              Traditional ML uses CiRA ME features ({{ pipelineStore.featureSession.num_features }} features)
+            </v-alert>
+            <v-alert
+              v-else-if="tiModelSource !== 'ti_zoo' && !pipelineStore.featureSession"
+              type="warning"
+              variant="tonal"
+              density="compact"
+              class="mt-2"
+            >
+              <v-icon size="small" class="mr-1">mdi-alert</v-icon>
+              Traditional ML models need features. Go to
+              <strong @click="$router.push({ name: 'pipeline-features' })" style="cursor:pointer; text-decoration:underline;">Features page</strong> first.
             </v-alert>
           </v-card>
         </v-col>
@@ -2419,20 +2444,58 @@ async function trainTiModel() {
     }
 
     try {
-      const resp = await api.post('/api/ti/train', {
-        mode: pipelineStore.mode,
-        model_names: [modelName],
-        target_device: tiSelectedDevice.value,
-        dataset_path: pipelineStore.dataSession!.metadata.file_path,
-        config: { ...tiConfig },
-      })
+      let resultData: any
 
-      const data = resp.data
-      tiRunId.value = data.run_id || ''
+      if (modelName.startsWith('ML_')) {
+        // Traditional ML: use CiRA ME's feature pipeline
+        if (!pipelineStore.featureSession) {
+          allErrors.push({
+            model_name: modelName,
+            algorithm_name: modelInfo.name || modelName,
+            error: 'Features not extracted. Go to Features page first.',
+            status: 'failed',
+          })
+          tiLogs.value.push(`${modelInfo.name || modelName}: Skipped — no features extracted`)
+          continue
+        }
 
-      for (const r of (data.results || [])) {
+        const resp = await api.post('/api/ti/train-ml', {
+          feature_session_id: pipelineStore.featureSession.session_id,
+          model_name: modelName,
+          target_device: tiSelectedDevice.value,
+          mode: pipelineStore.mode,
+          test_size: tiConfig.test_size,
+          hyperparameters: { max_depth: tiConfig.max_depth },
+        })
+
+        // Wrap single result in batch format
+        resultData = {
+          results: [{
+            model_name: modelName,
+            algorithm_name: modelInfo.name || modelName,
+            status: 'success',
+            metrics: resp.data.metrics || {},
+            source: 'traditional_ml',
+          }],
+          errors: [],
+          run_id: resp.data.training_session_id || '',
+        }
+      } else {
+        // TI NN: use TI's own pipeline with raw data
+        const resp = await api.post('/api/ti/train', {
+          mode: pipelineStore.mode,
+          model_names: [modelName],
+          target_device: tiSelectedDevice.value,
+          dataset_path: pipelineStore.dataSession!.metadata.file_path,
+          config: { ...tiConfig },
+        })
+        resultData = resp.data
+      }
+
+      tiRunId.value = resultData.run_id || ''
+
+      for (const r of (resultData.results || [])) {
         allResults.push(r)
-        // Update progress with latest metrics
         if (r.metrics?.r2 != null) {
           tiProgress.value!.r2 = r.metrics.r2
         }
@@ -2441,7 +2504,7 @@ async function trainTiModel() {
         }
         tiLogs.value.push(`${r.algorithm_name}: R²=${r.metrics?.r2 ?? '?'}, RMSE=${r.metrics?.rmse?.toFixed(2) ?? '?'}`)
       }
-      for (const e of (data.errors || [])) {
+      for (const e of (resultData.errors || [])) {
         allErrors.push(e)
         tiLogs.value.push(`${e.algorithm_name}: Failed — ${e.error?.slice(0, 60)}`)
       }
