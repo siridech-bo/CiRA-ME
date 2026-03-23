@@ -252,19 +252,20 @@ def train_model():
                 config_path = os.path.join(model_dir, 'config.yaml')
                 with open(config_path, 'w') as f:
                     yaml.dump(config, f, default_flow_style=False)
-                result = _run_modelmaker(config, model_dir)
+                result = _run_modelmaker(config, model_dir, dataset_path=dataset_path)
 
             # Get model info for display name
             all_models = _get_model_zoo(task_type)
             all_models.update(_get_traditional_ml_models(task_type))
             model_info = all_models.get(mname, {})
 
-            status = result.get('status', 'success')
             result_metrics = result.get('metrics', {})
 
-            # If no metrics returned, mark as error
-            if status == 'success' and not result_metrics:
-                status = 'error'
+            # Consider success if we got metrics (even if returncode != 0 due to quantization errors)
+            status = 'success' if result_metrics else result.get('status', 'error')
+
+            # If still no metrics, mark as error
+            if not result_metrics:
                 errors.append({
                     'model_name': mname,
                     'algorithm_name': model_info.get('name', mname),
@@ -837,7 +838,7 @@ def _build_config(task_type, model_name, target_device, dataset_path,
     return config
 
 
-def _run_modelmaker(config, project_dir):
+def _run_modelmaker(config, project_dir, dataset_path=None):
     """Execute tinyml-modelmaker training + compilation."""
     import subprocess
     import sys
@@ -884,6 +885,11 @@ def _run_modelmaker(config, project_dir):
 
         # Extract metrics from training logs
         metrics = _parse_ti_training_metrics(logs)
+
+        # Post-training inference: generate scatter/timeseries data for graphs
+        graph_data = _run_ti_inference(project_dir, dataset_path, config)
+        if graph_data:
+            metrics.update(graph_data)
 
         # Also try reading results.json if modelmaker wrote one
         metrics_path = os.path.join(project_dir, 'results.json')
@@ -1009,6 +1015,182 @@ def _parse_ti_training_metrics(logs):
             metrics[k] = None
 
     return metrics
+
+
+def _run_ti_inference(project_dir, dataset_path, config):
+    """Run inference on test data using the trained ONNX model to generate graphs."""
+    import numpy as np
+    import pandas as pd
+    import glob as _glob
+
+    try:
+        # Find the ONNX model
+        onnx_files = _glob.glob(os.path.join(project_dir, '**', 'model.onnx'), recursive=True)
+        if not onnx_files:
+            return None
+
+        onnx_path = onnx_files[0]
+
+        # Find test/val split files
+        annotations_dir = _glob.glob(os.path.join(project_dir, '**', 'annotations'), recursive=True)
+        if not annotations_dir:
+            return None
+
+        val_list_path = os.path.join(annotations_dir[0], 'instances_val_list.txt')
+        train_list_path = os.path.join(annotations_dir[0], 'instances_train_list.txt')
+
+        # Find the files directory
+        files_dirs = _glob.glob(os.path.join(project_dir, '**', 'files'), recursive=True)
+        if not files_dirs:
+            return None
+        files_dir = files_dirs[0]
+
+        # Get model input shape from ONNX
+        import onnxruntime as ort
+        sess = ort.InferenceSession(onnx_path)
+        input_name = sess.get_inputs()[0].name
+        input_shape = sess.get_inputs()[0].shape
+        # Shape is [batch, channels, height, width] e.g. [1, 7, 32, 1]
+        n_channels = input_shape[1] if len(input_shape) >= 3 else 6
+        frame_size = input_shape[2] if len(input_shape) >= 3 else 32
+
+        print(f"[TI Inference] ONNX input: {input_shape}, channels={n_channels}, frame={frame_size}")
+
+        # Load test data — use ALL numeric columns (TI uses last as target)
+        def _load_segments(list_path):
+            if not os.path.exists(list_path):
+                return np.array([]), np.array([])
+            with open(list_path) as f:
+                filenames = [l.strip() for l in f if l.strip()]
+            all_x, all_y = [], []
+            for fname in filenames:
+                fpath = os.path.join(files_dir, fname)
+                if not os.path.exists(fpath):
+                    continue
+                data = pd.read_csv(fpath, header=None).values.astype(np.float32)
+                if data.shape[1] < 2:
+                    continue
+                # TI uses first n_channels columns as input, last column as target
+                x_cols = data[:, :n_channels]
+                y_col = data[:, -1]
+                stride = max(1, frame_size // 2)
+                n_windows = max(0, (len(data) - frame_size) // stride + 1)
+                for i in range(n_windows):
+                    start = i * stride
+                    end = start + frame_size
+                    window = x_cols[start:end]  # shape: (frame_size, n_channels)
+                    all_x.append(window)
+                    all_y.append(float(np.mean(y_col[start:end])))
+            if not all_x:
+                return np.array([]), np.array([])
+            return np.array(all_x, dtype=np.float32), np.array(all_y, dtype=np.float32)
+
+        X_test, y_test = _load_segments(val_list_path)
+        X_train, y_train = _load_segments(train_list_path)
+
+        if len(X_test) == 0:
+            print("[TI Inference] No test data loaded")
+            return None
+
+        print(f"[TI Inference] Loaded {len(X_test)} test, {len(X_train)} train windows")
+
+        # Reshape: (N, frame_size, n_channels) → (N, n_channels, frame_size, 1) for TI model
+        def _reshape_for_model(X):
+            X_r = X.transpose(0, 2, 1)  # (N, n_channels, frame_size)
+            if len(input_shape) == 4:
+                X_r = np.expand_dims(X_r, axis=3)  # (N, n_channels, frame_size, 1)
+            return X_r
+
+        X_test_r = _reshape_for_model(X_test)
+        X_train_r = _reshape_for_model(X_train) if len(X_train) > 0 else None
+
+        print(f"[TI Inference] Input shape: {X_test_r.shape}")
+
+        # Run inference one sample at a time (model expects batch=1)
+        y_pred_test = []
+        for i in range(len(X_test_r)):
+            pred = sess.run(None, {input_name: X_test_r[i:i+1]})[0].flatten()
+            y_pred_test.append(pred[0])
+        y_pred_test = np.array(y_pred_test, dtype=np.float32)
+
+        y_pred_train = np.array([], dtype=np.float32)
+        if X_train_r is not None and len(X_train_r) > 0:
+            y_pred_train = []
+            for i in range(len(X_train_r)):
+                pred = sess.run(None, {input_name: X_train_r[i:i+1]})[0].flatten()
+                y_pred_train.append(pred[0])
+            y_pred_train = np.array(y_pred_train, dtype=np.float32)
+
+        # Build graph data (same format as Traditional ML)
+        result = {}
+
+        # Scatter data
+        max_pts = 200
+        if len(y_test) > max_pts:
+            idx = np.linspace(0, len(y_test) - 1, max_pts, dtype=int)
+            result['scatter_data'] = {'actual': y_test[idx].tolist(), 'predicted': y_pred_test[idx].tolist()}
+        else:
+            result['scatter_data'] = {'actual': y_test.tolist(), 'predicted': y_pred_test.tolist()}
+
+        # Time-series data
+        max_ts = 300
+        ts_train_a = y_train.tolist() if len(y_train) > 0 else []
+        ts_train_p = y_pred_train.tolist() if len(y_pred_train) > 0 else []
+        ts_test_a = y_test.tolist()
+        ts_test_p = y_pred_test.tolist()
+
+        if len(ts_train_a) > max_ts:
+            idx = np.linspace(0, len(ts_train_a) - 1, max_ts, dtype=int)
+            ts_train_a = [ts_train_a[i] for i in idx]
+            ts_train_p = [ts_train_p[i] for i in idx]
+        if len(ts_test_a) > max_ts:
+            idx = np.linspace(0, len(ts_test_a) - 1, max_ts, dtype=int)
+            ts_test_a = [ts_test_a[i] for i in idx]
+            ts_test_p = [ts_test_p[i] for i in idx]
+
+        result['timeseries_data'] = {
+            'train_actual': ts_train_a,
+            'train_predicted': ts_train_p,
+            'test_actual': ts_test_a,
+            'test_predicted': ts_test_p,
+        }
+
+        # Residuals
+        residuals = y_pred_test - y_test
+        result['residuals'] = {
+            'mean': float(np.mean(residuals)),
+            'std': float(np.std(residuals)),
+            'min': float(np.min(residuals)),
+            'max': float(np.max(residuals)),
+        }
+
+        # Target stats
+        all_y = np.concatenate([y_train, y_test]) if len(y_train) > 0 else y_test
+        result['target_mean'] = float(np.mean(all_y))
+        result['target_std'] = float(np.std(all_y))
+        result['target_min'] = float(np.min(all_y))
+        result['target_max'] = float(np.max(all_y))
+        result['train_samples'] = len(y_train)
+        result['test_samples'] = len(y_test)
+
+        # Recompute R²/RMSE from actual inference (more accurate than log parsing)
+        from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
+        if len(y_test) > 1:
+            result['r2'] = float(r2_score(y_test, y_pred_test))
+            result['mse'] = float(mean_squared_error(y_test, y_pred_test))
+            result['rmse'] = float(np.sqrt(result['mse']))
+            result['mae'] = float(mean_absolute_error(y_test, y_pred_test))
+        if len(y_train) > 1 and len(y_pred_train) > 0:
+            result['train_r2'] = float(r2_score(y_train, y_pred_train))
+
+        print(f"[TI Inference] Generated graphs: {len(y_test)} test, {len(y_train)} train predictions")
+        return result
+
+    except Exception as e:
+        print(f"[TI Inference] Failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
 
 
 def _train_traditional_ml(task_type, model_name, dataset_path, project_dir,
