@@ -714,7 +714,7 @@ def _run_modelmaker(config, project_dir):
 def _parse_ti_training_metrics(logs):
     """Parse metrics from TI modelmaker training log output.
 
-    Looks for lines like:
+    Only parses BestEpoch summary lines (not per-epoch lines):
         INFO: root.main.FloatTrain.BestEpoch: MSE 6.439
         INFO: root.main.FloatTrain.BestEpoch: R2-Score 0.516
         INFO: root.main.QuantTrain.BestEpoch: MSE 7.670
@@ -725,19 +725,23 @@ def _parse_ti_training_metrics(logs):
     metrics = {}
 
     for line in logs:
-        # R2-Score
-        m = re.search(r'R2-Score\s+([-\d.]+)', line)
+        # ONLY match BestEpoch lines for R2 and MSE
+        if 'BestEpoch' not in line and 'Trainable params' not in line:
+            continue
+
+        # R2-Score from BestEpoch only
+        m = re.search(r'BestEpoch.*R2-Score\s+([-\d.]+)', line)
         if m:
             r2 = float(m.group(1))
             if 'QuantTrain' in line:
                 metrics['r2_quantized'] = r2
-                metrics['r2'] = r2  # Use quantized as primary
+                metrics['r2'] = r2  # Quantized is the deployable metric
             elif 'FloatTrain' in line:
                 metrics['r2_float'] = r2
                 if 'r2' not in metrics:
                     metrics['r2'] = r2
 
-        # MSE
+        # MSE from BestEpoch only
         m = re.search(r'BestEpoch.*MSE\s+([-\d.]+)', line)
         if m:
             mse = float(m.group(1))
@@ -751,7 +755,7 @@ def _parse_ti_training_metrics(logs):
                     metrics['mse'] = mse
                     metrics['rmse'] = mse ** 0.5
 
-        # Best Epoch
+        # Best Epoch number
         m = re.search(r'Best Epoch:\s+(\d+)', line)
         if m:
             if 'QuantTrain' in line:
@@ -764,7 +768,7 @@ def _parse_ti_training_metrics(logs):
         if m:
             metrics['trainable_params'] = int(m.group(1).replace(',', ''))
 
-        # Accuracy (for classification)
+        # Accuracy from BestEpoch (for classification)
         m = re.search(r'BestEpoch.*Accuracy\s+([-\d.]+)', line)
         if m:
             acc = float(m.group(1))
@@ -773,9 +777,9 @@ def _parse_ti_training_metrics(logs):
             elif 'FloatTrain' in line and 'accuracy' not in metrics:
                 metrics['accuracy'] = acc / 100.0 if acc > 1 else acc
 
-    # Compute MAE estimate from MSE (rough approximation)
+    # Compute MAE estimate from RMSE
     if 'rmse' in metrics:
-        metrics['mae'] = metrics['rmse'] * 0.8  # Rough estimate
+        metrics['mae'] = round(metrics['rmse'] * 0.8, 4)
 
     return metrics
 
