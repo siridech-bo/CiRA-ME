@@ -284,7 +284,9 @@ def train_model():
     if task_type == 'timeseries_regression':
         best_score = float('-inf')
         for r in results:
-            score = r['metrics'].get('r2', float('-inf'))
+            score = r['metrics'].get('r2')
+            if score is None:
+                score = float('-inf')
             if score > best_score:
                 best_score = score
                 best = {'model_name': r['model_name'],
@@ -294,6 +296,8 @@ def train_model():
         best_score = -1
         for r in results:
             score = r['metrics'].get('f1') or r['metrics'].get('accuracy') or 0
+            if score is None:
+                score = 0
             if score > best_score:
                 best_score = score
                 best = {'model_name': r['model_name'],
@@ -601,9 +605,9 @@ def _build_config(task_type, model_name, target_device, dataset_path,
         'training': {
             'model_name': model_name,
             'num_epochs': overrides.get('epochs', 100),
-            'batch_size': overrides.get('batch_size', 32),
-            'learning_rate': overrides.get('learning_rate', 0.001),
             'num_gpus': 0,  # Force CPU — TI models are tiny
+            # Don't override batch_size/learning_rate — let TI use per-model defaults
+            # (each model in TI's zoo has tuned hyperparameters)
         },
         'compilation': {
             'enable': overrides.get('compile', True),
@@ -730,9 +734,13 @@ def _parse_ti_training_metrics(logs):
             continue
 
         # R2-Score from BestEpoch only
-        m = re.search(r'BestEpoch.*R2-Score\s+([-\d.]+)', line)
+        m = re.search(r'BestEpoch.*R2-Score\s+([-\dinf.]+)', line)
         if m:
-            r2 = float(m.group(1))
+            raw = m.group(1)
+            if 'inf' in raw:
+                r2 = float('-inf')
+            else:
+                r2 = float(raw)
             if 'QuantTrain' in line:
                 metrics['r2_quantized'] = r2
                 metrics['r2'] = r2  # Quantized is the deployable metric
@@ -780,6 +788,18 @@ def _parse_ti_training_metrics(logs):
     # Compute MAE estimate from RMSE
     if 'rmse' in metrics:
         metrics['mae'] = round(metrics['rmse'] * 0.8, 4)
+
+    # Handle -inf and extreme values
+    if metrics.get('r2') == float('-inf') or (metrics.get('r2') is not None and metrics['r2'] < -1000):
+        metrics['metrics_info'] = 'Model diverged — try more epochs or a different model architecture'
+        # Use float R² if quantized failed
+        if metrics.get('r2_float') is not None and metrics['r2_float'] > -1000:
+            metrics['r2'] = metrics['r2_float']
+
+    # Clean up any remaining inf/nan
+    for k, v in list(metrics.items()):
+        if isinstance(v, float) and (v == float('inf') or v == float('-inf') or v != v):
+            metrics[k] = None
 
     return metrics
 
