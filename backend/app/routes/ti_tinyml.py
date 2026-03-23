@@ -3,10 +3,24 @@ CiRA ME - TI TinyML Routes
 API endpoints for TI ModelMaker integration.
 """
 
+import math
 import logging
 from flask import Blueprint, request, jsonify, Response
 from ..auth import login_required
 from ..services.ti_integration import TIIntegration
+
+
+def _sanitize_nan(obj):
+    """Replace NaN/Inf float values with None for JSON serialization."""
+    if isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return obj
+    if isinstance(obj, dict):
+        return {k: _sanitize_nan(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_nan(v) for v in obj]
+    return obj
 
 logger = logging.getLogger(__name__)
 ti_bp = Blueprint('ti_tinyml', __name__)
