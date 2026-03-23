@@ -395,9 +395,6 @@
             </div>
 
             <div class="d-flex align-center mb-2">
-              <v-btn size="small" variant="tonal" @click="tiSelectAll" class="mr-2">
-                Select All
-              </v-btn>
               <v-btn size="small" variant="tonal" @click="tiSelectedModels = []">
                 Clear
               </v-btn>
@@ -425,6 +422,7 @@
                         {{ model.architecture }}
                         <template v-if="model.params > 0"> | {{ model.params.toLocaleString() }} params</template>
                         <template v-if="model.estimated_flash_kb"> | ~{{ model.estimated_flash_kb }}KB</template>
+                        <template v-if="model.min_epochs"> | min {{ model.min_epochs }} epochs</template>
                       </div>
                     </div>
                     <v-chip v-if="model.npu_only" size="x-small" color="success" variant="tonal" class="ml-1">NPU</v-chip>
@@ -454,7 +452,11 @@
               type="number"
               :min="10"
               :max="500"
-              hint="Ignored for Traditional ML models"
+              :hint="tiConfig.epochs < tiSuggestedEpochs
+                ? `Suggested minimum: ${tiSuggestedEpochs} epochs for selected model(s)`
+                : 'Ignored for Traditional ML models'"
+              :persistent-hint="tiConfig.epochs < tiSuggestedEpochs"
+              :color="tiConfig.epochs < tiSuggestedEpochs ? 'warning' : undefined"
             />
 
             <v-text-field
@@ -2234,6 +2236,25 @@ async function fetchTiModels() {
 function tiSelectAll() {
   tiSelectedModels.value = Object.keys(tiModels.value)
 }
+
+// Auto-suggest epochs based on selected models
+const tiSuggestedEpochs = computed(() => {
+  let maxMin = 0
+  for (const key of tiSelectedModels.value) {
+    const model = tiModels.value[key]
+    if (model?.min_epochs && model.min_epochs > maxMin) {
+      maxMin = model.min_epochs
+    }
+  }
+  return maxMin || 50
+})
+
+// Watch selection changes and suggest epochs
+watch(tiSelectedModels, (newVal) => {
+  if (newVal.length > 0 && tiSuggestedEpochs.value > tiConfig.epochs) {
+    tiConfig.epochs = tiSuggestedEpochs.value
+  }
+})
 
 async function trainTiModel() {
   if (!tiSelectedDevice.value || tiSelectedModels.value.length === 0 || !pipelineStore.dataSession) return

@@ -394,12 +394,21 @@ def _get_model_zoo(task_type):
                 if part.endswith('k') and part[:-1].isdigit():
                     param_count = int(part[:-1]) * 1000
 
+            # Suggest minimum epochs based on model size
+            if param_count <= 1000:
+                min_epochs = 30
+            elif param_count <= 5000:
+                min_epochs = 50
+            else:
+                min_epochs = 80
+
             models[model_key] = {
                 'name': model_key.replace('_', ' '),
                 'params': param_count,
                 'architecture': details or ('NPU-optimized CNN' if is_npu else 'Conv1D + FC'),
                 'npu_only': is_npu,
                 'description': details or f'{model_key} model from TI model zoo',
+                'min_epochs': min_epochs,
             }
 
         return models
@@ -604,7 +613,7 @@ def _build_config(task_type, model_name, target_device, dataset_path,
         },
         'training': {
             'model_name': model_name,
-            'num_epochs': overrides.get('epochs', 100),
+            'training_epochs': overrides.get('epochs', 50),
             'num_gpus': 0,  # Force CPU — TI models are tiny
             # Don't override batch_size/learning_rate — let TI use per-model defaults
             # (each model in TI's zoo has tuned hyperparameters)
