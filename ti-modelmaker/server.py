@@ -1183,7 +1183,13 @@ def _run_ti_inference(project_dir, dataset_path, config):
         if len(y_train) > 1 and len(y_pred_train) > 0:
             result['train_r2'] = float(r2_score(y_train, y_pred_train))
 
-        print(f"[TI Inference] Generated graphs: {len(y_test)} test, {len(y_train)} train predictions")
+        # Model size info
+        onnx_size_kb = os.path.getsize(onnx_path) / 1024
+        result['model_size_kb'] = round(onnx_size_kb, 1)
+        # INT8 quantized estimate (roughly 25% of FP32 ONNX)
+        result['model_size_int8_kb'] = round(onnx_size_kb * 0.3, 1)
+
+        print(f"[TI Inference] Generated graphs: {len(y_test)} test, {len(y_train)} train predictions, model={onnx_size_kb:.1f}KB")
         return result
 
     except Exception as e:
@@ -1356,6 +1362,11 @@ def _train_traditional_ml(task_type, model_name, dataset_path, project_dir,
     # Export to C via emlearn
     logs.append("Exporting to C code via emlearn...")
     artifacts = _export_emlearn(model, model_name, feature_cols, project_dir, logs)
+
+    # Calculate model size from artifacts
+    total_size_kb = sum(a.get('size_kb', 0) for a in artifacts if a['file'].endswith(('.h', '.onnx')))
+    metrics['model_size_kb'] = round(total_size_kb, 1)
+    metrics['model_size_int8_kb'] = round(total_size_kb, 1)  # C code is already compact
 
     return {
         'status': 'success',

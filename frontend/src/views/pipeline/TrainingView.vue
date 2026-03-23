@@ -1274,6 +1274,78 @@
         </v-col>
       </v-row>
 
+      <!-- MCU Memory Budget (TI models only) -->
+      <v-row
+        v-if="trainingApproach === 'ti' && pipelineStore.mode === 'regression' && trainingResult.metrics.model_size_kb"
+        class="mt-4"
+      >
+        <v-col cols="12">
+          <v-card variant="outlined" class="pa-4">
+            <h4 class="text-subtitle-2 font-weight-bold mb-3">
+              <v-icon size="small" class="mr-1">mdi-memory</v-icon>
+              MCU Memory Budget
+              <span v-if="tiSelectedDevice" class="text-caption text-medium-emphasis ml-2">
+                ({{ tiDevices[tiSelectedDevice]?.name || tiSelectedDevice }})
+              </span>
+            </h4>
+            <v-row dense>
+              <v-col cols="6" md="3">
+                <v-card variant="tonal" class="pa-3 text-center">
+                  <div class="text-caption text-medium-emphasis">Model Size</div>
+                  <div class="text-h6 text-info">
+                    {{ trainingResult.metrics.model_size_kb?.toFixed(1) || '?' }} KB
+                  </div>
+                  <div class="text-caption text-medium-emphasis">ONNX (FP32)</div>
+                </v-card>
+              </v-col>
+              <v-col cols="6" md="3">
+                <v-card variant="tonal" class="pa-3 text-center">
+                  <div class="text-caption text-medium-emphasis">Quantized Size</div>
+                  <div class="text-h6 text-success">
+                    {{ trainingResult.metrics.model_size_int8_kb?.toFixed(1) || '?' }} KB
+                  </div>
+                  <div class="text-caption text-medium-emphasis">INT8 (estimated)</div>
+                </v-card>
+              </v-col>
+              <v-col cols="6" md="3">
+                <v-card variant="tonal" class="pa-3 text-center">
+                  <div class="text-caption text-medium-emphasis">Device Flash</div>
+                  <div class="text-h6">
+                    {{ tiDevices[tiSelectedDevice]?.flash_kb || '?' }} KB
+                  </div>
+                  <div class="text-caption text-medium-emphasis">Total available</div>
+                </v-card>
+              </v-col>
+              <v-col cols="6" md="3">
+                <v-card variant="tonal" class="pa-3 text-center">
+                  <div class="text-caption text-medium-emphasis">Flash Remaining</div>
+                  <div
+                    class="text-h6"
+                    :class="mcuFlashRemaining > 50 ? 'text-success' : mcuFlashRemaining > 20 ? 'text-warning' : 'text-error'"
+                  >
+                    {{ mcuFlashRemaining }}%
+                  </div>
+                  <div class="text-caption text-medium-emphasis">For application code</div>
+                </v-card>
+              </v-col>
+            </v-row>
+            <v-progress-linear
+              :model-value="mcuFlashUsed"
+              :color="mcuFlashRemaining > 50 ? 'success' : mcuFlashRemaining > 20 ? 'warning' : 'error'"
+              height="20"
+              rounded
+              class="mt-3"
+            >
+              <template #default>
+                <span class="text-caption font-weight-medium">
+                  Model: {{ trainingResult.metrics.model_size_int8_kb?.toFixed(1) }} KB / {{ tiDevices[tiSelectedDevice]?.flash_kb || '?' }} KB Flash
+                </span>
+              </template>
+            </v-progress-linear>
+          </v-card>
+        </v-col>
+      </v-row>
+
       <!-- Regression Scatter Plot (Predicted vs Actual) -->
       <v-row v-if="pipelineStore.mode === 'regression' && trainingResult.metrics.scatter_data" class="mt-4">
         <v-col cols="12" md="6">
@@ -1948,21 +2020,38 @@ const tsPredictedPoints = computed(() => {
 
 // Comparison table headers based on mode
 const comparisonHeaders = computed(() => {
+  const sizeCol = { key: 'model_size_kb', label: 'Size (KB)', format: (v: number) => v.toFixed(1) }
+
   if (pipelineStore.mode === 'regression') {
-    return [
+    const cols = [
       { key: 'r2', label: 'R²', format: (v: number) => v.toFixed(4) },
       { key: 'rmse', label: 'RMSE', format: (v: number) => v.toFixed(4) },
       { key: 'mae', label: 'MAE', format: (v: number) => v.toFixed(4) },
       { key: 'mape', label: 'MAPE', format: (v: number) => (v * 100).toFixed(1) + '%' },
     ]
+    if (trainingApproach.value === 'ti') cols.push(sizeCol)
+    return cols
   }
-  return [
+  const cols = [
     { key: 'accuracy', label: 'Accuracy', format: (v: number) => (v * 100).toFixed(1) + '%' },
     { key: 'precision', label: 'Precision', format: (v: number) => (v * 100).toFixed(1) + '%' },
     { key: 'recall', label: 'Recall', format: (v: number) => (v * 100).toFixed(1) + '%' },
     { key: 'f1', label: 'F1 Score', format: (v: number) => (v * 100).toFixed(1) + '%' },
     { key: 'roc_auc', label: 'ROC-AUC', format: (v: number) => v.toFixed(3) },
   ]
+  if (trainingApproach.value === 'ti') cols.push(sizeCol)
+  return cols
+})
+
+// MCU memory budget computeds
+const mcuFlashUsed = computed(() => {
+  const modelKb = trainingResult.value?.metrics?.model_size_int8_kb || 0
+  const flashKb = tiDevices.value[tiSelectedDevice.value]?.flash_kb || 1024
+  return Math.min(100, (modelKb / flashKb) * 100)
+})
+
+const mcuFlashRemaining = computed(() => {
+  return Math.max(0, Math.round(100 - mcuFlashUsed.value))
 })
 
 // Scatter plot helpers for regression
