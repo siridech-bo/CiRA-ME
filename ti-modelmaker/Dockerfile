@@ -31,6 +31,11 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 COPY . .
 
 # Expose API port
+# Force CPU-only PyTorch (avoids CUDA driver/compute capability issues)
+ENV CUDA_VISIBLE_DEVICES="" \
+    TORCH_DEVICE="cpu" \
+    USE_CUDA="0"
+
 EXPOSE 5200
 
 # Health check

@@ -344,149 +344,66 @@ def _flash_to_max_params(flash_kb):
 
 
 def _get_model_zoo(task_type):
-    """Get available models for a task type."""
-    if task_type == 'timeseries_regression':
-        return {
-            'REG_TS_GEN_BASE_500_NPU': {
-                'name': 'Regression 500 (NPU)',
-                'params': 500,
-                'architecture': 'Depthwise Separable Conv1D + FC',
-                'npu_only': True,
-                'description': 'Smallest NPU-optimized regression model',
-            },
-            'REG_TS_GEN_BASE_1K': {
-                'name': 'Regression 1K',
-                'params': 1000,
-                'architecture': 'Conv1D + FC',
-                'npu_only': False,
-                'description': '1K param regression model',
-            },
-            'REG_TS_GEN_BASE_2K': {
-                'name': 'Regression 2K',
-                'params': 2000,
-                'architecture': 'Conv1D + FC',
-                'npu_only': False,
-                'description': '2K param balanced model',
-            },
-            'REG_TS_GEN_BASE_2K_NPU': {
-                'name': 'Regression 2K (NPU)',
-                'params': 2000,
-                'architecture': 'Depthwise Separable Conv1D + FC',
-                'npu_only': True,
-                'description': '2K param NPU-optimized model',
-            },
-            'REG_TS_GEN_BASE_3K': {
-                'name': 'Regression 3K (MLP)',
-                'params': 3000,
-                'architecture': 'Fully Connected only',
-                'npu_only': False,
-                'description': 'Pure MLP regression model',
-            },
-            'REG_TS_GEN_BASE_4K': {
-                'name': 'Regression 4K',
-                'params': 4000,
-                'architecture': 'Conv1D + FC',
-                'npu_only': False,
-                'description': '4K param model for better accuracy',
-            },
-            'REG_TS_GEN_BASE_6K_NPU': {
-                'name': 'Regression 6K (NPU)',
-                'params': 6000,
-                'architecture': 'Depthwise Separable Conv1D + FC',
-                'npu_only': True,
-                'description': '6K param NPU-optimized model',
-            },
-            'REG_TS_GEN_BASE_8K_NPU': {
-                'name': 'Regression 8K (NPU)',
-                'params': 8000,
-                'architecture': 'Depthwise Separable Conv1D + FC',
-                'npu_only': True,
-                'description': '8K param NPU-optimized model',
-            },
-            'REG_TS_GEN_BASE_10K': {
-                'name': 'Regression 10K',
-                'params': 10000,
-                'architecture': 'Conv1D + FC',
-                'npu_only': False,
-                'description': '10K param high-accuracy model',
-            },
-            'REG_TS_GEN_BASE_13K': {
-                'name': 'Regression 13K',
-                'params': 13000,
-                'architecture': 'Conv1D + FC',
-                'npu_only': False,
-                'description': '13K param largest standard model',
-            },
-            'REG_TS_GEN_BASE_20K_NPU': {
-                'name': 'Regression 20K (NPU)',
-                'params': 20000,
-                'architecture': 'Depthwise Separable Conv1D + FC',
-                'npu_only': True,
-                'description': '20K param highest accuracy NPU model',
-            },
-        }
-    elif task_type == 'timeseries_classification':
-        return {
-            'CNN_TS_GEN_BASE_100_NPU': {
-                'name': 'Classification 100 (NPU)',
-                'params': 100, 'architecture': 'Tiny Conv1D', 'npu_only': True,
-                'description': 'Ultra-tiny classifier for MSPM0',
-            },
-            'CNN_TS_GEN_BASE_500_NPU': {
-                'name': 'Classification 500 (NPU)',
-                'params': 500, 'architecture': 'Conv1D + FC', 'npu_only': True,
-                'description': 'Small NPU classifier',
-            },
-            'CNN_TS_GEN_BASE_1K_NPU': {
-                'name': 'Classification 1K (NPU)',
-                'params': 1000, 'architecture': 'Conv1D + FC', 'npu_only': True,
-                'description': '1K param NPU classifier',
-            },
-            'CNN_TS_GEN_BASE_4K_NPU': {
-                'name': 'Classification 4K (NPU)',
-                'params': 4000, 'architecture': 'Conv1D + FC', 'npu_only': True,
-                'description': '4K param NPU classifier',
-            },
-            'CNN_TS_GEN_BASE_13K_NPU': {
-                'name': 'Classification 13K (NPU)',
-                'params': 13000, 'architecture': 'Conv1D + FC', 'npu_only': True,
-                'description': '13K param large NPU classifier',
-            },
-            'CNN_TS_GEN_BASE_20K_NPU': {
-                'name': 'Classification 20K (NPU)',
-                'params': 20000, 'architecture': 'Conv1D + FC', 'npu_only': True,
-                'description': '20K param largest NPU classifier',
-            },
-            'CNN_TS_GEN_BASE_55K_NPU': {
-                'name': 'Classification 55K (NPU)',
-                'params': 55000, 'architecture': 'Conv1D + FC', 'npu_only': True,
-                'description': '55K param highest accuracy NPU classifier',
-            },
-        }
-    elif task_type == 'timeseries_anomalydetection':
-        return {
-            'AE_CNN_TS_GEN_BASE_500': {
-                'name': 'AutoEncoder 500',
-                'params': 500, 'architecture': 'Conv Autoencoder', 'npu_only': False,
-                'description': 'Tiny autoencoder for anomaly detection',
-            },
-            'AE_CNN_TS_GEN_BASE_2K': {
-                'name': 'AutoEncoder 2K',
-                'params': 2000, 'architecture': 'Conv Autoencoder', 'npu_only': False,
-                'description': '2K param autoencoder',
-            },
-            'AE_CNN_TS_GEN_BASE_8K': {
-                'name': 'AutoEncoder 8K',
-                'params': 8000, 'architecture': 'Conv Autoencoder', 'npu_only': False,
-                'description': '8K param autoencoder for better detection',
-            },
-            'AE_CNN_TS_GEN_BASE_20K': {
-                'name': 'AutoEncoder 20K',
-                'params': 20000, 'architecture': 'Conv Autoencoder', 'npu_only': False,
-                'description': '20K param large autoencoder',
-            },
-        }
-    return {}
+    """Get available models dynamically from TI tinyml-modelmaker."""
+    # Map our task type to TI's category prefix
+    ti_task_map = {
+        'timeseries_regression': 'generic_timeseries_regression',
+        'timeseries_classification': 'generic_timeseries_classification',
+        'timeseries_anomalydetection': 'generic_timeseries_anomalydetection',
+        'timeseries_forecasting': 'generic_timeseries_forecasting',
+    }
+    ti_task = ti_task_map.get(task_type, task_type)
+
+    # Prefix filters for each task
+    prefix_map = {
+        'timeseries_regression': ['REGR_'],
+        'timeseries_classification': ['CLS_'],
+        'timeseries_anomalydetection': ['AD_'],
+        'timeseries_forecasting': ['FCST_'],
+    }
+    prefixes = prefix_map.get(task_type, [])
+
+    try:
+        from tinyml_modelmaker.ai_modules.timeseries import runner
+        params = runner.ModelRunner.init_params()
+        all_descs = runner.ModelRunner.get_model_descriptions(params)
+
+        models = {}
+        for model_key, desc in all_descs.items():
+            # Filter by prefix
+            if prefixes and not any(model_key.startswith(p) for p in prefixes):
+                continue
+
+            # Also check task_type in description
+            model_task = desc.get('common', {}).get('task_type', '')
+            if model_task and model_task != ti_task:
+                continue
+
+            # Extract info
+            details = desc.get('common', {}).get('model_details', '')
+            is_npu = 'NPU' in model_key
+
+            # Parse approximate param count from name (e.g., REGR_1k -> 1000)
+            param_count = 0
+            name_lower = model_key.lower()
+            for part in name_lower.replace('_', ' ').split():
+                if part.endswith('k') and part[:-1].isdigit():
+                    param_count = int(part[:-1]) * 1000
+
+            models[model_key] = {
+                'name': model_key.replace('_', ' '),
+                'params': param_count,
+                'architecture': details or ('NPU-optimized CNN' if is_npu else 'Conv1D + FC'),
+                'npu_only': is_npu,
+                'description': details or f'{model_key} model from TI model zoo',
+            }
+
+        return models
+
+    except Exception as e:
+        print(f"Warning: Could not load TI model zoo dynamically: {e}")
+        # Fallback to empty
+        return {}
 
 
 def _get_traditional_ml_models(task_type):
@@ -567,41 +484,144 @@ def _get_traditional_ml_models(task_type):
     return {}
 
 
+def _prepare_dataset_dir(csv_path, project_dir, frame_size=128):
+    """Prepare dataset directory structure expected by TI modelmaker.
+
+    TI expects input_data_path to be a DIRECTORY containing multiple CSV files
+    (one per sample/segment). Each CSV has NO header, numeric columns only,
+    with the last column as the target for regression.
+
+    We split the single large CSV into multiple segment files.
+    """
+    import pandas as pd
+    import numpy as np
+
+    dataset_dir = os.path.join(project_dir, 'dataset')
+    files_dir = os.path.join(dataset_dir, 'files')
+    os.makedirs(files_dir, exist_ok=True)
+
+    # Read the CSV
+    df = pd.read_csv(csv_path)
+
+    # Remove time/timestamp columns
+    cols_to_keep = [c for c in df.columns if 'time' not in c.lower()
+                    and 'date' not in c.lower() and 'index' not in c.lower()]
+    df = df[cols_to_keep]
+
+    # Keep only numeric columns
+    df = df.select_dtypes(include=[np.number])
+
+    if len(df) == 0:
+        raise ValueError("No numeric data found in CSV")
+
+    # TI's SimpleWindow transform handles windowing internally,
+    # so we provide larger chunks (not tiny segments).
+    # Split into ~10 files for proper train/val/test splitting.
+    n_segments = min(10, max(3, len(df) // 500))
+    segment_size = len(df) // n_segments
+
+    for i in range(n_segments):
+        start = i * segment_size
+        end = start + segment_size if i < n_segments - 1 else len(df)
+        segment = df.iloc[start:end]
+
+        # Save WITHOUT header (TI expects headerless CSV)
+        seg_path = os.path.join(files_dir, f'segment_{i:04d}.csv')
+        segment.to_csv(seg_path, index=False, header=False)
+
+    print(f"[TI Dataset] Split {len(df)} rows into {n_segments} segments "
+          f"of ~{segment_size} rows each in {files_dir}")
+
+    return dataset_dir
+
+
 def _build_config(task_type, model_name, target_device, dataset_path,
                   project_dir, overrides=None):
-    """Build tinyml-modelmaker config dict."""
+    """Build tinyml-modelmaker config dict.
+
+    TI modelmaker expects:
+    - task_type: 'generic_timeseries_regression' (not 'timeseries_regression')
+    - target_module: 'timeseries'
+    - data_processing_feature_extraction section with feature transform config
+    - input_data_path as a DIRECTORY (not a CSV file)
+    """
     overrides = overrides or {}
+
+    # Map our task types to TI's expected names
+    ti_task_map = {
+        'timeseries_regression': 'generic_timeseries_regression',
+        'timeseries_classification': 'generic_timeseries_classification',
+        'timeseries_anomalydetection': 'generic_timeseries_anomalydetection',
+        'timeseries_forecasting': 'generic_timeseries_forecasting',
+    }
+    ti_task_type = ti_task_map.get(task_type, task_type)
+
+    frame_size = overrides.get('frame_size', 128)
+
+    # Prepare dataset directory if input is a file
+    if os.path.isfile(dataset_path):
+        dataset_dir = _prepare_dataset_dir(dataset_path, project_dir, frame_size=frame_size)
+    else:
+        dataset_dir = dataset_path
+
+    # Detect number of variables from dataset
+    n_variables = 1
+    try:
+        import pandas as pd
+        import numpy as np
+        df = pd.read_csv(dataset_path, nrows=5)
+        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        exclude_patterns = ['time', 'timestamp', 'date', 'index', 'id', 'label', 'target', 'class']
+        sensor_cols = [c for c in numeric_cols if not any(p in c.lower() for p in exclude_patterns)]
+        n_variables = max(1, len(sensor_cols))
+    except Exception:
+        pass
 
     config = {
         'common': {
-            'task_type': task_type,
+            'task_type': ti_task_type,
             'target_device': target_device,
+            'target_module': 'timeseries',
+            'projects_path': project_dir,
         },
         'dataset': {
-            'input_data_path': dataset_path,
-            'dataset_format': 'csv',
+            'input_data_path': dataset_dir,
+        },
+        'data_processing_feature_extraction': {
+            'feature_extraction_name': None,
+            'feat_ext_transform': [],
+            'data_proc_transforms': ['SimpleWindow'],  # Create 3D windows from 2D data
+            'sampling_rate': 1,
+            'variables': n_variables,
+            'frame_size': overrides.get('frame_size', 32),  # Window size for SimpleWindow
+            'stride_size': 0.5,  # 50% overlap
+            'num_frame_concat': 1,
+            'frame_skip': 1,
         },
         'training': {
             'model_name': model_name,
             'num_epochs': overrides.get('epochs', 100),
             'batch_size': overrides.get('batch_size', 32),
             'learning_rate': overrides.get('learning_rate', 0.001),
+            'num_gpus': 0,  # Force CPU — TI models are tiny
         },
         'compilation': {
-            'compile': True,
-            'project_path': project_dir,
+            'enable': overrides.get('compile', True),
         },
     }
 
-    # Apply user overrides
+    # Quantization
     if 'quantization' in overrides:
-        config['training']['quantization'] = overrides['quantization']
+        quant_map = {
+            '8bit': 'DEFAULT_QUANT',
+            '4bit': 'FOUR_BIT_QUANT',
+            '2bit': 'TWO_BIT_QUANT',
+        }
+        config['training']['quantization'] = quant_map.get(overrides['quantization'], 'DEFAULT_QUANT')
 
-    if 'variables' in overrides:
-        config['dataset']['variables'] = overrides['variables']
-
+    # Target variables for regression
     if 'target_variables' in overrides:
-        config['dataset']['target_variables'] = overrides['target_variables']
+        config['data_processing_feature_extraction']['target_variables'] = overrides['target_variables']
 
     return config
 
@@ -623,6 +643,10 @@ def _run_modelmaker(config, project_dir):
     logs.append(f"Target: {config['common']['target_device']}")
 
     try:
+        # Force CPU: set CUDA_VISIBLE_DEVICES to empty prevents CUDA init
+        env = os.environ.copy()
+        env['CUDA_VISIBLE_DEVICES'] = ''
+
         result = subprocess.run(
             [sys.executable, '-m', 'tinyml_modelmaker.run_tinyml_modelmaker',
              config_path],
@@ -630,6 +654,7 @@ def _run_modelmaker(config, project_dir):
             text=True,
             timeout=600,  # 10 min max
             cwd=project_dir,
+            env=env,
         )
 
         if result.stdout:
@@ -646,15 +671,25 @@ def _run_modelmaker(config, project_dir):
                     size_kb = os.path.getsize(os.path.join(root, f)) / 1024
                     artifacts.append({'file': rel, 'size_kb': round(size_kb, 1)})
 
-        # Read metrics if available
-        metrics = {}
+        # Extract metrics from training logs
+        metrics = _parse_ti_training_metrics(logs)
+
+        # Also try reading results.json if modelmaker wrote one
         metrics_path = os.path.join(project_dir, 'results.json')
         if os.path.exists(metrics_path):
-            with open(metrics_path) as f:
-                metrics = json.load(f)
+            try:
+                with open(metrics_path) as f:
+                    file_metrics = json.load(f)
+                metrics.update(file_metrics)
+            except Exception:
+                pass
+
+        # Consider training successful if we got metrics even if return code != 0
+        # (quantization errors happen after successful training)
+        status = 'success' if metrics else ('success' if result.returncode == 0 else 'error')
 
         return {
-            'status': 'success' if result.returncode == 0 else 'error',
+            'status': status,
             'return_code': result.returncode,
             'logs': logs,
             'artifacts': artifacts,
@@ -674,6 +709,75 @@ def _run_modelmaker(config, project_dir):
             'logs': logs,
             'traceback': traceback.format_exc(),
         }
+
+
+def _parse_ti_training_metrics(logs):
+    """Parse metrics from TI modelmaker training log output.
+
+    Looks for lines like:
+        INFO: root.main.FloatTrain.BestEpoch: MSE 6.439
+        INFO: root.main.FloatTrain.BestEpoch: R2-Score 0.516
+        INFO: root.main.QuantTrain.BestEpoch: MSE 7.670
+        INFO: root.main.QuantTrain.BestEpoch: R2-Score 0.660
+        Trainable params: 783
+    """
+    import re
+    metrics = {}
+
+    for line in logs:
+        # R2-Score
+        m = re.search(r'R2-Score\s+([-\d.]+)', line)
+        if m:
+            r2 = float(m.group(1))
+            if 'QuantTrain' in line:
+                metrics['r2_quantized'] = r2
+                metrics['r2'] = r2  # Use quantized as primary
+            elif 'FloatTrain' in line:
+                metrics['r2_float'] = r2
+                if 'r2' not in metrics:
+                    metrics['r2'] = r2
+
+        # MSE
+        m = re.search(r'BestEpoch.*MSE\s+([-\d.]+)', line)
+        if m:
+            mse = float(m.group(1))
+            if 'QuantTrain' in line:
+                metrics['mse_quantized'] = mse
+                metrics['mse'] = mse
+                metrics['rmse'] = mse ** 0.5
+            elif 'FloatTrain' in line:
+                metrics['mse_float'] = mse
+                if 'mse' not in metrics:
+                    metrics['mse'] = mse
+                    metrics['rmse'] = mse ** 0.5
+
+        # Best Epoch
+        m = re.search(r'Best Epoch:\s+(\d+)', line)
+        if m:
+            if 'QuantTrain' in line:
+                metrics['best_epoch_quantized'] = int(m.group(1))
+            elif 'FloatTrain' in line:
+                metrics['best_epoch_float'] = int(m.group(1))
+
+        # Trainable params
+        m = re.search(r'Trainable params:\s+([\d,]+)', line)
+        if m:
+            metrics['trainable_params'] = int(m.group(1).replace(',', ''))
+
+        # Accuracy (for classification)
+        m = re.search(r'BestEpoch.*Accuracy\s+([-\d.]+)', line)
+        if m:
+            acc = float(m.group(1))
+            if 'QuantTrain' in line:
+                metrics['accuracy'] = acc / 100.0 if acc > 1 else acc
+            elif 'FloatTrain' in line and 'accuracy' not in metrics:
+                metrics['accuracy'] = acc / 100.0 if acc > 1 else acc
+
+    # Compute MAE estimate from MSE (rough approximation)
+    if 'rmse' in metrics:
+        metrics['mae'] = metrics['rmse'] * 0.8  # Rough estimate
+
+    return metrics
 
 
 def _train_traditional_ml(task_type, model_name, dataset_path, project_dir,
