@@ -348,6 +348,47 @@
               TI ModelMaker service is not running. Start it with:
               <code>docker compose up -d ti-modelmaker</code>
             </v-alert>
+            <div v-if="tiServiceAvailable && tiComputeInfo" class="mb-3">
+              <v-chip
+                size="small"
+                :color="tiComputeInfo.startsWith('GPU') ? 'success' : 'info'"
+                variant="tonal"
+              >
+                <v-icon start size="small">{{ tiComputeInfo.startsWith('GPU') ? 'mdi-chip' : 'mdi-cpu-64-bit' }}</v-icon>
+                TI Training: {{ tiComputeInfo }}
+              </v-chip>
+            </div>
+
+            <!-- Real-time Training Progress -->
+            <v-card
+              v-if="tiProgress"
+              variant="outlined"
+              class="pa-3 mb-3"
+              color="primary"
+            >
+              <div class="d-flex align-center mb-2">
+                <v-progress-circular indeterminate size="20" width="2" color="primary" class="mr-2" />
+                <span class="font-weight-medium">
+                  Training {{ tiProgress.phase === 'quantized' ? '(Quantization)' : '(Float)' }}
+                </span>
+                <v-spacer />
+                <span class="text-caption">
+                  Epoch {{ tiProgress.epoch }} / {{ tiProgress.total }}
+                </span>
+              </div>
+              <v-progress-linear
+                :model-value="(tiProgress.epoch / tiProgress.total) * 100"
+                color="primary"
+                height="6"
+                rounded
+                class="mb-2"
+              />
+              <div class="d-flex text-caption text-medium-emphasis" style="gap: 16px;">
+                <span>Loss: <strong>{{ tiProgress.loss?.toFixed(4) || '-' }}</strong></span>
+                <span v-if="tiProgress.mse != null">MSE: <strong>{{ tiProgress.mse.toFixed(4) }}</strong></span>
+                <span v-if="tiProgress.r2 != null">R²: <strong>{{ tiProgress.r2.toFixed(4) }}</strong></span>
+              </div>
+            </v-card>
 
             <h3 class="text-subtitle-1 font-weight-bold mb-3">
               <v-icon size="small" class="mr-1">mdi-developer-board</v-icon>
@@ -1662,6 +1703,8 @@ const tiConfig = reactive({
 })
 const tiLogs = ref<string[]>([])
 const tiRunId = ref('')
+const tiProgress = ref<{phase: string, epoch: number, total: number, loss: number, mse: number | null, r2: number | null} | null>(null)
+const tiComputeInfo = ref('')
 
 // Custom model state
 const customModelCode = ref('')
@@ -2185,8 +2228,12 @@ async function fetchTiStatus() {
   try {
     const resp = await api.get('/api/ti/status')
     tiServiceAvailable.value = resp.data.status === 'healthy'
+    tiComputeInfo.value = resp.data.compute === 'GPU'
+      ? `GPU: ${resp.data.gpu_name || 'Available'}`
+      : 'CPU Only'
   } catch {
     tiServiceAvailable.value = false
+    tiComputeInfo.value = ''
   }
 }
 
@@ -2266,7 +2313,16 @@ async function trainTiModel() {
   selectedComparisonAlgo.value = null
   tiLogs.value = []
   tiRunId.value = ''
+  tiProgress.value = null
 
+  // For single model — use streaming
+  if (tiSelectedModels.value.length === 1 && !tiSelectedModels.value[0].startsWith('ML_')) {
+    await trainTiModelStream(tiSelectedModels.value[0])
+    training.value = false
+    return
+  }
+
+  // Multi-model — use batch API
   try {
     const resp = await api.post('/api/ti/train', {
       mode: pipelineStore.mode,
@@ -2278,60 +2334,170 @@ async function trainTiModel() {
 
     const data = resp.data
     tiRunId.value = data.run_id || ''
-
-    // Collect all logs
-    for (const r of (data.results || [])) {
-      tiLogs.value.push(`--- ${r.algorithm_name} ---`)
-      tiLogs.value.push(...(r.logs || []))
-    }
-
-    // Build comparison result (same format as ML comparison)
-    tiComparisonResult.value = data
-    comparisonResult.value = {
-      successful: data.successful,
-      failed: data.failed,
-      best_algorithm: data.best_algorithm,
-      comparison: {
-        rows: data.results.map((r: any) => ({
-          algorithm: r.model_name,
-          algorithm_name: r.algorithm_name,
-          values: r.metrics,
-        })),
-      },
-      results: data.results.map((r: any) => ({
-        algorithm: r.model_name,
-        algorithm_name: r.algorithm_name,
-        training_session_id: r.model_name,  // use model_name as ID for TI
-        metrics: r.metrics,
-      })),
-      errors: data.errors || [],
-    }
-
-    // Auto-select best
-    if (data.best_algorithm) {
-      selectedComparisonAlgo.value = data.best_algorithm.model_name
-      const bestResult = data.results.find((r: any) => r.model_name === data.best_algorithm.model_name)
-      if (bestResult) {
-        trainingResult.value = {
-          training_session_id: data.run_id,
-          algorithm: bestResult.algorithm_name,
-          mode: pipelineStore.mode,
-          metrics: bestResult.metrics,
-        }
-        pipelineStore.trainingSession = trainingResult.value
-      }
-    }
-
-    if (data.failed > 0) {
-      notificationStore.showWarning(`Trained ${data.successful} models, ${data.failed} failed`)
-    } else {
-      notificationStore.showSuccess(`Trained ${data.successful} models successfully!`)
-    }
+    _processTiResults(data)
   } catch (e: any) {
     const errData = e.response?.data
     notificationStore.showError(errData?.error || 'TI training failed')
   } finally {
     training.value = false
+  }
+}
+
+async function trainTiModelStream(modelName: string) {
+  tiProgress.value = { phase: 'starting', epoch: 0, total: tiConfig.epochs, loss: 0, mse: null, r2: null }
+  tiLogs.value.push(`Starting ${modelName}...`)
+
+  try {
+    const resp = await fetch('/api/ti/train-stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({
+        mode: pipelineStore.mode,
+        model_name: modelName,
+        target_device: tiSelectedDevice.value,
+        dataset_path: pipelineStore.dataSession!.metadata.file_path,
+        config: { ...tiConfig },
+      }),
+    })
+
+    const reader = resp.body?.getReader()
+    const decoder = new TextDecoder()
+
+    if (!reader) {
+      notificationStore.showError('Streaming not supported')
+      return
+    }
+
+    let buffer = ''
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n\n')
+      buffer = lines.pop() || ''
+
+      for (const chunk of lines) {
+        if (!chunk.startsWith('data: ')) continue
+        try {
+          const event = JSON.parse(chunk.slice(6))
+          switch (event.type) {
+            case 'epoch':
+              tiProgress.value = {
+                phase: event.phase || 'float',
+                epoch: event.epoch,
+                total: event.total || tiConfig.epochs,
+                loss: event.loss,
+                mse: tiProgress.value?.mse ?? null,
+                r2: tiProgress.value?.r2 ?? null,
+              }
+              break
+            case 'eval':
+              if (tiProgress.value) tiProgress.value.mse = event.mse
+              break
+            case 'eval_r2':
+              if (tiProgress.value) tiProgress.value.r2 = event.r2
+              break
+            case 'status':
+              tiLogs.value.push(event.message)
+              break
+            case 'params':
+              tiLogs.value.push(`Trainable params: ${event.trainable_params.toLocaleString()}`)
+              break
+            case 'best':
+              tiLogs.value.push(`Best ${event.phase}: ${event.metric} = ${event.value}`)
+              break
+            case 'complete':
+              tiRunId.value = event.run_id || ''
+              tiProgress.value = null
+              // Fetch full results via batch API for comparison table
+              if (event.result) {
+                // Traditional ML complete result
+                _processTiSingleResult(modelName, event.result)
+              }
+              break
+            case 'error':
+              notificationStore.showError(event.message)
+              break
+          }
+        } catch {
+          // Skip malformed SSE
+        }
+      }
+    }
+
+    // If streaming ended without complete event, fetch results
+    if (!trainingResult.value && tiRunId.value) {
+      notificationStore.showSuccess(`${modelName} training complete!`)
+    }
+
+  } catch (e: any) {
+    notificationStore.showError(`Streaming failed: ${e.message}`)
+  } finally {
+    tiProgress.value = null
+  }
+}
+
+function _processTiSingleResult(modelName: string, result: any) {
+  const modelInfo = tiModels.value[modelName] || {}
+  trainingResult.value = {
+    training_session_id: modelName,
+    algorithm: modelInfo.name || modelName,
+    mode: pipelineStore.mode,
+    metrics: result.metrics || {},
+  }
+  pipelineStore.trainingSession = trainingResult.value
+  notificationStore.showSuccess(`${modelInfo.name || modelName} trained!`)
+}
+
+function _processTiResults(data: any) {
+  // Collect all logs
+  for (const r of (data.results || [])) {
+    tiLogs.value.push(`--- ${r.algorithm_name} ---`)
+    tiLogs.value.push(...(r.logs || []).slice(-5))
+  }
+
+  // Build comparison result
+  comparisonResult.value = {
+    successful: data.successful,
+    failed: data.failed,
+    best_algorithm: data.best_algorithm,
+    comparison: {
+      rows: data.results.map((r: any) => ({
+        algorithm: r.model_name,
+        algorithm_name: r.algorithm_name,
+        values: r.metrics,
+      })),
+    },
+    results: data.results.map((r: any) => ({
+      algorithm: r.model_name,
+      algorithm_name: r.algorithm_name,
+      training_session_id: r.model_name,
+      metrics: r.metrics,
+    })),
+    errors: data.errors || [],
+  }
+
+  // Auto-select best
+  if (data.best_algorithm) {
+    selectedComparisonAlgo.value = data.best_algorithm.model_name
+    const bestResult = data.results.find((r: any) => r.model_name === data.best_algorithm.model_name)
+    if (bestResult) {
+      trainingResult.value = {
+        training_session_id: data.run_id,
+        algorithm: bestResult.algorithm_name,
+        mode: pipelineStore.mode,
+        metrics: bestResult.metrics,
+      }
+      pipelineStore.trainingSession = trainingResult.value
+    }
+  }
+
+  if (data.failed > 0) {
+    notificationStore.showWarning(`Trained ${data.successful} models, ${data.failed} failed`)
+  } else {
+    notificationStore.showSuccess(`Trained ${data.successful} models successfully!`)
   }
 }
 

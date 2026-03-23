@@ -36,11 +36,27 @@ def health():
         emlearn_available = True
     except ImportError:
         pass
+
+    # GPU/CPU status
+    compute = 'CPU'
+    gpu_name = None
+    try:
+        import torch
+        if torch.cuda.is_available():
+            compute = 'GPU'
+            gpu_name = torch.cuda.get_device_name(0)
+        else:
+            compute = 'CPU'
+    except Exception:
+        pass
+
     return jsonify({
         'status': 'healthy',
         'service': 'ti-modelmaker',
         'tinyml_modelmaker': ti_available,
         'emlearn': emlearn_available,
+        'compute': compute,
+        'gpu_name': gpu_name,
     })
 
 
@@ -314,6 +330,188 @@ def train_model():
         'errors': errors,
         'best_algorithm': best,
     })
+
+
+@app.route('/train-stream', methods=['POST'])
+def train_model_stream():
+    """Train a single model with SSE streaming progress."""
+    import re as _re
+
+    data = request.get_json()
+    if not data:
+        return jsonify({'error': 'No data provided'}), 400
+
+    task_type = data.get('task_type', 'timeseries_regression')
+    model_name = data.get('model_name')
+    target_device = data.get('target_device', 'F2837')
+    dataset_path = data.get('dataset_path')
+    config_overrides = data.get('config', {})
+
+    if not model_name or not dataset_path:
+        return jsonify({'error': 'model_name and dataset_path required'}), 400
+    if not os.path.exists(dataset_path):
+        return jsonify({'error': f'Dataset not found: {dataset_path}'}), 400
+
+    run_id = str(uuid.uuid4())[:8]
+    base_dir = os.path.join(PROJECTS_DIR, run_id)
+    model_dir = os.path.join(base_dir, model_name)
+    os.makedirs(model_dir, exist_ok=True)
+
+    def generate():
+        import subprocess as _sp
+        import sys as _sys
+        import yaml as _yaml
+
+        # Send initial status
+        yield f"data: {json.dumps({'type': 'status', 'message': f'Starting {model_name}...', 'run_id': run_id})}\n\n"
+
+        if model_name.startswith('ML_'):
+            # Traditional ML — no streaming needed, just run
+            yield f"data: {json.dumps({'type': 'status', 'message': 'Training Traditional ML model...'})}\n\n"
+            result = _train_traditional_ml(
+                task_type=task_type,
+                model_name=model_name,
+                dataset_path=dataset_path,
+                project_dir=model_dir,
+                target_device=target_device,
+                overrides=config_overrides,
+            )
+            yield f"data: {json.dumps({'type': 'complete', 'result': result})}\n\n"
+            return
+
+        # TI NN model — stream subprocess output
+        config = _build_config(
+            task_type=task_type,
+            model_name=model_name,
+            target_device=target_device,
+            dataset_path=dataset_path,
+            project_dir=model_dir,
+            overrides=config_overrides,
+        )
+
+        config_path = os.path.join(model_dir, 'config.yaml')
+        with open(config_path, 'w') as f:
+            _yaml.dump(config, f)
+
+        env = os.environ.copy()
+        env['CUDA_VISIBLE_DEVICES'] = ''
+
+        proc = _sp.Popen(
+            [_sys.executable, '-m', 'tinyml_modelmaker.run_tinyml_modelmaker', config_path],
+            stdout=_sp.PIPE, stderr=_sp.PIPE,
+            text=True, cwd=model_dir, env=env,
+            bufsize=1,
+        )
+
+        # Read stderr line by line (TI logs go to stderr)
+        epoch_pattern = _re.compile(
+            r'Epoch:\s*\[(\d+)(?:/(\d+))?\].*?loss:\s*([\d.]+).*?mse:\s*([\d.]+)',
+            _re.IGNORECASE
+        )
+        eval_pattern = _re.compile(
+            r'evaluate.*?MSE\s+([\d.]+)',
+            _re.IGNORECASE
+        )
+        r2_pattern = _re.compile(
+            r'evaluate.*?R2-Score\s+([-\d.inf]+)',
+            _re.IGNORECASE
+        )
+        best_pattern = _re.compile(
+            r'BestEpoch.*?(MSE|R2-Score|Accuracy)\s+([-\d.inf]+)',
+            _re.IGNORECASE
+        )
+        phase_pattern = _re.compile(r'(FloatTrain|QuantTrain)', _re.IGNORECASE)
+        params_pattern = _re.compile(r'Trainable params:\s*([\d,]+)')
+
+        current_phase = 'float'
+
+        for line in proc.stderr:
+            line = line.strip()
+            if not line:
+                continue
+
+            # Detect phase
+            pm = phase_pattern.search(line)
+            if pm:
+                if 'quant' in pm.group(1).lower():
+                    current_phase = 'quantized'
+
+            # Parse epoch progress
+            em = epoch_pattern.search(line)
+            if em:
+                epoch = int(em.group(1))
+                total = int(em.group(2)) if em.group(2) else config_overrides.get('epochs', 50)
+                loss = float(em.group(3))
+                yield f"data: {json.dumps({'type': 'epoch', 'phase': current_phase, 'epoch': epoch, 'total': total, 'loss': loss})}\n\n"
+                continue
+
+            # Parse evaluation MSE
+            ev = eval_pattern.search(line)
+            if ev:
+                mse = float(ev.group(1))
+                yield f"data: {json.dumps({'type': 'eval', 'phase': current_phase, 'mse': mse})}\n\n"
+                continue
+
+            # Parse evaluation R2
+            r2m = r2_pattern.search(line)
+            if r2m and 'BestEpoch' not in line:
+                raw = r2m.group(1)
+                r2 = None if 'inf' in raw else float(raw)
+                yield f"data: {json.dumps({'type': 'eval_r2', 'phase': current_phase, 'r2': r2})}\n\n"
+                continue
+
+            # Parse BestEpoch summary
+            bm = best_pattern.search(line)
+            if bm:
+                metric_name = bm.group(1)
+                raw = bm.group(2)
+                val = None if 'inf' in raw else float(raw)
+                yield f"data: {json.dumps({'type': 'best', 'phase': current_phase, 'metric': metric_name, 'value': val})}\n\n"
+                continue
+
+            # Parse trainable params
+            pp = params_pattern.search(line)
+            if pp:
+                params = int(pp.group(1).replace(',', ''))
+                yield f"data: {json.dumps({'type': 'params', 'trainable_params': params})}\n\n"
+                continue
+
+            # Phase change notifications
+            if 'Printing statistics of best epoch' in line:
+                yield f"data: {json.dumps({'type': 'status', 'message': f'Best epoch summary ({current_phase})'})}\n\n"
+            elif 'Freezing BN' in line:
+                yield f"data: {json.dumps({'type': 'status', 'message': 'Starting quantization-aware training...'})}\n\n"
+                current_phase = 'quantized'
+
+        # Wait for process to complete
+        stdout, _ = proc.communicate()
+
+        # Collect artifacts
+        artifacts = []
+        for root, dirs, files in os.walk(model_dir):
+            for f in files:
+                if f.endswith(('.onnx', '.tflite', '.h', '.c', '.zip', '.json')):
+                    rel = os.path.relpath(os.path.join(root, f), model_dir)
+                    size_kb = os.path.getsize(os.path.join(root, f)) / 1024
+                    artifacts.append({'file': rel, 'size_kb': round(size_kb, 1)})
+
+        # Parse final metrics from all collected logs
+        all_logs = []
+        if stdout:
+            all_logs.extend(stdout.strip().split('\n'))
+        # Re-read stderr isn't possible after Popen, but we streamed it already
+
+        yield f"data: {json.dumps({'type': 'complete', 'run_id': run_id, 'artifacts': artifacts})}\n\n"
+
+    return app.response_class(
+        generate(),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+            'X-Accel-Buffering': 'no',
+        }
+    )
 
 
 @app.route('/download/<run_id>', methods=['GET'])

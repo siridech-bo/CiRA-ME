@@ -95,6 +95,64 @@ def ti_train():
         return jsonify({'error': str(e)}), 500
 
 
+@ti_bp.route('/train-stream', methods=['POST'])
+@login_required
+def ti_train_stream():
+    """Stream training progress via SSE."""
+    data = request.get_json()
+    if not data:
+        return jsonify({'error': 'No data provided'}), 400
+
+    mode = data.get('mode', 'regression')
+    model_name = data.get('model_name')
+    target_device = data.get('target_device', 'F2837')
+    dataset_path = data.get('dataset_path')
+    config = data.get('config', {})
+
+    if not model_name or not dataset_path:
+        return jsonify({'error': 'model_name and dataset_path required'}), 400
+
+    ti_dataset_path = dataset_path.replace(
+        '/app/datasets/shared', '/app/data/datasets/shared'
+    )
+
+    ti = TIIntegration()
+    task_type = ti.map_cira_mode_to_ti_task(mode)
+
+    import requests as req
+
+    def generate():
+        try:
+            resp = req.post(
+                f'{ti.base_url}/train-stream',
+                json={
+                    'task_type': task_type,
+                    'model_name': model_name,
+                    'target_device': target_device,
+                    'dataset_path': ti_dataset_path,
+                    'config': config,
+                },
+                stream=True,
+                timeout=660,
+            )
+            for line in resp.iter_lines(decode_unicode=True):
+                if line:
+                    yield line + '\n\n'
+        except Exception as e:
+            import json
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+
+    return Response(
+        generate(),
+        mimetype='text/event-stream',
+        headers={
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+            'X-Accel-Buffering': 'no',
+        }
+    )
+
+
 @ti_bp.route('/download/<run_id>', methods=['GET'])
 @login_required
 def ti_download(run_id):
