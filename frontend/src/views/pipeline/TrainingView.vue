@@ -368,25 +368,22 @@
             >
               <div class="d-flex align-center mb-2">
                 <v-progress-circular indeterminate size="20" width="2" color="primary" class="mr-2" />
-                <span class="font-weight-medium">
-                  Training {{ tiProgress.phase === 'quantized' ? '(Quantization)' : '(Float)' }}
-                </span>
+                <span class="font-weight-medium">{{ tiProgress.phase }}</span>
                 <v-spacer />
                 <span class="text-caption">
-                  Epoch {{ tiProgress.epoch }} / {{ tiProgress.total }}
+                  {{ tiProgress.epoch + 1 }} / {{ tiProgress.total }}
                 </span>
               </div>
               <v-progress-linear
-                :model-value="(tiProgress.epoch / tiProgress.total) * 100"
+                :model-value="((tiProgress.epoch + 1) / tiProgress.total) * 100"
                 color="primary"
                 height="6"
                 rounded
                 class="mb-2"
               />
               <div class="d-flex text-caption text-medium-emphasis" style="gap: 16px;">
-                <span>Loss: <strong>{{ tiProgress.loss?.toFixed(4) || '-' }}</strong></span>
-                <span v-if="tiProgress.mse != null">MSE: <strong>{{ tiProgress.mse.toFixed(4) }}</strong></span>
                 <span v-if="tiProgress.r2 != null">R²: <strong>{{ tiProgress.r2.toFixed(4) }}</strong></span>
+                <span v-if="tiProgress.mse != null">RMSE: <strong>{{ tiProgress.mse.toFixed(4) }}</strong></span>
               </div>
             </v-card>
 
@@ -2322,25 +2319,73 @@ async function trainTiModel() {
     return
   }
 
-  // Multi-model — use batch API
-  try {
-    const resp = await api.post('/api/ti/train', {
-      mode: pipelineStore.mode,
-      model_names: tiSelectedModels.value,
-      target_device: tiSelectedDevice.value,
-      dataset_path: pipelineStore.dataSession.metadata.file_path,
-      config: { ...tiConfig },
-    })
+  // Train models one by one with progress updates
+  const allResults: any[] = []
+  const allErrors: any[] = []
 
-    const data = resp.data
-    tiRunId.value = data.run_id || ''
-    _processTiResults(data)
-  } catch (e: any) {
-    const errData = e.response?.data
-    notificationStore.showError(errData?.error || 'TI training failed')
-  } finally {
-    training.value = false
+  for (let i = 0; i < tiSelectedModels.value.length; i++) {
+    const modelName = tiSelectedModels.value[i]
+    const modelInfo = tiModels.value[modelName] || {}
+
+    tiProgress.value = {
+      phase: `Training ${i + 1}/${tiSelectedModels.value.length}: ${modelInfo.name || modelName}`,
+      epoch: i,
+      total: tiSelectedModels.value.length,
+      loss: 0,
+      mse: null,
+      r2: null,
+    }
+
+    try {
+      const resp = await api.post('/api/ti/train', {
+        mode: pipelineStore.mode,
+        model_names: [modelName],
+        target_device: tiSelectedDevice.value,
+        dataset_path: pipelineStore.dataSession!.metadata.file_path,
+        config: { ...tiConfig },
+      })
+
+      const data = resp.data
+      tiRunId.value = data.run_id || ''
+
+      for (const r of (data.results || [])) {
+        allResults.push(r)
+        // Update progress with latest metrics
+        if (r.metrics?.r2 != null) {
+          tiProgress.value!.r2 = r.metrics.r2
+        }
+        if (r.metrics?.rmse != null) {
+          tiProgress.value!.mse = r.metrics.rmse
+        }
+        tiLogs.value.push(`${r.algorithm_name}: R²=${r.metrics?.r2 ?? '?'}, RMSE=${r.metrics?.rmse?.toFixed(2) ?? '?'}`)
+      }
+      for (const e of (data.errors || [])) {
+        allErrors.push(e)
+        tiLogs.value.push(`${e.algorithm_name}: Failed — ${e.error?.slice(0, 60)}`)
+      }
+    } catch (e: any) {
+      allErrors.push({
+        model_name: modelName,
+        algorithm_name: modelInfo.name || modelName,
+        error: e.response?.data?.error || e.message,
+        status: 'failed',
+      })
+    }
   }
+
+  tiProgress.value = null
+
+  // Build combined comparison result
+  const best = _findBestTiResult(allResults)
+  const combined = {
+    successful: allResults.length,
+    failed: allErrors.length,
+    results: allResults,
+    errors: allErrors,
+    best_algorithm: best,
+  }
+  _processTiResults(combined)
+  training.value = false
 }
 
 async function trainTiModelStream(modelName: string) {
@@ -2437,6 +2482,28 @@ async function trainTiModelStream(modelName: string) {
   } finally {
     tiProgress.value = null
   }
+}
+
+function _findBestTiResult(results: any[]) {
+  let best: any = null
+  let bestScore = -Infinity
+  const isRegression = pipelineStore.mode === 'regression'
+
+  for (const r of results) {
+    const score = isRegression
+      ? (r.metrics?.r2 ?? -Infinity)
+      : (r.metrics?.f1 ?? r.metrics?.accuracy ?? 0)
+    if (score > bestScore) {
+      bestScore = score
+      best = {
+        model_name: r.model_name,
+        algorithm_name: r.algorithm_name,
+        score,
+        metric: isRegression ? 'r2' : 'f1',
+      }
+    }
+  }
+  return best
 }
 
 function _processTiSingleResult(modelName: string, result: any) {
