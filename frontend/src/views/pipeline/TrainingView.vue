@@ -2312,13 +2312,6 @@ async function trainTiModel() {
   tiRunId.value = ''
   tiProgress.value = null
 
-  // For single model — use streaming
-  if (tiSelectedModels.value.length === 1 && !tiSelectedModels.value[0].startsWith('ML_')) {
-    await trainTiModelStream(tiSelectedModels.value[0])
-    training.value = false
-    return
-  }
-
   // Train models one by one with progress updates
   const allResults: any[] = []
   const allErrors: any[] = []
