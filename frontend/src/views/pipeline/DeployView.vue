@@ -296,11 +296,13 @@
                 </div>
               </template>
             </v-radio>
-            <v-radio value="ssh">
+            <v-radio value="ssh" :disabled="exportFormat === 'ti_mcu'">
               <template #label>
                 <div>
-                  <div class="font-weight-medium">Deploy via SSH</div>
-                  <div class="text-caption text-medium-emphasis">Transfer and run on remote device</div>
+                  <div class="font-weight-medium" :class="{ 'text-medium-emphasis': exportFormat === 'ti_mcu' }">Deploy via SSH</div>
+                  <div class="text-caption text-medium-emphasis">
+                    {{ exportFormat === 'ti_mcu' ? 'Not available — MCU requires JTAG/CCS flashing' : 'Transfer and run on remote device' }}
+                  </div>
                 </div>
               </template>
             </v-radio>
@@ -1036,6 +1038,13 @@ const loadingSavedModels = ref(false)
 
 // Deploy config
 const deployTarget = ref<'download' | 'ssh'>('download')
+
+// Auto-switch to Download when TI MCU is selected (no SSH for MCU)
+watch(() => exportFormat.value, (newFormat) => {
+  if (newFormat === 'ti_mcu') {
+    deployTarget.value = 'download'
+  }
+})
 const targetDevice = ref('jetson_nano')
 const exportFormat = ref('onnx')
 const deployMode = ref<'docker' | 'files'>('docker')
