@@ -958,12 +958,27 @@
             </tbody>
           </v-table>
 
-          <!-- Prediction distribution -->
+          <!-- Prediction summary -->
           <div class="mt-3">
             <div class="text-body-2 mb-1">
               <strong>{{ evalResult.num_windows }}</strong> windows processed
             </div>
-            <div v-if="evalResult.prediction_distribution" class="d-flex flex-wrap ga-2">
+            <!-- Regression: show prediction stats instead of distribution -->
+            <template v-if="selectedModel?.mode === 'regression' && evalResult.predictions?.length">
+              <div class="d-flex flex-wrap ga-2">
+                <v-chip size="small" variant="tonal" color="info">
+                  Mean: {{ (evalResult.predictions.reduce((a: number, b: number) => a + b, 0) / evalResult.predictions.length).toFixed(4) }}
+                </v-chip>
+                <v-chip size="small" variant="tonal" color="info">
+                  Min: {{ Math.min(...evalResult.predictions).toFixed(4) }}
+                </v-chip>
+                <v-chip size="small" variant="tonal" color="info">
+                  Max: {{ Math.max(...evalResult.predictions).toFixed(4) }}
+                </v-chip>
+              </div>
+            </template>
+            <!-- Classification: show class distribution -->
+            <div v-else-if="evalResult.prediction_distribution" class="d-flex flex-wrap ga-2">
               <v-chip
                 v-for="(count, label) in evalResult.prediction_distribution"
                 :key="label"
