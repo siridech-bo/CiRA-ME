@@ -126,12 +126,33 @@ def replay_ml_pipeline(csv_path: str, pipeline_config: dict,
     if missing:
         raise ValueError(f"CSV missing required sensor columns: {missing}")
 
-    # Detect label column
+    # Detect label/target column
+    mode = model_data.get('mode', 'classification')
+    target_column = pipeline_config.get('target_column') or model_data.get('target_column')
     label_col = None
-    for candidate in ['label', 'class', 'target', 'category']:
-        if candidate in df.columns:
-            label_col = candidate
-            break
+
+    if mode == 'regression' and target_column and target_column in df.columns:
+        # Regression: use the target column as ground truth
+        label_col = target_column
+    elif mode == 'regression':
+        # Regression fallback: try common names, then last numeric column
+        for candidate in ['target', 'label', 'y']:
+            if candidate in df.columns:
+                label_col = candidate
+                break
+        if not label_col:
+            # Use last numeric column not in sensor_columns as target
+            numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+            non_sensor = [c for c in numeric_cols if c not in sensor_columns
+                          and 'time' not in c.lower()]
+            if non_sensor:
+                label_col = non_sensor[-1]
+    else:
+        # Classification/anomaly: look for label column
+        for candidate in ['label', 'class', 'target', 'category']:
+            if candidate in df.columns:
+                label_col = candidate
+                break
 
     labels_raw = df[label_col].values if label_col else None
 
@@ -141,10 +162,30 @@ def replay_ml_pipeline(csv_path: str, pipeline_config: dict,
     stride = wc.get('stride', 64)
     label_method = wc.get('label_method', 'majority')
 
-    sensor_data = df[sensor_columns].values
-    all_windows, window_labels = _window_data(
-        sensor_data, window_size, stride, labels_raw, label_method
-    )
+    # For regression, exclude target from sensor data if it's in sensor_columns
+    active_sensor_cols = sensor_columns
+    if mode == 'regression' and label_col and label_col in sensor_columns:
+        active_sensor_cols = [c for c in sensor_columns if c != label_col]
+
+    sensor_data = df[active_sensor_cols].values
+
+    # For regression, compute per-window mean of target column
+    if mode == 'regression' and labels_raw is not None:
+        regression_targets = labels_raw.astype(float)
+        all_windows_raw, _ = _window_data(sensor_data, window_size, stride, None, label_method)
+        # Compute per-window mean of target
+        window_labels = []
+        n_windows = len(all_windows_raw)
+        for i in range(n_windows):
+            start = i * stride
+            end = start + window_size
+            if end <= len(regression_targets):
+                window_labels.append(float(np.mean(regression_targets[start:end])))
+        all_windows = all_windows_raw
+    else:
+        all_windows, window_labels = _window_data(
+            sensor_data, window_size, stride, labels_raw, label_method
+        )
 
     logger.info(f"Pipeline replay: {len(all_windows)} windows from {len(df)} rows")
 
@@ -159,7 +200,7 @@ def replay_ml_pipeline(csv_path: str, pipeline_config: dict,
     extractor = FeatureExtractor()
     feature_matrix = extractor.extract_from_windows_direct(
         windows=all_windows,
-        sensor_columns=sensor_columns,
+        sensor_columns=active_sensor_cols,
         method=feat_config.get('method', 'lightweight'),
         feature_set=feat_config.get('feature_set', 'efficient'),
     )
