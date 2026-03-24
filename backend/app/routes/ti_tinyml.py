@@ -246,6 +246,137 @@ def ti_train_ml_with_features():
         return jsonify({'error': str(e)}), 400
 
 
+@ti_bp.route('/export-saved/<int:model_id>', methods=['POST'])
+@login_required
+def ti_export_saved_model(model_id):
+    """Export a saved model to TI MCU C code via emlearn."""
+    import pickle
+    import os
+    import tempfile
+    import shutil
+
+    from ..models import SavedModel
+
+    saved = SavedModel.get_by_id(model_id)
+    if not saved:
+        return jsonify({'error': 'Model not found'}), 404
+
+    model_path = saved.get('model_path', '')
+    algorithm = saved.get('algorithm', 'model')
+    mode = saved.get('mode', 'regression')
+    import json as json_mod
+    metrics = saved.get('metrics', {})
+    if isinstance(metrics, str):
+        try:
+            metrics = json_mod.loads(metrics)
+        except Exception:
+            metrics = {}
+
+    # If model file exists, load and convert to ONNX
+    if model_path and os.path.exists(model_path):
+        with open(model_path, 'rb') as f:
+            model_data = pickle.load(f)
+        model = model_data.get('model')
+        feature_names = model_data.get('feature_names', [])
+    else:
+        # No model file (TI-trained models) — export metrics + info only
+        tmp_dir = tempfile.mkdtemp()
+        zip_path = os.path.join(tmp_dir, 'ti_mcu_package.zip')
+        import zipfile
+
+        with zipfile.ZipFile(zip_path, 'w') as zf:
+            zf.writestr('model_info.json', json_mod.dumps({
+                'model_name': algorithm,
+                'mode': mode,
+                'metrics': metrics,
+                'note': 'This model was trained in the TI container. '
+                        'Re-train using TI TinyML tab to generate C code artifacts.',
+            }, indent=2))
+            zf.writestr('README.txt',
+                f'CiRA ME - TI MCU Export\n'
+                f'=======================\n\n'
+                f'Model: {algorithm}\n'
+                f'Mode: {mode}\n'
+                f'R2: {metrics.get("r2", "N/A")}\n\n'
+                f'This model was trained in the TI TinyML container.\n'
+                f'To get C code for MCU deployment:\n'
+                f'  1. Go to Training > TI TinyML tab\n'
+                f'  2. Select the same model and train\n'
+                f'  3. Download the artifacts from there\n')
+
+        from flask import send_file
+        return send_file(zip_path, as_attachment=True,
+            download_name=f'ti_mcu_{algorithm.replace(" ", "_")}.zip')
+
+    try:
+
+        if model is None:
+            return jsonify({'error': 'No model object in pickle file'}), 400
+
+        # Export as ONNX for TI MCU NN Compiler
+        from skl2onnx import convert_sklearn
+        from skl2onnx.common.data_types import FloatTensorType
+        import onnx
+        import zipfile
+        import json as json_mod
+
+        model_class = model.__class__.__name__
+        n_features = len(feature_names) if feature_names else 10
+        safe_name = algorithm.lower().replace(' ', '_').replace('-', '_')
+
+        tmp_dir = tempfile.mkdtemp()
+
+        # Convert to ONNX
+        initial_type = [('features', FloatTensorType([None, n_features]))]
+        onnx_model = convert_sklearn(model, initial_types=initial_type)
+        onnx_path = os.path.join(tmp_dir, 'model.onnx')
+        onnx.save(onnx_model, onnx_path)
+
+        # Save pickle too (for Python-based deployment)
+        pkl_copy = os.path.join(tmp_dir, 'model.pkl')
+        shutil.copy2(model_path, pkl_copy)
+
+        # Create zip package
+        zip_path = os.path.join(tmp_dir, 'ti_mcu_package.zip')
+        with zipfile.ZipFile(zip_path, 'w') as zf:
+            zf.write(onnx_path, 'model.onnx')
+            zf.write(pkl_copy, 'model.pkl')
+            zf.writestr('model_info.json', json_mod.dumps({
+                'model_name': algorithm,
+                'model_class': model_class,
+                'mode': saved.get('mode', 'regression'),
+                'n_features': n_features,
+                'feature_names': feature_names,
+                'onnx_size_kb': round(os.path.getsize(onnx_path) / 1024, 1),
+                'export_note': 'Use TI MCU NN Compiler to convert model.onnx to C code for TMS320',
+            }, indent=2))
+            zf.writestr('README.txt',
+                f'CiRA ME - TI MCU Export Package\n'
+                f'================================\n\n'
+                f'Model: {algorithm} ({model_class})\n'
+                f'Mode: {saved.get("mode", "regression")}\n'
+                f'Features: {n_features}\n'
+                f'ONNX size: {round(os.path.getsize(onnx_path)/1024, 1)} KB\n\n'
+                f'Files:\n'
+                f'  model.onnx      - ONNX model for TI NN Compiler\n'
+                f'  model.pkl       - Python pickle (for testing)\n'
+                f'  model_info.json - Model metadata\n\n'
+                f'Deployment:\n'
+                f'  1. Open TI Code Composer Studio\n'
+                f'  2. Use TI MCU NN Compiler to convert model.onnx\n'
+                f'  3. Include generated C code in your project\n'
+                f'  4. Call the inference function with {n_features} float features\n')
+
+        from flask import send_file
+        return send_file(zip_path, as_attachment=True,
+            download_name=f'ti_mcu_{safe_name}.zip')
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
 @ti_bp.route('/download/<run_id>', methods=['GET'])
 @login_required
 def ti_download(run_id):

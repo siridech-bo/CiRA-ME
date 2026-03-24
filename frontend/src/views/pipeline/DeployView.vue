@@ -1271,42 +1271,28 @@ async function exportOnly() {
   try {
     exporting.value = true
 
-    // TI MCU: train in TI container and download C code package
+    // TI MCU: export saved model as ONNX package for TI NN Compiler
     if (exportFormat.value === 'ti_mcu') {
       if (!selectedSavedModelId.value) {
         notificationStore.showError('TI MCU export requires a saved model')
         return
       }
       try {
+        const response = await api.post(
+          `/api/ti/export-saved/${selectedSavedModelId.value}`,
+          {},
+          { responseType: 'blob' }
+        )
         const model = savedModels.value.find((m: any) => m.id === selectedSavedModelId.value)
-        const algoName = model?.algorithm || 'model'
-        const isTreeModel = ['dt_reg', 'rf_reg', 'dt', 'rf', 'Random Forest Regressor', 'Decision Tree Regressor',
-          'Random Forest', 'Decision Tree'].some(n => algoName.includes(n) || algoName === n)
-
-        // Use emlearn for tree models, ONNX export for others
-        const tiModelName = isTreeModel ? 'ML_RF_REG' : 'ML_DT_REG'
-
-        notificationStore.showInfo('Generating TI MCU package...')
-
-        const resp = await api.post('/api/ti/train', {
-          mode: model?.mode || 'regression',
-          model_names: [isTreeModel ? 'ML_RF_REG' : 'ML_DT_REG'],
-          target_device: 'F2837',
-          dataset_path: pipelineStore.dataSession?.metadata?.file_path || '',
-          config: { epochs: 1 },
-        })
-
-        if (resp.data.run_id) {
-          const dlResp = await api.get(`/api/ti/download/${resp.data.run_id}`, {
-            responseType: 'blob'
-          })
-          _downloadBlob(dlResp, `ti_mcu_${algoName}.zip`)
-          notificationStore.showSuccess('TI MCU package downloaded (C header + inference code)')
-        } else {
-          notificationStore.showError('Failed to generate TI MCU package')
-        }
+        _downloadBlob(response, `ti_mcu_${model?.algorithm || 'model'}.zip`)
+        notificationStore.showSuccess('TI MCU package downloaded (ONNX + model info + README)')
       } catch (e: any) {
-        notificationStore.showError(e.response?.data?.error || 'TI MCU export failed')
+        if (e.response?.data instanceof Blob) {
+          const text = await e.response.data.text()
+          try { notificationStore.showError(JSON.parse(text).error) } catch { notificationStore.showError('TI MCU export failed') }
+        } else {
+          notificationStore.showError(e.response?.data?.error || 'TI MCU export failed')
+        }
       }
       return
     }
