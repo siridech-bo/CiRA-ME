@@ -38,7 +38,7 @@
     </v-alert>
 
     <!-- Feature Summary Card (for ML approach) -->
-    <v-card v-if="trainingApproach === 'ml' && pipelineStore.featureSession" class="pa-4 mb-6">
+    <v-card v-if="(trainingApproach === 'ml' || trainingApproach === 'ti' || trainingApproach === 'custom') && pipelineStore.featureSession" class="pa-4 mb-6">
       <div class="d-flex align-center mb-3">
         <v-icon color="primary" class="mr-2">mdi-feature-search</v-icon>
         <h3 class="text-subtitle-1 font-weight-bold">Features for Training</h3>
