@@ -369,7 +369,14 @@
         <!-- Custom column headers with checkboxes for sensor columns -->
         <template v-for="col in dataPreview.metadata.columns" :key="'header-'+col" #[`header.${col}`]="{ column }">
           <div
-            v-if="isSensorColumn(col)"
+            v-if="col === timestampColumn"
+            class="d-flex align-center"
+          >
+            <v-icon size="x-small" color="success" class="mr-1">mdi-lock</v-icon>
+            <span>{{ column.title }}</span>
+          </div>
+          <div
+            v-else-if="isSensorColumn(col)"
             class="d-flex align-center"
             style="cursor: pointer;"
             @click.stop="toggleColumn(col)"
@@ -1045,10 +1052,16 @@ const previewHeaders = computed(() => {
 
 const canProceed = computed(() => !!dataPreview.value)
 
-// Initialize selected columns when data loads
+// Initialize selected columns when data loads (all selected by default)
 watch(() => dataPreview.value, (newVal) => {
   if (newVal?.metadata?.sensor_columns && pipelineStore.selectedColumns.length === 0) {
-    pipelineStore.selectedColumns = [...newVal.metadata.sensor_columns]
+    const cols = [...newVal.metadata.sensor_columns]
+    // Ensure timestamp is included
+    const ts = newVal.metadata.timestamp_column
+    if (ts && !cols.includes(ts)) {
+      cols.unshift(ts)
+    }
+    pipelineStore.selectedColumns = cols
   }
 })
 
@@ -1057,10 +1070,15 @@ function isSensorColumn(col: string): boolean {
 }
 
 function toggleColumn(col: string) {
+  // Timestamp is always selected, can't toggle
+  if (col === timestampColumn.value) return
+
   const cols = [...pipelineStore.selectedColumns]
   const idx = cols.indexOf(col)
   if (idx >= 0) {
-    if (cols.length <= 1) return // Must keep at least 1
+    // Must keep at least 2 columns (1 sensor + timestamp)
+    const nonTimestampCount = cols.filter(c => c !== timestampColumn.value).length
+    if (nonTimestampCount <= 1) return
     cols.splice(idx, 1)
   } else {
     cols.push(col)
@@ -1073,10 +1091,18 @@ function selectAllColumns() {
 }
 
 function selectNoColumns() {
-  // Keep at least 1 column
+  // Keep timestamp + 1 sensor minimum
   const sensors = dataPreview.value?.metadata?.sensor_columns || []
-  pipelineStore.selectedColumns = sensors.length > 0 ? [sensors[0]] : []
+  const ts = timestampColumn.value
+  const nonTs = sensors.filter((s: string) => s !== ts)
+  pipelineStore.selectedColumns = ts && sensors.includes(ts)
+    ? [ts, ...(nonTs.length > 0 ? [nonTs[0]] : [])]
+    : sensors.length > 0 ? [sensors[0]] : []
 }
+
+const timestampColumn = computed(() =>
+  dataPreview.value?.metadata?.timestamp_column || null
+)
 
 function getFileIcon(ext: string | null) {
   switch (ext) {
