@@ -592,7 +592,7 @@
                   :color="customSelectedFeatures.includes(feat) ? getFeatureTypeColor(feat) : 'grey'"
                   :variant="customSelectedFeatures.includes(feat) ? 'tonal' : 'outlined'"
                   style="cursor: pointer;"
-                  @click="toggleFeature(feat)"
+                  @click="toggleSelectedFeature(feat)"
                 >
                   <v-icon v-if="customSelectedFeatures.includes(feat)" start size="x-small">mdi-check</v-icon>
                   <v-icon v-else start size="x-small">mdi-close</v-icon>
@@ -959,7 +959,7 @@ watch(() => selectionResult.value, (newVal) => {
   }
 })
 
-function toggleFeature(feat: string) {
+function toggleSelectedFeature(feat: string) {
   const idx = customSelectedFeatures.value.indexOf(feat)
   if (idx >= 0) {
     customSelectedFeatures.value.splice(idx, 1)
@@ -976,7 +976,6 @@ function toggleRawSignal(col: string) {
     rawSignalSelections.value.push(col)
   }
 }
-)
 
 const filteredTSFreshFeatures = computed(() =>
   tsfreshFeatures.filter(f => f.toLowerCase().includes(searchQuery.value.toLowerCase()))
