@@ -127,6 +127,34 @@
             {{ windowRecommendation.message }}
           </v-alert>
 
+          <!-- TI NN comparison tip -->
+          <v-alert
+            v-if="pipelineStore.mode === 'regression' && totalSamples > 0 && (windowingConfig.window_size !== 32 || windowingConfig.stride !== 16)"
+            type="info"
+            variant="tonal"
+            density="compact"
+            class="mb-4"
+          >
+            <div class="d-flex align-center">
+              <v-icon class="mr-2" size="small">mdi-chip</v-icon>
+              <div class="flex-grow-1">
+                <div class="text-caption">
+                  <strong>TI TinyML tip:</strong> TI NN models use window=32, stride=16.
+                  For fair comparison between Traditional ML and TI NN, match these settings.
+                </div>
+              </div>
+              <v-btn
+                size="small"
+                color="info"
+                variant="flat"
+                class="ml-2"
+                @click="applyTiWindowSettings"
+              >
+                Apply TI Settings
+              </v-btn>
+            </div>
+          </v-alert>
+
           <!-- Stride -->
           <div class="mb-6">
             <div class="d-flex justify-space-between align-center mb-2">
@@ -1059,6 +1087,14 @@ watch(sliderMaxWindowSize, (newMax) => {
     windowingConfig.stride = windowingConfig.window_size
   }
 })
+
+function applyTiWindowSettings() {
+  windowingConfig.window_size = 32
+  windowingConfig.stride = 16
+  pipelineStore.windowingConfig.window_size = 32
+  pipelineStore.windowingConfig.stride = 16
+  notificationStore.showSuccess('Applied TI settings: window=32, stride=16')
+}
 
 function applyRecommendation() {
   if (windowRecommendation.value) {

@@ -582,12 +582,7 @@
               class="mt-2"
             >
               <v-icon size="small" class="mr-1">mdi-chip</v-icon>
-              <strong>TI Pipeline</strong> models use raw signal with SimpleWindow (frame=32, stride=16, 50% overlap).
-              <template v-if="pipelineStore.windowingConfig.window_size !== 32 && tiModelSource === 'all'">
-                <br><span class="text-caption">
-                  Tip: Set CiRA ME windowing to window=32, stride=16 for fair comparison with TI NN models.
-                </span>
-              </template>
+              <strong>TI Pipeline</strong> models use raw signal with SimpleWindow (frame=32, stride=16, 50% overlap)
             </v-alert>
           </v-card>
         </v-col>
