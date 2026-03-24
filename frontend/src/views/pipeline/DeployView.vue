@@ -983,11 +983,20 @@
             <tbody>
               <tr v-for="c in evalResult.comparison" :key="c.metric">
                 <td class="font-weight-medium text-capitalize">{{ c.metric }}</td>
-                <td class="text-center">{{ c.original != null ? (c.original * 100).toFixed(1) + '%' : '-' }}</td>
-                <td class="text-center">{{ c.new_data != null ? (c.new_data * 100).toFixed(1) + '%' : '-' }}</td>
-                <td class="text-center" :class="c.diff != null ? (c.diff >= 0 ? 'text-success' : 'text-error') : ''">
-                  {{ c.diff != null ? (c.diff > 0 ? '+' : '') + (c.diff * 100).toFixed(1) + '%' : '-' }}
-                </td>
+                <template v-if="evalModel?.mode === 'regression'">
+                  <td class="text-center">{{ c.original != null ? c.original.toFixed(4) : '-' }}</td>
+                  <td class="text-center">{{ c.new_data != null ? c.new_data.toFixed(4) : '-' }}</td>
+                  <td class="text-center" :class="c.diff != null ? (['r2'].includes(c.metric) ? (c.diff >= 0 ? 'text-success' : 'text-error') : (c.diff <= 0 ? 'text-success' : 'text-error')) : ''">
+                    {{ c.diff != null ? (c.diff > 0 ? '+' : '') + c.diff.toFixed(4) : '-' }}
+                  </td>
+                </template>
+                <template v-else>
+                  <td class="text-center">{{ c.original != null ? (c.original * 100).toFixed(1) + '%' : '-' }}</td>
+                  <td class="text-center">{{ c.new_data != null ? (c.new_data * 100).toFixed(1) + '%' : '-' }}</td>
+                  <td class="text-center" :class="c.diff != null ? (c.diff >= 0 ? 'text-success' : 'text-error') : ''">
+                    {{ c.diff != null ? (c.diff > 0 ? '+' : '') + (c.diff * 100).toFixed(1) + '%' : '-' }}
+                  </td>
+                </template>
               </tr>
             </tbody>
           </v-table>
