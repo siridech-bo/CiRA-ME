@@ -558,7 +558,8 @@
               class="mt-2"
             >
               <v-icon size="small" class="mr-1">mdi-auto-fix</v-icon>
-              Traditional ML uses CiRA ME features ({{ pipelineStore.featureSession.num_features }} features)
+              <strong>CiRA Features</strong> models use your extracted features ({{ pipelineStore.featureSession.num_features }} features,
+              window={{ pipelineStore.windowingConfig.window_size }}, stride={{ pipelineStore.windowingConfig.stride }})
             </v-alert>
             <v-alert
               v-else-if="tiModelSource !== 'ti_zoo' && !pipelineStore.featureSession"
@@ -570,6 +571,23 @@
               <v-icon size="small" class="mr-1">mdi-alert</v-icon>
               Traditional ML models need features. Go to
               <strong @click="$router.push({ name: 'pipeline-features' })" style="cursor:pointer; text-decoration:underline;">Features page</strong> first.
+            </v-alert>
+
+            <!-- TI NN pipeline info -->
+            <v-alert
+              v-if="tiModelSource !== 'traditional_ml'"
+              type="info"
+              variant="tonal"
+              density="compact"
+              class="mt-2"
+            >
+              <v-icon size="small" class="mr-1">mdi-chip</v-icon>
+              <strong>TI Pipeline</strong> models use raw signal with SimpleWindow (frame=32, stride=16, 50% overlap).
+              <template v-if="pipelineStore.windowingConfig.window_size !== 32 && tiModelSource === 'all'">
+                <br><span class="text-caption">
+                  Tip: Set CiRA ME windowing to window=32, stride=16 for fair comparison with TI NN models.
+                </span>
+              </template>
             </v-alert>
           </v-card>
         </v-col>
