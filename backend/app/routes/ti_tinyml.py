@@ -274,6 +274,39 @@ def ti_export_saved_model(model_id):
 
     # If model file exists, load and convert to ONNX
     if model_path and os.path.exists(model_path):
+        # Send pickle to TI container for emlearn C export
+        try:
+            ti = TIIntegration()
+            import requests as req
+
+            with open(model_path, 'rb') as f:
+                resp = req.post(
+                    f'{ti.base_url}/convert-to-c',
+                    files={'model': ('model.pkl', f, 'application/octet-stream')},
+                    data={'mode': mode},
+                    timeout=60,
+                )
+
+            if resp.status_code == 200:
+                # Return the zip from TI container directly
+                tmp_dir = tempfile.mkdtemp()
+                zip_path = os.path.join(tmp_dir, f'ti_mcu_{algorithm.replace(" ", "_")}.zip')
+                with open(zip_path, 'wb') as f:
+                    f.write(resp.content)
+
+                from flask import send_file
+                return send_file(zip_path, as_attachment=True,
+                    download_name=f'ti_mcu_{algorithm.replace(" ", "_")}.zip')
+            else:
+                # TI container failed — fall back to ONNX export
+                error_msg = resp.json().get('error', 'emlearn conversion failed') if resp.headers.get('content-type', '').startswith('application/json') else 'emlearn conversion failed'
+                logger.warning(f"TI emlearn failed: {error_msg}, falling back to ONNX")
+                # Fall through to ONNX export below
+
+        except Exception as e:
+            logger.warning(f"TI container unavailable for C export: {e}, falling back to ONNX")
+
+        # Fallback: ONNX export from backend
         with open(model_path, 'rb') as f:
             model_data = pickle.load(f)
         model = model_data.get('model')

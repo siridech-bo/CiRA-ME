@@ -1532,5 +1532,64 @@ def _export_emlearn(model, model_name, feature_names, project_dir, logs):
     return artifacts
 
 
+@app.route('/convert-to-c', methods=['POST'])
+def convert_model_to_c():
+    """Convert a pickle model to C code via emlearn.
+
+    Accepts multipart form with 'model' (pickle file) and 'mode' field.
+    Returns a zip with C header + inference code.
+    """
+    import numpy as np
+
+    if 'model' not in request.files:
+        return jsonify({'error': 'No model file uploaded'}), 400
+
+    mode = request.form.get('mode', 'regression')
+    model_file = request.files['model']
+
+    try:
+        import pickle
+        model_data = pickle.load(model_file)
+
+        model = model_data.get('model') if isinstance(model_data, dict) else model_data
+        algorithm = model_data.get('algorithm', 'model') if isinstance(model_data, dict) else 'model'
+        feature_names = model_data.get('feature_names', []) if isinstance(model_data, dict) else []
+
+        if model is None:
+            return jsonify({'error': 'No model object in pickle'}), 400
+
+        model_class = model.__class__.__name__
+        safe_name = algorithm.lower().replace(' ', '_').replace('-', '_')
+
+        project_dir = os.path.join(PROJECTS_DIR, f'export_{uuid.uuid4().hex[:8]}')
+        os.makedirs(project_dir, exist_ok=True)
+
+        logs = []
+        artifacts = _export_emlearn(model, safe_name, feature_names, project_dir, logs)
+
+        # Create zip
+        zip_path = os.path.join(project_dir, 'ti_mcu_package.zip')
+        with __import__('zipfile').ZipFile(zip_path, 'w') as zf:
+            for art in artifacts:
+                fpath = os.path.join(project_dir, art['file'])
+                if os.path.exists(fpath):
+                    zf.write(fpath, art['file'])
+            zf.writestr('README.txt',
+                f'CiRA ME - TI MCU C Code Package\n'
+                f'================================\n\n'
+                f'Model: {algorithm} ({model_class})\n'
+                f'Mode: {mode}\n'
+                f'Features: {len(feature_names)}\n\n'
+                f'Files:\n')
+
+        return send_file(zip_path, as_attachment=True,
+            download_name=f'ti_mcu_{safe_name}.zip')
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5200, debug=False)
