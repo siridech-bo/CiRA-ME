@@ -126,6 +126,16 @@
           :to="{ name: 'pipeline-deploy' }"
           rounded="lg"
         />
+
+        <v-list-subheader v-if="!rail">SERVICES</v-list-subheader>
+
+        <v-list-item
+          prepend-icon="mdi-api"
+          title="ME-LAB"
+          value="melab"
+          :to="{ name: 'melab' }"
+          rounded="lg"
+        />
       </v-list>
 
       <template #append>

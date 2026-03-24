@@ -86,6 +86,57 @@ def init_db(db_path: str):
             )
         ''')
 
+        # ME-LAB: Inference endpoints
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS melab_endpoints (
+                id TEXT PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                saved_model_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                description TEXT,
+                status TEXT DEFAULT 'active',
+                mode TEXT NOT NULL,
+                algorithm TEXT NOT NULL,
+                feature_names JSON,
+                n_features INTEGER,
+                created_at TEXT NOT NULL,
+                updated_at TEXT,
+                last_inference_at TEXT,
+                inference_count INTEGER DEFAULT 0,
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                FOREIGN KEY (saved_model_id) REFERENCES saved_models(id)
+            )
+        ''')
+
+        # ME-LAB: API keys
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS melab_api_keys (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                key_hash TEXT NOT NULL,
+                key_prefix TEXT NOT NULL,
+                user_id INTEGER NOT NULL,
+                name TEXT,
+                is_active INTEGER DEFAULT 1,
+                created_at TEXT NOT NULL,
+                last_used_at TEXT,
+                expires_at TEXT,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+        ''')
+
+        # ME-LAB: Usage log
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS melab_usage_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                endpoint_id TEXT NOT NULL,
+                api_key_id INTEGER,
+                request_size INTEGER,
+                latency_ms REAL,
+                status_code INTEGER,
+                created_at TEXT NOT NULL
+            )
+        ''')
+
         # Create default admin user if not exists
         cursor.execute('SELECT id FROM users WHERE username = ?', ('admin',))
         if not cursor.fetchone():
@@ -422,6 +473,193 @@ class SavedModel:
             cursor.execute(
                 'DELETE FROM saved_models WHERE id = ? AND user_id = ?',
                 (model_id, user_id)
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+
+class MeLabEndpoint:
+    """ME-LAB inference endpoint operations."""
+
+    @staticmethod
+    def create(endpoint_id, user_id, saved_model_id, name, mode, algorithm,
+               feature_names=None, n_features=0, description=''):
+        import json
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO melab_endpoints
+                (id, user_id, saved_model_id, name, description, status, mode, algorithm,
+                 feature_names, n_features, created_at)
+                VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)
+            ''', (
+                endpoint_id, user_id, saved_model_id, name, description,
+                mode, algorithm,
+                json.dumps(feature_names) if feature_names else None,
+                n_features,
+                datetime.utcnow().isoformat()
+            ))
+            conn.commit()
+            return endpoint_id
+
+    @staticmethod
+    def get_by_id(endpoint_id):
+        import json
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM melab_endpoints WHERE id = ?', (endpoint_id,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            d = dict(row)
+            for k in ('feature_names',):
+                if d.get(k) and isinstance(d[k], str):
+                    try: d[k] = json.loads(d[k])
+                    except: pass
+            return d
+
+    @staticmethod
+    def get_all(user_id=None):
+        import json
+        with get_db() as conn:
+            cursor = conn.cursor()
+            if user_id:
+                cursor.execute('SELECT * FROM melab_endpoints WHERE user_id = ? ORDER BY created_at DESC', (user_id,))
+            else:
+                cursor.execute('SELECT * FROM melab_endpoints ORDER BY created_at DESC')
+            rows = cursor.fetchall()
+            results = []
+            for row in rows:
+                d = dict(row)
+                for k in ('feature_names',):
+                    if d.get(k) and isinstance(d[k], str):
+                        try: d[k] = json.loads(d[k])
+                        except: pass
+                results.append(d)
+            return results
+
+    @staticmethod
+    def update_model(endpoint_id, saved_model_id, algorithm=None):
+        with get_db() as conn:
+            cursor = conn.cursor()
+            if algorithm:
+                cursor.execute(
+                    'UPDATE melab_endpoints SET saved_model_id=?, algorithm=?, updated_at=? WHERE id=?',
+                    (saved_model_id, algorithm, datetime.utcnow().isoformat(), endpoint_id)
+                )
+            else:
+                cursor.execute(
+                    'UPDATE melab_endpoints SET saved_model_id=?, updated_at=? WHERE id=?',
+                    (saved_model_id, datetime.utcnow().isoformat(), endpoint_id)
+                )
+            conn.commit()
+
+    @staticmethod
+    def update_status(endpoint_id, status):
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'UPDATE melab_endpoints SET status=?, updated_at=? WHERE id=?',
+                (status, datetime.utcnow().isoformat(), endpoint_id)
+            )
+            conn.commit()
+
+    @staticmethod
+    def record_inference(endpoint_id):
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'UPDATE melab_endpoints SET inference_count=inference_count+1, last_inference_at=? WHERE id=?',
+                (datetime.utcnow().isoformat(), endpoint_id)
+            )
+            conn.commit()
+
+    @staticmethod
+    def delete(endpoint_id, user_id):
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'DELETE FROM melab_endpoints WHERE id=? AND user_id=?',
+                (endpoint_id, user_id)
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    @staticmethod
+    def count_active(user_id):
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT COUNT(*) FROM melab_endpoints WHERE user_id=? AND status='active'",
+                (user_id,)
+            )
+            return cursor.fetchone()[0]
+
+
+class MeLabApiKey:
+    """ME-LAB API key operations."""
+
+    @staticmethod
+    def create(user_id, name='default'):
+        import secrets, hashlib
+        raw_key = 'melab_' + secrets.token_hex(32)
+        key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
+        key_prefix = raw_key[:14]
+
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO melab_api_keys (key_hash, key_prefix, user_id, name, created_at)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (key_hash, key_prefix, user_id, name, datetime.utcnow().isoformat()))
+            conn.commit()
+            return {'id': cursor.lastrowid, 'key': raw_key, 'prefix': key_prefix}
+
+    @staticmethod
+    def validate(raw_key):
+        """Validate an API key. Returns user_id and key_id if valid."""
+        import hashlib
+        key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT id, user_id, is_active, expires_at FROM melab_api_keys WHERE key_hash=?',
+                (key_hash,)
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            d = dict(row)
+            if not d['is_active']:
+                return None
+            if d.get('expires_at'):
+                if datetime.fromisoformat(d['expires_at']) < datetime.utcnow():
+                    return None
+            # Update last_used_at
+            cursor.execute(
+                'UPDATE melab_api_keys SET last_used_at=? WHERE id=?',
+                (datetime.utcnow().isoformat(), d['id'])
+            )
+            conn.commit()
+            return {'key_id': d['id'], 'user_id': d['user_id']}
+
+    @staticmethod
+    def get_all(user_id):
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT id, key_prefix, name, is_active, created_at, last_used_at FROM melab_api_keys WHERE user_id=? ORDER BY created_at DESC',
+                (user_id,)
+            )
+            return [dict(r) for r in cursor.fetchall()]
+
+    @staticmethod
+    def revoke(key_id, user_id):
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'UPDATE melab_api_keys SET is_active=0 WHERE id=? AND user_id=?',
+                (key_id, user_id)
             )
             conn.commit()
             return cursor.rowcount > 0
