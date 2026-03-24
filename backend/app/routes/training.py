@@ -998,7 +998,10 @@ def evaluate_raw_csv():
         # Build comparison with original metrics
         original_metrics = saved.get('metrics', {})
         if result.get('has_labels') and result.get('new_metrics'):
-            metric_keys = ['accuracy', 'precision', 'recall', 'f1']
+            if saved.get('mode') == 'regression':
+                metric_keys = ['r2', 'rmse', 'mae']
+            else:
+                metric_keys = ['accuracy', 'precision', 'recall', 'f1']
             comparison = []
             for key in metric_keys:
                 orig = original_metrics.get(key)

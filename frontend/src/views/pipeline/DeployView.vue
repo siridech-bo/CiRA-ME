@@ -148,7 +148,35 @@
           </v-btn>
         </div>
 
-        <v-row dense>
+        <!-- Regression metrics -->
+        <v-row v-if="selectedModel.mode === 'regression'" dense>
+          <v-col cols="6" sm="3">
+            <v-card variant="tonal" class="pa-3 text-center" color="primary">
+              <div class="text-caption text-medium-emphasis">R² Score</div>
+              <div class="text-h6">{{ selectedModel.metrics?.r2 != null ? selectedModel.metrics.r2.toFixed(4) : '-' }}</div>
+            </v-card>
+          </v-col>
+          <v-col cols="6" sm="3">
+            <v-card variant="tonal" class="pa-3 text-center" color="info">
+              <div class="text-caption text-medium-emphasis">RMSE</div>
+              <div class="text-h6">{{ selectedModel.metrics?.rmse != null ? selectedModel.metrics.rmse.toFixed(4) : '-' }}</div>
+            </v-card>
+          </v-col>
+          <v-col cols="6" sm="3">
+            <v-card variant="tonal" class="pa-3 text-center" color="warning">
+              <div class="text-caption text-medium-emphasis">MAE</div>
+              <div class="text-h6">{{ selectedModel.metrics?.mae != null ? selectedModel.metrics.mae.toFixed(4) : '-' }}</div>
+            </v-card>
+          </v-col>
+          <v-col cols="6" sm="3">
+            <v-card variant="tonal" class="pa-3 text-center" color="success">
+              <div class="text-caption text-medium-emphasis">MAPE</div>
+              <div class="text-h6">{{ selectedModel.metrics?.mape != null ? (selectedModel.metrics.mape * 100).toFixed(1) + '%' : '-' }}</div>
+            </v-card>
+          </v-col>
+        </v-row>
+        <!-- Classification / Anomaly metrics -->
+        <v-row v-else dense>
           <v-col cols="6" sm="3">
             <v-card variant="tonal" class="pa-3 text-center" color="primary">
               <div class="text-caption text-medium-emphasis">Accuracy</div>
@@ -912,11 +940,20 @@
             <tbody>
               <tr v-for="c in evalResult.comparison" :key="c.metric">
                 <td class="font-weight-medium text-capitalize">{{ c.metric }}</td>
-                <td class="text-center">{{ c.original != null ? (c.original * 100).toFixed(1) + '%' : '-' }}</td>
-                <td class="text-center">{{ c.new_data != null ? (c.new_data * 100).toFixed(1) + '%' : '-' }}</td>
-                <td class="text-center" :class="c.diff != null ? (c.diff >= 0 ? 'text-success' : 'text-error') : ''">
-                  {{ c.diff != null ? (c.diff > 0 ? '+' : '') + (c.diff * 100).toFixed(1) + '%' : '-' }}
-                </td>
+                <template v-if="selectedModel?.mode === 'regression'">
+                  <td class="text-center">{{ c.original != null ? c.original.toFixed(4) : '-' }}</td>
+                  <td class="text-center">{{ c.new_data != null ? c.new_data.toFixed(4) : '-' }}</td>
+                  <td class="text-center" :class="c.diff != null ? (c.metric === 'r2' ? (c.diff >= 0 ? 'text-success' : 'text-error') : (c.diff <= 0 ? 'text-success' : 'text-error')) : ''">
+                    {{ c.diff != null ? (c.diff > 0 ? '+' : '') + c.diff.toFixed(4) : '-' }}
+                  </td>
+                </template>
+                <template v-else>
+                  <td class="text-center">{{ c.original != null ? (c.original * 100).toFixed(1) + '%' : '-' }}</td>
+                  <td class="text-center">{{ c.new_data != null ? (c.new_data * 100).toFixed(1) + '%' : '-' }}</td>
+                  <td class="text-center" :class="c.diff != null ? (c.diff >= 0 ? 'text-success' : 'text-error') : ''">
+                    {{ c.diff != null ? (c.diff > 0 ? '+' : '') + (c.diff * 100).toFixed(1) + '%' : '-' }}
+                  </td>
+                </template>
               </tr>
             </tbody>
           </v-table>

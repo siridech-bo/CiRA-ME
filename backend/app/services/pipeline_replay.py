@@ -217,19 +217,36 @@ def replay_ml_pipeline(csv_path: str, pipeline_config: dict,
             pass
 
     # Step 7: Compute metrics if labels present
+    mode = model_data.get('mode', 'classification')
     if window_labels:
         y_true = np.array(window_labels)
-        from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
-        result['new_metrics'] = {
-            'accuracy': float(accuracy_score(y_true, y_pred)),
-            'precision': float(precision_score(
-                y_true, y_pred, average='weighted', zero_division=0)),
-            'recall': float(recall_score(
-                y_true, y_pred, average='weighted', zero_division=0)),
-            'f1': float(f1_score(
-                y_true, y_pred, average='weighted', zero_division=0)),
-            'test_samples': len(y_true),
-        }
+
+        if mode == 'regression':
+            # Regression metrics
+            try:
+                y_true_float = y_true.astype(float)
+                from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
+                result['new_metrics'] = {
+                    'r2': float(r2_score(y_true_float, y_pred)) if len(y_true) > 1 else None,
+                    'rmse': float(np.sqrt(mean_squared_error(y_true_float, y_pred))),
+                    'mae': float(mean_absolute_error(y_true_float, y_pred)),
+                    'test_samples': len(y_true),
+                }
+            except (ValueError, TypeError):
+                result['new_metrics'] = {'test_samples': len(y_true)}
+        else:
+            # Classification/anomaly metrics
+            from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+            result['new_metrics'] = {
+                'accuracy': float(accuracy_score(y_true, y_pred)),
+                'precision': float(precision_score(
+                    y_true, y_pred, average='weighted', zero_division=0)),
+                'recall': float(recall_score(
+                    y_true, y_pred, average='weighted', zero_division=0)),
+                'f1': float(f1_score(
+                    y_true, y_pred, average='weighted', zero_division=0)),
+                'test_samples': len(y_true),
+            }
         result['has_labels'] = True
     else:
         result['has_labels'] = False
