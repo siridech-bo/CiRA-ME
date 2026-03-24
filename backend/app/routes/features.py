@@ -464,6 +464,7 @@ def apply_feature_selection():
     session_id = data.get('session_id')
     selected_features = data.get('selected_features', [])
     raw_signals = data.get('raw_signals', [])
+    raw_signal_method = data.get('raw_signal_method', 'last')  # 'last' or 'first'
     windowed_session_id = data.get('windowed_session_id')
 
     print(f"[Apply Selection] features={len(selected_features)}, raw_signals={raw_signals}, "
@@ -488,16 +489,20 @@ def apply_feature_selection():
                 metadata = windowed.get('metadata', {})
                 sensor_cols = metadata.get('sensor_columns', [])
 
-                # Compute per-window mean for each selected raw signal
+                # Extract raw signal value per window (first or last sample)
                 raw_feature_names = []
                 raw_feature_values = []
                 for sig_name in raw_signals:
                     if sig_name in sensor_cols:
                         ch_idx = sensor_cols.index(sig_name)
                         if ch_idx < windows.shape[2]:
-                            means = windows[:, :, ch_idx].mean(axis=1)
-                            raw_feature_names.append(f'raw_mean_{sig_name}')
-                            raw_feature_values.append(means)
+                            if raw_signal_method == 'first':
+                                values = windows[:, 0, ch_idx]  # First sample in window
+                                raw_feature_names.append(f'raw_{sig_name}')
+                            else:
+                                values = windows[:, -1, ch_idx]  # Last sample in window
+                                raw_feature_names.append(f'raw_{sig_name}')
+                            raw_feature_values.append(values)
 
                 print(f"[Apply Selection] Raw features computed: {raw_feature_names}, "
                       f"values shape: {np.column_stack(raw_feature_values).shape if raw_feature_values else 'none'}")

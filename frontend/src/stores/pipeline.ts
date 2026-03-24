@@ -126,6 +126,11 @@ export const usePipelineStore = defineStore('pipeline', () => {
   // Regression target column
   const targetColumn = ref<string | null>(null)
 
+  // Custom feature selections (persisted across navigation)
+  const customFeatureToggles = ref<string[]>([])
+  const rawSignals = ref<string[]>([])
+  const rawSignalMethod = ref<'last' | 'first'>('last')
+
   // Training
   const selectedAlgorithm = ref<string>('')
   const hyperparameters = ref<Record<string, any>>({})
@@ -344,6 +349,9 @@ export const usePipelineStore = defineStore('pipeline', () => {
     selectedAlgorithm.value = ''
     hyperparameters.value = {}
     targetColumn.value = null
+    customFeatureToggles.value = []
+    rawSignals.value = []
+    rawSignalMethod.value = 'last'
     currentStep.value = 'data'
     error.value = null
     // Reset feature selection state
@@ -427,6 +435,9 @@ export const usePipelineStore = defineStore('pipeline', () => {
     featureSession,
     selectedAlgorithm,
     targetColumn,
+    customFeatureToggles,
+    rawSignals,
+    rawSignalMethod,
     hyperparameters,
     trainingSession,
     loading,

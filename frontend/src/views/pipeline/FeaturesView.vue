@@ -612,12 +612,24 @@
                   Include Raw Signals
                 </h4>
                 <v-spacer />
+                <v-select
+                  v-model="rawSignalMethod"
+                  :items="[
+                    { title: 'Last value (window[-1])', value: 'last' },
+                    { title: 'First value (window[0])', value: 'first' },
+                  ]"
+                  density="compact"
+                  variant="outlined"
+                  hide-details
+                  style="max-width: 200px;"
+                  class="mr-2"
+                />
                 <v-chip v-if="rawSignalSelections.length > 0" size="x-small" color="purple" variant="flat">
-                  {{ rawSignalSelections.length }} raw signals
+                  {{ rawSignalSelections.length }} raw
                 </v-chip>
               </div>
               <div class="text-caption text-medium-emphasis mb-2">
-                Add per-window mean of raw sensor columns as additional features.
+                Pass the {{ rawSignalMethod === 'first' ? 'first' : 'last' }} raw sensor value per window directly as input — no computation needed on MCU.
               </div>
               <div class="d-flex flex-wrap gap-1">
                 <v-chip
@@ -954,9 +966,20 @@ const availableSensorColumns = computed(() => {
   return cols
 })
 
-// Custom feature toggle state
-const customSelectedFeatures = ref<string[]>([])
-const rawSignalSelections = ref<string[]>([])
+// Custom feature toggle — synced with pipeline store for persistence
+const customSelectedFeatures = computed({
+  get: () => pipelineStore.customFeatureToggles,
+  set: (val) => { pipelineStore.customFeatureToggles = val }
+})
+const rawSignalSelections = computed({
+  get: () => pipelineStore.rawSignals,
+  set: (val) => { pipelineStore.rawSignals = val }
+})
+const rawSignalMethod = computed({
+  get: () => pipelineStore.rawSignalMethod,
+  set: (val) => { pipelineStore.rawSignalMethod = val }
+})
+
 let _skipSelectionWatch = false
 
 // Initialize custom selection when selectionResult changes (from feature selection step)
@@ -966,27 +989,31 @@ watch(() => selectionResult.value, (newVal) => {
     return
   }
   if (newVal?.selected_features) {
-    customSelectedFeatures.value = [...newVal.selected_features]
-    rawSignalSelections.value = []
+    pipelineStore.customFeatureToggles = [...newVal.selected_features]
+    pipelineStore.rawSignals = []
   }
 })
 
 function toggleSelectedFeature(feat: string) {
-  const idx = customSelectedFeatures.value.indexOf(feat)
+  const toggles = [...pipelineStore.customFeatureToggles]
+  const idx = toggles.indexOf(feat)
   if (idx >= 0) {
-    customSelectedFeatures.value.splice(idx, 1)
+    toggles.splice(idx, 1)
   } else {
-    customSelectedFeatures.value.push(feat)
+    toggles.push(feat)
   }
+  pipelineStore.customFeatureToggles = toggles
 }
 
 function toggleRawSignal(col: string) {
-  const idx = rawSignalSelections.value.indexOf(col)
+  const sigs = [...pipelineStore.rawSignals]
+  const idx = sigs.indexOf(col)
   if (idx >= 0) {
-    rawSignalSelections.value.splice(idx, 1)
+    sigs.splice(idx, 1)
   } else {
-    rawSignalSelections.value.push(col)
+    sigs.push(col)
   }
+  pipelineStore.rawSignals = sigs
 }
 
 const filteredTSFreshFeatures = computed(() =>
@@ -1336,6 +1363,7 @@ async function applyFeatureSelection() {
       session_id: extractionResult.value.session_id,
       selected_features: customSelectedFeatures.value,
       raw_signals: rawSignalSelections.value.length > 0 ? rawSignalSelections.value : undefined,
+      raw_signal_method: rawSignalMethod.value,
       windowed_session_id: pipelineStore.windowedSession?.session_id || undefined,
     })
 
