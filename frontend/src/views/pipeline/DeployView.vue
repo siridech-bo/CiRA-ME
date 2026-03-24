@@ -909,15 +909,16 @@
         />
 
         <!-- Target column for regression -->
-        <v-text-field
-          v-if="evalModel?.mode === 'regression'"
+        <v-select
+          v-if="evalModel?.mode === 'regression' && evalCsvColumns.length > 0"
           v-model="evalTargetColumn"
-          label="Target column name in CSV (for R²/RMSE evaluation)"
-          :placeholder="evalModel?.pipeline_config?.target_column || 'e.g., Pressure_PSI'"
+          :items="evalCsvColumns"
+          label="Target column in CSV (for R²/RMSE evaluation)"
           density="compact"
           class="mb-2"
-          hint="Leave empty to show predictions only (no metrics)"
+          hint="Select the column containing actual values to compare predictions against"
           persistent-hint
+          clearable
         />
 
         <div class="d-flex justify-end ga-2">
@@ -1062,6 +1063,30 @@ const evaluating = ref(false)
 const evalResult = ref<any>(null)
 const evalFile = ref<File | null>(null)
 const evalTargetColumn = ref('')
+const evalCsvColumns = ref<string[]>([])
+
+// Parse CSV headers when file is selected
+watch(evalFile, async (newFile) => {
+  evalCsvColumns.value = []
+  evalTargetColumn.value = ''
+  if (!newFile) return
+
+  try {
+    const text = await newFile.slice(0, 4096).text()
+    const firstLine = text.split('\n')[0].trim()
+    const headers = firstLine.split(',').map(h => h.trim().replace(/^["']|["']$/g, ''))
+    // Filter to numeric-looking columns (exclude obvious non-targets)
+    evalCsvColumns.value = headers.filter(h => h && h.length > 0)
+
+    // Auto-select if pipeline has target_column and it exists in CSV
+    const savedTarget = evalModel.value?.pipeline_config?.target_column
+    if (savedTarget && evalCsvColumns.value.includes(savedTarget)) {
+      evalTargetColumn.value = savedTarget
+    }
+  } catch {
+    evalCsvColumns.value = []
+  }
+})
 const downloadingPackage = ref(false)
 
 // Saved devices (persisted in localStorage)
