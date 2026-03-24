@@ -882,11 +882,12 @@
 
     <!-- Test with New Data Dialog -->
     <v-dialog v-model="showEvalDialog" max-width="700" scrollable>
-      <v-card class="pa-4">
-        <h3 class="text-subtitle-1 font-weight-bold mb-4">
+      <v-card>
+        <v-card-title>
           <v-icon start size="small">mdi-test-tube</v-icon>
           Test "{{ evalModel?.name }}" with New Data
-        </h3>
+        </v-card-title>
+        <v-card-text style="max-height: 70vh;">
 
         <!-- No pipeline config warning -->
         <v-alert
@@ -1051,6 +1052,7 @@
             Save Results as CSV
           </v-btn>
         </v-card>
+        </v-card-text>
       </v-card>
     </v-dialog>
   </v-container>
