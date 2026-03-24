@@ -63,3 +63,5 @@ backups/
 deployment/*.tar
 *.tar.gz
 *.zip
+shared/sensor_recordings/Audio_Amplitude_2569-03-18_23-20-32_labeled-2.csv
+shared/sensor_recordings/Audio_Amplitude_2569-03-18_23-20-32_labeled.csv
