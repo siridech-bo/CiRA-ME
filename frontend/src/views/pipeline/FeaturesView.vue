@@ -951,11 +951,17 @@ const availableSensorColumns = computed(() =>
 // Custom feature toggle state
 const customSelectedFeatures = ref<string[]>([])
 const rawSignalSelections = ref<string[]>([])
+let _skipSelectionWatch = false
 
-// Initialize custom selection when selectionResult changes
+// Initialize custom selection when selectionResult changes (from feature selection step)
 watch(() => selectionResult.value, (newVal) => {
+  if (_skipSelectionWatch) {
+    _skipSelectionWatch = false
+    return
+  }
   if (newVal?.selected_features) {
     customSelectedFeatures.value = [...newVal.selected_features]
+    rawSignalSelections.value = []
   }
 })
 
@@ -1330,7 +1336,8 @@ async function applyFeatureSelection() {
     appliedSelection.value = response.data
     pipelineStore.featureSession = response.data
 
-    // Update selection result to reflect custom toggles + raw signals
+    // Update selection result — skip the watch so it doesn't reset our toggles
+    _skipSelectionWatch = true
     pipelineStore.setSelectionResult({
       session_id: response.data.session_id,
       selected_features: response.data.feature_names || response.data.selected_features,

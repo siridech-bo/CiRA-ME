@@ -499,12 +499,16 @@ def apply_feature_selection():
                             raw_feature_names.append(f'raw_mean_{sig_name}')
                             raw_feature_values.append(means)
 
+                print(f"[Apply Selection] Raw features computed: {raw_feature_names}, "
+                      f"values shape: {np.column_stack(raw_feature_values).shape if raw_feature_values else 'none'}")
+
                 if raw_feature_names:
-                    # Add raw features to the feature session
                     result = extractor.apply_selection_with_raw(
                         session_id, selected_features,
                         raw_feature_names, np.column_stack(raw_feature_values) if raw_feature_values else None
                     )
+                    print(f"[Apply Selection] Result: {result.get('num_features')} features, "
+                          f"names: {result.get('feature_names')}")
                     return jsonify(result)
 
         result = extractor.apply_selection(session_id, selected_features)

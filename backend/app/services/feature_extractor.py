@@ -1362,6 +1362,10 @@ class FeatureExtractor:
 
         # Get valid DSP features
         valid_features = [f for f in selected_features if f in features_df.columns]
+        invalid_features = [f for f in selected_features if f not in features_df.columns]
+        if invalid_features:
+            print(f"[apply_selection_with_raw] WARNING: {len(invalid_features)} features not found: {invalid_features}")
+        print(f"[apply_selection_with_raw] DSP: {len(valid_features)} valid from {len(selected_features)} requested")
         reduced_df = features_df[valid_features].copy() if valid_features else pd.DataFrame()
 
         # Append raw signal features
