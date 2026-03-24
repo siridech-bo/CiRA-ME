@@ -881,7 +881,7 @@
     </div>
 
     <!-- Test with New Data Dialog -->
-    <v-dialog v-model="showEvalDialog" max-width="700">
+    <v-dialog v-model="showEvalDialog" max-width="700" scrollable>
       <v-card class="pa-4">
         <h3 class="text-subtitle-1 font-weight-bold mb-4">
           <v-icon start size="small">mdi-test-tube</v-icon>
