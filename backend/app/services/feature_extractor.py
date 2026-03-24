@@ -1329,6 +1329,7 @@ class FeatureExtractor:
         return {
             'session_id': new_session_id,
             'num_features': len(valid_features),
+            'feature_names': valid_features,
             'selected_features': valid_features,
             'num_windows': len(reduced_df)
         }
