@@ -2546,17 +2546,19 @@ async function trainTiModel() {
           hyperparameters: { max_depth: tiConfig.max_depth },
         })
 
-        // Wrap single result in batch format
+        // Wrap single result in batch format — use real training_session_id for save-benchmark
+        const realSessionId = resp.data.training_session_id || modelName
         resultData = {
           results: [{
-            model_name: modelName,
+            model_name: realSessionId,
             algorithm_name: modelInfo.name || modelName,
             status: 'success',
             metrics: { ...(resp.data.metrics || {}), pipeline: 'cira_features' },
             source: 'traditional_ml',
+            training_session_id: realSessionId,
           }],
           errors: [],
-          run_id: resp.data.training_session_id || '',
+          run_id: realSessionId,
         }
       } else {
         // TI NN: use TI's own pipeline with raw data
@@ -2763,7 +2765,7 @@ function _processTiResults(data: any) {
     results: data.results.map((r: any) => ({
       algorithm: r.model_name,
       algorithm_name: r.algorithm_name,
-      training_session_id: r.model_name,
+      training_session_id: r.training_session_id || r.model_name,
       metrics: r.metrics,
     })),
     errors: data.errors || [],
