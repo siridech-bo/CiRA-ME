@@ -1271,14 +1271,43 @@ async function exportOnly() {
   try {
     exporting.value = true
 
-    // TI MCU: download C code package from TI container
+    // TI MCU: train in TI container and download C code package
     if (exportFormat.value === 'ti_mcu') {
       if (!selectedSavedModelId.value) {
         notificationStore.showError('TI MCU export requires a saved model')
         return
       }
-      // Train a small model in TI container to generate C code
-      notificationStore.showInfo('TI MCU export: Use the TI TinyML tab in Training to generate C code, then download from there.')
+      try {
+        const model = savedModels.value.find((m: any) => m.id === selectedSavedModelId.value)
+        const algoName = model?.algorithm || 'model'
+        const isTreeModel = ['dt_reg', 'rf_reg', 'dt', 'rf', 'Random Forest Regressor', 'Decision Tree Regressor',
+          'Random Forest', 'Decision Tree'].some(n => algoName.includes(n) || algoName === n)
+
+        // Use emlearn for tree models, ONNX export for others
+        const tiModelName = isTreeModel ? 'ML_RF_REG' : 'ML_DT_REG'
+
+        notificationStore.showInfo('Generating TI MCU package...')
+
+        const resp = await api.post('/api/ti/train', {
+          mode: model?.mode || 'regression',
+          model_names: [isTreeModel ? 'ML_RF_REG' : 'ML_DT_REG'],
+          target_device: 'F2837',
+          dataset_path: pipelineStore.dataSession?.metadata?.file_path || '',
+          config: { epochs: 1 },
+        })
+
+        if (resp.data.run_id) {
+          const dlResp = await api.get(`/api/ti/download/${resp.data.run_id}`, {
+            responseType: 'blob'
+          })
+          _downloadBlob(dlResp, `ti_mcu_${algoName}.zip`)
+          notificationStore.showSuccess('TI MCU package downloaded (C header + inference code)')
+        } else {
+          notificationStore.showError('Failed to generate TI MCU package')
+        }
+      } catch (e: any) {
+        notificationStore.showError(e.response?.data?.error || 'TI MCU export failed')
+      }
       return
     }
 
