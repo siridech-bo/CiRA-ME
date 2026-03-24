@@ -1329,9 +1329,16 @@ async function applyFeatureSelection() {
 
     appliedSelection.value = response.data
     pipelineStore.featureSession = response.data
-    // Mark selection as applied in pipeline store
+
+    // Update selection result to reflect custom toggles + raw signals
+    pipelineStore.setSelectionResult({
+      session_id: response.data.session_id,
+      selected_features: response.data.feature_names || response.data.selected_features,
+      original_count: selectionResult.value?.original_count || extractionResult.value?.num_features || 0,
+      final_count: response.data.num_features,
+    })
     pipelineStore.markSelectionApplied()
-    notificationStore.showSuccess('Feature selection applied')
+    notificationStore.showSuccess(`Applied ${response.data.num_features} features for training`)
   } catch (e: any) {
     notificationStore.showError(e.response?.data?.error || 'Failed to apply selection')
   } finally {

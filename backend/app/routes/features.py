@@ -466,6 +466,9 @@ def apply_feature_selection():
     raw_signals = data.get('raw_signals', [])
     windowed_session_id = data.get('windowed_session_id')
 
+    print(f"[Apply Selection] features={len(selected_features)}, raw_signals={raw_signals}, "
+          f"windowed_session={windowed_session_id}")
+
     if not session_id:
         return jsonify({'error': 'Session ID required'}), 400
 
