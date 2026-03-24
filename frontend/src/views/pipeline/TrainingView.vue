@@ -1060,41 +1060,86 @@
         No saved benchmarks yet. Train a model and click "Save as Benchmark" to start tracking.
       </v-alert>
 
-      <v-table v-if="savedModels.length > 0" density="compact" class="comparison-table">
-        <thead>
-          <tr>
-            <th><v-checkbox-btn v-model="selectAllModels" @update:model-value="toggleSelectAllModels" density="compact" hide-details /></th>
-            <th class="text-left">Name</th>
-            <th class="text-center">Algorithm</th>
-            <th class="text-center">Accuracy</th>
-            <th class="text-center">Precision</th>
-            <th class="text-center">Recall</th>
-            <th class="text-center">F1</th>
-            <th class="text-center">Date</th>
-            <th class="text-center">Actions</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="m in savedModels" :key="m.id">
-            <td><v-checkbox-btn v-model="selectedModelIds" :value="m.id" density="compact" hide-details /></td>
-            <td class="font-weight-medium">{{ m.name }}</td>
-            <td class="text-center text-caption">{{ m.algorithm }}</td>
-            <td class="text-center">{{ m.metrics?.accuracy != null ? (m.metrics.accuracy * 100).toFixed(1) + '%' : '-' }}</td>
-            <td class="text-center">{{ m.metrics?.precision != null ? (m.metrics.precision * 100).toFixed(1) + '%' : '-' }}</td>
-            <td class="text-center">{{ m.metrics?.recall != null ? (m.metrics.recall * 100).toFixed(1) + '%' : '-' }}</td>
-            <td class="text-center">{{ m.metrics?.f1 != null ? (m.metrics.f1 * 100).toFixed(1) + '%' : '-' }}</td>
-            <td class="text-center text-caption">{{ m.created_at?.slice(0, 10) }}</td>
-            <td class="text-center">
-              <v-btn icon size="x-small" variant="text" color="info" @click="startEvaluation(m)" title="Test with new data">
-                <v-icon size="small">mdi-test-tube</v-icon>
-              </v-btn>
-              <v-btn icon size="x-small" variant="text" color="error" @click="deleteSavedModel(m)" title="Delete">
-                <v-icon size="small">mdi-delete</v-icon>
-              </v-btn>
-            </td>
-          </tr>
-        </tbody>
-      </v-table>
+      <!-- Regression Models -->
+      <div v-if="savedModelsRegression.length > 0" class="mb-4">
+        <div class="text-caption font-weight-bold text-medium-emphasis mb-2">
+          <v-icon size="x-small" class="mr-1">mdi-chart-timeline-variant</v-icon>
+          Regression Models ({{ savedModelsRegression.length }})
+        </div>
+        <v-table density="compact" class="comparison-table">
+          <thead>
+            <tr>
+              <th><v-checkbox-btn v-model="selectAllModels" @update:model-value="toggleSelectAllModels" density="compact" hide-details /></th>
+              <th class="text-left">Name</th>
+              <th class="text-center">Algorithm</th>
+              <th class="text-center">R²</th>
+              <th class="text-center">RMSE</th>
+              <th class="text-center">MAE</th>
+              <th class="text-center">Date</th>
+              <th class="text-center">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="m in savedModelsRegression" :key="m.id">
+              <td><v-checkbox-btn v-model="selectedModelIds" :value="m.id" density="compact" hide-details /></td>
+              <td class="font-weight-medium">{{ m.name }}</td>
+              <td class="text-center text-caption">{{ m.algorithm }}</td>
+              <td class="text-center">{{ m.metrics?.r2 != null ? m.metrics.r2.toFixed(4) : '-' }}</td>
+              <td class="text-center">{{ m.metrics?.rmse != null ? m.metrics.rmse.toFixed(4) : '-' }}</td>
+              <td class="text-center">{{ m.metrics?.mae != null ? m.metrics.mae.toFixed(4) : '-' }}</td>
+              <td class="text-center text-caption">{{ m.created_at?.slice(0, 10) }}</td>
+              <td class="text-center">
+                <v-btn icon size="x-small" variant="text" color="error" @click="deleteSavedModel(m)" title="Delete">
+                  <v-icon size="small">mdi-delete</v-icon>
+                </v-btn>
+              </td>
+            </tr>
+          </tbody>
+        </v-table>
+      </div>
+
+      <!-- Classification & Anomaly Models -->
+      <div v-if="savedModelsClassification.length > 0">
+        <div class="text-caption font-weight-bold text-medium-emphasis mb-2">
+          <v-icon size="x-small" class="mr-1">mdi-shape</v-icon>
+          Classification & Anomaly Models ({{ savedModelsClassification.length }})
+        </div>
+        <v-table density="compact" class="comparison-table">
+          <thead>
+            <tr>
+              <th><v-checkbox-btn v-model="selectAllModels" @update:model-value="toggleSelectAllModels" density="compact" hide-details /></th>
+              <th class="text-left">Name</th>
+              <th class="text-center">Algorithm</th>
+              <th class="text-center">Accuracy</th>
+              <th class="text-center">Precision</th>
+              <th class="text-center">Recall</th>
+              <th class="text-center">F1</th>
+              <th class="text-center">Date</th>
+              <th class="text-center">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="m in savedModelsClassification" :key="m.id">
+              <td><v-checkbox-btn v-model="selectedModelIds" :value="m.id" density="compact" hide-details /></td>
+              <td class="font-weight-medium">{{ m.name }}</td>
+              <td class="text-center text-caption">{{ m.algorithm }}</td>
+              <td class="text-center">{{ m.metrics?.accuracy != null ? (m.metrics.accuracy * 100).toFixed(1) + '%' : '-' }}</td>
+              <td class="text-center">{{ m.metrics?.precision != null ? (m.metrics.precision * 100).toFixed(1) + '%' : '-' }}</td>
+              <td class="text-center">{{ m.metrics?.recall != null ? (m.metrics.recall * 100).toFixed(1) + '%' : '-' }}</td>
+              <td class="text-center">{{ m.metrics?.f1 != null ? (m.metrics.f1 * 100).toFixed(1) + '%' : '-' }}</td>
+              <td class="text-center text-caption">{{ m.created_at?.slice(0, 10) }}</td>
+              <td class="text-center">
+                <v-btn icon size="x-small" variant="text" color="info" @click="startEvaluation(m)" title="Test with new data">
+                  <v-icon size="small">mdi-test-tube</v-icon>
+                </v-btn>
+                <v-btn icon size="x-small" variant="text" color="error" @click="deleteSavedModel(m)" title="Delete">
+                  <v-icon size="small">mdi-delete</v-icon>
+                </v-btn>
+              </td>
+            </tr>
+          </tbody>
+        </v-table>
+      </div>
 
       <v-btn
         v-if="selectedModelIds.length === 2"
@@ -1781,6 +1826,12 @@ const pytorchAvailable = ref(true)  // Assume available, check on mount
 
 // Saved models / benchmark state
 const savedModels = ref<any[]>([])
+const savedModelsRegression = computed(() =>
+  savedModels.value.filter(m => m.mode === 'regression')
+)
+const savedModelsClassification = computed(() =>
+  savedModels.value.filter(m => m.mode !== 'regression')
+)
 const loadingSavedModels = ref(false)
 const showSaveBenchmarkDialog = ref(false)
 const benchmarkName = ref('')
