@@ -897,7 +897,8 @@ const tsfreshFeatureSets = [
 const searchQuery = ref('')
 const selectedFeatures = ref<string[]>([])
 const recommendations = ref<any>(null)
-const extractionResult = ref<any>(null)
+// Restore from pipeline store if available (persists across navigation)
+const extractionResult = ref<any>(pipelineStore.featureSelectionState.extractionResult)
 const loadingRecommendations = ref(false)
 const extracting = ref(false)
 
@@ -905,10 +906,19 @@ const extracting = ref(false)
 const selectionMethod = ref('combined')
 const targetFeatures = ref(10)
 const fdrLevel = ref(0.05)
-const selectionResult = ref<any>(null)
+const selectionResult = ref<any>(
+  pipelineStore.featureSelectionState.selectionResult
+    ? {
+        ...pipelineStore.featureSelectionState.selectionResult,
+        selected_features: pipelineStore.featureSelectionState.selectionResult.selected_features,
+      }
+    : null
+)
 const selectingFeatures = ref(false)
 const applyingSelection = ref(false)
-const appliedSelection = ref<any>(null)
+const appliedSelection = ref<any>(
+  pipelineStore.featureSelectionState.selectionApplied ? pipelineStore.featureSession : null
+)
 
 const selectionMethods = [
   { name: 'Combined (Recommended)', value: 'combined', description: 'Variance + Correlation + Mutual Information filters' },
