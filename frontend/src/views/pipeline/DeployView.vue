@@ -516,6 +516,8 @@
               </div>
             </div>
           </v-card>
+            </div>
+          </v-expand-transition>
         </v-card>
 
         <!-- Deployment Progress -->
