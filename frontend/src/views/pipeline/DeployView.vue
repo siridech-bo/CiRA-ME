@@ -1030,6 +1030,17 @@
           <div v-else class="text-caption text-medium-emphasis mt-2">
             No label column found in CSV — showing predictions only
           </div>
+
+          <v-divider class="my-3" />
+          <v-btn
+            color="success"
+            variant="flat"
+            size="small"
+            @click="downloadEvalCsv"
+          >
+            <v-icon start size="small">mdi-download</v-icon>
+            Save Results as CSV
+          </v-btn>
         </v-card>
       </v-card>
     </v-dialog>
@@ -1236,6 +1247,70 @@ function openEvalDialog() {
   evalResult.value = null
   evalFile.value = null
   showEvalDialog.value = true
+}
+
+function downloadEvalCsv() {
+  if (!evalResult.value) return
+
+  const rows: string[] = []
+  const mode = evalModel.value?.mode || 'classification'
+  const modelName = evalModel.value?.name || 'model'
+
+  // Header row
+  if (mode === 'regression') {
+    rows.push('window_index,prediction')
+  } else {
+    rows.push('window_index,prediction,probability')
+  }
+
+  // Data rows
+  const preds = evalResult.value.predictions || []
+  const probs = evalResult.value.probabilities || []
+  for (let i = 0; i < preds.length; i++) {
+    if (mode === 'regression') {
+      rows.push(`${i},${preds[i]}`)
+    } else {
+      const prob = probs[i] ? Math.max(...probs[i]).toFixed(4) : ''
+      rows.push(`${i},${preds[i]},${prob}`)
+    }
+  }
+
+  // Add summary section
+  rows.push('')
+  rows.push('--- Summary ---')
+  rows.push(`model,${modelName}`)
+  rows.push(`mode,${mode}`)
+  rows.push(`num_windows,${preds.length}`)
+
+  if (evalResult.value.new_metrics) {
+    rows.push('')
+    rows.push('--- Metrics ---')
+    for (const [key, val] of Object.entries(evalResult.value.new_metrics)) {
+      if (val != null && key !== 'test_samples') {
+        rows.push(`${key},${val}`)
+      }
+    }
+  }
+
+  if (evalResult.value.comparison) {
+    rows.push('')
+    rows.push('--- Comparison (Original vs New) ---')
+    rows.push('metric,original,new_data,diff')
+    for (const c of evalResult.value.comparison) {
+      rows.push(`${c.metric},${c.original ?? ''},${c.new_data ?? ''},${c.diff ?? ''}`)
+    }
+  }
+
+  // Download
+  const csv = rows.join('\n')
+  const blob = new Blob([csv], { type: 'text/csv' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `eval_${modelName.replace(/\s+/g, '_')}_${new Date().toISOString().slice(0,10)}.csv`
+  a.click()
+  URL.revokeObjectURL(url)
+  notificationStore.showSuccess('Evaluation results saved as CSV')
 }
 
 async function runRawEvaluation() {
