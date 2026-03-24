@@ -132,21 +132,11 @@ def replay_ml_pipeline(csv_path: str, pipeline_config: dict,
     label_col = None
 
     if mode == 'regression' and target_column and target_column in df.columns:
-        # Regression: use the target column as ground truth
+        # Regression: use the user-specified target column as ground truth
         label_col = target_column
     elif mode == 'regression':
-        # Regression fallback: try common names, then last numeric column
-        for candidate in ['target', 'label', 'y']:
-            if candidate in df.columns:
-                label_col = candidate
-                break
-        if not label_col:
-            # Use last numeric column not in sensor_columns as target
-            numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-            non_sensor = [c for c in numeric_cols if c not in sensor_columns
-                          and 'time' not in c.lower()]
-            if non_sensor:
-                label_col = non_sensor[-1]
+        # No target column specified — predictions only, no metrics
+        label_col = None
     else:
         # Classification/anomaly: look for label column
         for candidate in ['label', 'class', 'target', 'category']:

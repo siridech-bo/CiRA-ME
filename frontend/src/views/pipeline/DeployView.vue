@@ -908,6 +908,18 @@
           class="mb-2"
         />
 
+        <!-- Target column for regression -->
+        <v-text-field
+          v-if="evalModel?.mode === 'regression'"
+          v-model="evalTargetColumn"
+          label="Target column name in CSV (for R²/RMSE evaluation)"
+          :placeholder="evalModel?.pipeline_config?.target_column || 'e.g., Pressure_PSI'"
+          density="compact"
+          class="mb-2"
+          hint="Leave empty to show predictions only (no metrics)"
+          persistent-hint
+        />
+
         <div class="d-flex justify-end ga-2">
           <v-btn variant="text" @click="showEvalDialog = false">Cancel</v-btn>
           <v-btn
@@ -1049,6 +1061,7 @@ const evalModel = ref<any>(null)
 const evaluating = ref(false)
 const evalResult = ref<any>(null)
 const evalFile = ref<File | null>(null)
+const evalTargetColumn = ref('')
 const downloadingPackage = ref(false)
 
 // Saved devices (persisted in localStorage)
@@ -1194,6 +1207,9 @@ async function runRawEvaluation() {
     const formData = new FormData()
     formData.append('file', evalFile.value)
     formData.append('saved_model_id', String(evalModel.value.id))
+    if (evalTargetColumn.value) {
+      formData.append('target_column', evalTargetColumn.value)
+    }
 
     const response = await api.post('/api/training/evaluate-raw', formData, {
       headers: { 'Content-Type': 'multipart/form-data' }

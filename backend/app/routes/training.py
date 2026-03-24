@@ -958,6 +958,7 @@ def evaluate_raw_csv():
         return jsonify({'error': 'No file uploaded'}), 400
 
     model_id = request.form.get('saved_model_id')
+    target_column = request.form.get('target_column')
     if not model_id:
         return jsonify({'error': 'saved_model_id required'}), 400
 
@@ -966,6 +967,9 @@ def evaluate_raw_csv():
         return jsonify({'error': 'Saved model not found'}), 404
 
     pipeline_config = saved.get('pipeline_config', {})
+    # Pass user-specified target column for regression evaluation
+    if target_column:
+        pipeline_config = {**pipeline_config, 'target_column': target_column}
     if not pipeline_config or not pipeline_config.get('normalization'):
         return jsonify({
             'error': 'This model was saved without full pipeline config. '
