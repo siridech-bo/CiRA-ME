@@ -1375,10 +1375,14 @@
       <v-row v-if="pipelineStore.mode === 'regression' && trainingResult.metrics.scatter_data" class="mt-4">
         <v-col cols="12" md="6">
           <v-card variant="outlined" class="pa-4">
-            <h4 class="text-subtitle-2 font-weight-bold mb-3">
+            <h4 class="text-subtitle-2 font-weight-bold mb-1">
               <v-icon size="small" class="mr-1">mdi-chart-scatter-plot</v-icon>
               Predicted vs Actual
             </h4>
+            <div class="text-caption text-medium-emphasis mb-2">
+              {{ trainingResult.metrics.test_samples || trainingResult.metrics.scatter_data?.actual?.length || '?' }} test samples
+              <span v-if="trainingApproach === 'ti'"> | {{ trainingResult.metrics.pipeline === 'cira_features' ? 'CiRA ME features' : 'TI windowed data' }}</span>
+            </div>
             <svg viewBox="0 0 300 280" class="w-100" style="max-height: 280px;">
               <!-- Grid lines -->
               <line x1="50" y1="10" x2="50" y2="250" stroke="currentColor" stroke-opacity="0.2"/>
@@ -1432,7 +1436,7 @@
       <v-row v-if="pipelineStore.mode === 'regression' && trainingResult.metrics.timeseries_data" class="mt-4">
         <v-col cols="12">
           <v-card variant="outlined" class="pa-4">
-            <div class="d-flex align-center mb-3">
+            <div class="d-flex align-center mb-1">
               <h4 class="text-subtitle-2 font-weight-bold">
                 <v-icon size="small" class="mr-1">mdi-chart-line</v-icon>
                 Actual vs Predicted (Time Series)
@@ -1442,6 +1446,16 @@
                 <v-btn value="test" size="x-small">Test Only</v-btn>
                 <v-btn value="all" size="x-small">Train + Test</v-btn>
               </v-btn-toggle>
+            </div>
+            <div class="text-caption text-medium-emphasis mb-2">
+              {{ trainingResult.metrics.train_samples || trainingResult.metrics.timeseries_data?.train_actual?.length || '?' }} train /
+              {{ trainingResult.metrics.test_samples || trainingResult.metrics.timeseries_data?.test_actual?.length || '?' }} test windows
+              <template v-if="trainingApproach === 'ti'">
+                | <strong>{{ trainingResult.metrics.pipeline === 'cira_features' ? 'CiRA ME windowed features' : 'TI SimpleWindow (raw signal)' }}</strong>
+              </template>
+              <template v-else>
+                | CiRA ME windowed features
+              </template>
             </div>
             <div style="width: 100%; overflow-x: auto;">
               <svg :viewBox="`0 0 ${tsChartWidth} 220`" style="width: 100%; min-width: 500px; height: 220px;">
@@ -2474,7 +2488,7 @@ async function trainTiModel() {
             model_name: modelName,
             algorithm_name: modelInfo.name || modelName,
             status: 'success',
-            metrics: resp.data.metrics || {},
+            metrics: { ...(resp.data.metrics || {}), pipeline: 'cira_features' },
             source: 'traditional_ml',
           }],
           errors: [],
