@@ -826,7 +826,73 @@ CMD ["tail", "-f", "/dev/null"]
         mode = session['mode']
         algorithm = session['algorithm']
 
-        if mode == 'anomaly':
+        if mode == 'regression':
+            return f'''#!/usr/bin/env python3
+"""
+CiRA ME - Regression Inference Script
+Model: {algorithm}
+Generated: {datetime.utcnow().isoformat()}
+"""
+
+import pickle
+import numpy as np
+import sys
+
+def load_model(model_path):
+    """Load the trained model and scaler."""
+    with open(model_path, 'rb') as f:
+        data = pickle.load(f)
+    return data['model'], data['scaler']
+
+def predict(model, scaler, features):
+    """
+    Make regression predictions.
+
+    Args:
+        model: Trained regression model
+        scaler: StandardScaler for feature normalization
+        features: numpy array of shape (n_samples, n_features)
+
+    Returns:
+        predictions: Predicted continuous values
+    """
+    features_scaled = scaler.transform(features)
+    predictions = model.predict(features_scaled)
+    return predictions
+
+def main():
+    if len(sys.argv) < 3:
+        print("Usage: python inference.py <model_path> <data_path>")
+        sys.exit(1)
+
+    model_path = sys.argv[1]
+    data_path = sys.argv[2]
+
+    # Load model
+    model, scaler = load_model(model_path)
+
+    # Load data (CSV format expected)
+    import pandas as pd
+    data = pd.read_csv(data_path)
+    features = data.select_dtypes(include=[np.number]).values
+
+    # Predict
+    predictions = predict(model, scaler, features)
+
+    # Output results
+    for i, pred in enumerate(predictions):
+        print(f"Sample {{i}}: {{pred:.4f}}")
+
+    print(f"\\nPrediction statistics:")
+    print(f"  Mean:  {{np.mean(predictions):.4f}}")
+    print(f"  Std:   {{np.std(predictions):.4f}}")
+    print(f"  Min:   {{np.min(predictions):.4f}}")
+    print(f"  Max:   {{np.max(predictions):.4f}}")
+
+if __name__ == "__main__":
+    main()
+'''
+        elif mode == 'anomaly':
             return f'''#!/usr/bin/env python3
 """
 CiRA ME - Anomaly Detection Inference Script
@@ -1315,15 +1381,23 @@ def main():
     predictions, probabilities = predict(model, scaler, features)
 
     # Output results
-    for i, pred in enumerate(predictions):
-        line = f"Window {{i}}: {{pred}}"
-        if probabilities is not None:
-            conf = np.max(probabilities[i]) * 100
-            line += f" ({{conf:.1f}}%)"
-        print(line)
-
-    unique, counts = np.unique(predictions, return_counts=True)
-    print(f"\\nSummary: {{dict(zip(unique.tolist(), counts.tolist()))}}")
+    if MODE == "regression":
+        for i, pred in enumerate(predictions):
+            print(f"Window {{i}}: {{pred:.4f}}")
+        print(f"\\nPrediction statistics:")
+        print(f"  Mean:  {{np.mean(predictions):.4f}}")
+        print(f"  Std:   {{np.std(predictions):.4f}}")
+        print(f"  Min:   {{np.min(predictions):.4f}}")
+        print(f"  Max:   {{np.max(predictions):.4f}}")
+    else:
+        for i, pred in enumerate(predictions):
+            line = f"Window {{i}}: {{pred}}"
+            if probabilities is not None:
+                conf = np.max(probabilities[i]) * 100
+                line += f" ({{conf:.1f}}%)"
+            print(line)
+        unique, counts = np.unique(predictions, return_counts=True)
+        print(f"\\nSummary: {{dict(zip(unique.tolist(), counts.tolist()))}}")
 
 
 if __name__ == "__main__":

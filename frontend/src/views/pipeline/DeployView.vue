@@ -75,10 +75,7 @@
               <th>Name</th>
               <th>Algorithm</th>
               <th>Mode</th>
-              <th class="text-center">Accuracy</th>
-              <th class="text-center">Precision</th>
-              <th class="text-center">Recall</th>
-              <th class="text-center">F1</th>
+              <th class="text-center" colspan="3">Performance</th>
               <th>Date</th>
             </tr>
           </thead>
@@ -98,14 +95,20 @@
               <td class="font-weight-medium">{{ model.name }}</td>
               <td>{{ model.algorithm }}</td>
               <td>
-                <v-chip size="x-small" :color="model.mode === 'anomaly' ? 'warning' : 'info'" variant="tonal">
+                <v-chip size="x-small" :color="model.mode === 'anomaly' ? 'warning' : model.mode === 'regression' ? 'purple' : 'info'" variant="tonal">
                   {{ model.mode }}
                 </v-chip>
               </td>
-              <td class="text-center">{{ model.metrics?.accuracy != null ? (model.metrics.accuracy * 100).toFixed(1) + '%' : '-' }}</td>
-              <td class="text-center">{{ model.metrics?.precision != null ? (model.metrics.precision * 100).toFixed(1) + '%' : '-' }}</td>
-              <td class="text-center">{{ model.metrics?.recall != null ? (model.metrics.recall * 100).toFixed(1) + '%' : '-' }}</td>
-              <td class="text-center">{{ model.metrics?.f1 != null ? (model.metrics.f1 * 100).toFixed(1) + '%' : '-' }}</td>
+              <template v-if="model.mode === 'regression'">
+                <td class="text-center">{{ model.metrics?.r2 != null ? model.metrics.r2.toFixed(4) : '-' }}</td>
+                <td class="text-center">{{ model.metrics?.rmse != null ? model.metrics.rmse.toFixed(4) : '-' }}</td>
+                <td class="text-center">{{ model.metrics?.mae != null ? model.metrics.mae.toFixed(4) : '-' }}</td>
+              </template>
+              <template v-else>
+                <td class="text-center">{{ model.metrics?.accuracy != null ? (model.metrics.accuracy * 100).toFixed(1) + '%' : '-' }}</td>
+                <td class="text-center">{{ model.metrics?.precision != null ? (model.metrics.precision * 100).toFixed(1) + '%' : '-' }}</td>
+                <td class="text-center">{{ model.metrics?.recall != null ? (model.metrics.recall * 100).toFixed(1) + '%' : '-' }}</td>
+              </template>
               <td class="text-caption">{{ formatDate(model.created_at) }}</td>
             </tr>
           </tbody>
@@ -294,6 +297,16 @@
                   <div class="font-weight-medium" style="color: #FF5722;">CiRA CLAW Package</div>
                   <div class="text-caption text-medium-emphasis">
                     ONNX + manifest for CiRA CLAW C runtime
+                  </div>
+                </div>
+              </template>
+            </v-radio>
+            <v-radio value="ti_mcu">
+              <template #label>
+                <div>
+                  <div class="font-weight-medium" style="color: #E91E63;">TI MCU Package</div>
+                  <div class="text-caption text-medium-emphasis">
+                    C header + inference code for TMS320 (via emlearn/TI NN Compiler)
                   </div>
                 </div>
               </template>
@@ -1257,6 +1270,17 @@ async function exportOnly() {
 
   try {
     exporting.value = true
+
+    // TI MCU: download C code package from TI container
+    if (exportFormat.value === 'ti_mcu') {
+      if (!selectedSavedModelId.value) {
+        notificationStore.showError('TI MCU export requires a saved model')
+        return
+      }
+      // Train a small model in TI container to generate C code
+      notificationStore.showInfo('TI MCU export: Use the TI TinyML tab in Training to generate C code, then download from there.')
+      return
+    }
 
     // CiRA CLAW: download zip with model.onnx + manifest
     if (exportFormat.value === 'cira_claw') {
