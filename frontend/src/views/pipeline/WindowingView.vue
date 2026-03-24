@@ -897,9 +897,14 @@ const minSampleLength = computed(() =>
   pipelineStore.dataSession?.metadata?.min_sample_length || totalSamples.value
 )
 
-const sensorColumns = computed(() =>
-  pipelineStore.dataSession?.metadata?.sensor_columns || []
-)
+const sensorColumns = computed(() => {
+  const all = pipelineStore.dataSession?.metadata?.sensor_columns || []
+  const selected = pipelineStore.selectedColumns
+  if (selected.length > 0) {
+    return all.filter((c: string) => selected.includes(c))
+  }
+  return all
+})
 
 const sensorColumnCount = computed(() => sensorColumns.value.length)
 
