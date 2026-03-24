@@ -966,12 +966,18 @@ const sensorColumns = computed(() =>
 )
 
 // Available sensor columns for raw signal pass-through
-// Exclude the regression target column (it's what we're predicting, not an input)
+// Filter by selected columns from Data Source, exclude regression target
 const availableSensorColumns = computed(() => {
-  const cols = pipelineStore.dataSession?.metadata?.sensor_columns || []
+  const all = pipelineStore.dataSession?.metadata?.sensor_columns || []
+  const selected = pipelineStore.selectedColumns
   const target = pipelineStore.targetColumn
+
+  let cols = selected.length > 0
+    ? all.filter((c: string) => selected.includes(c))
+    : all
+
   if (target) {
-    return cols.filter((c: string) => c !== target)
+    cols = cols.filter((c: string) => c !== target)
   }
   return cols
 })
