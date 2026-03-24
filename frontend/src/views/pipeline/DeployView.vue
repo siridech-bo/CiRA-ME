@@ -217,68 +217,19 @@
         <v-card class="pa-4">
           <h3 class="text-subtitle-1 font-weight-bold mb-4">Target Device</h3>
 
-          <v-radio-group v-model="targetDevice">
-            <v-radio value="jetson_nano">
-              <template #label>
-                <div>
-                  <div class="font-weight-medium">NVIDIA Jetson Nano</div>
-                  <div class="text-caption text-medium-emphasis">
-                    4GB RAM, Maxwell GPU
-                  </div>
-                </div>
-              </template>
-            </v-radio>
-            <v-radio value="jetson_xavier">
-              <template #label>
-                <div>
-                  <div class="font-weight-medium">NVIDIA Jetson Xavier NX</div>
-                  <div class="text-caption text-medium-emphasis">
-                    8GB RAM, Volta GPU
-                  </div>
-                </div>
-              </template>
-            </v-radio>
-            <v-radio value="raspberry_pi">
-              <template #label>
-                <div>
-                  <div class="font-weight-medium">Raspberry Pi 4</div>
-                  <div class="text-caption text-medium-emphasis">
-                    ARM Cortex-A72
-                  </div>
-                </div>
-              </template>
-            </v-radio>
-            <v-radio value="rdk_x5">
-              <template #label>
-                <div>
-                  <div class="font-weight-medium">Horizon RDK X5</div>
-                  <div class="text-caption text-medium-emphasis">
-                    4GB RAM, BPU 10 TOPS
-                  </div>
-                </div>
-              </template>
-            </v-radio>
-            <v-radio value="ubuntu_x86">
-              <template #label>
-                <div>
-                  <div class="font-weight-medium">Ubuntu x86 PC</div>
-                  <div class="text-caption text-medium-emphasis">
-                    Any Linux x86_64 machine
-                  </div>
-                </div>
-              </template>
-            </v-radio>
-            <v-radio value="custom_ssh">
-              <template #label>
-                <div>
-                  <div class="font-weight-medium">Custom SSH Target</div>
-                  <div class="text-caption text-medium-emphasis">
-                    Any Linux device with SSH
-                  </div>
-                </div>
-              </template>
-            </v-radio>
-          </v-radio-group>
+          <v-select
+            v-model="targetDevice"
+            :items="[
+              { title: 'NVIDIA Jetson Nano (4GB, Maxwell GPU)', value: 'jetson_nano' },
+              { title: 'NVIDIA Jetson Xavier NX (8GB, Volta)', value: 'jetson_xavier' },
+              { title: 'Raspberry Pi 4 (ARM Cortex-A72)', value: 'raspberry_pi' },
+              { title: 'Horizon RDK X5 (4GB, BPU 10 TOPS)', value: 'rdk_x5' },
+              { title: 'Ubuntu x86 PC', value: 'ubuntu_x86' },
+              { title: 'Custom SSH Target', value: 'custom_ssh' },
+            ]"
+            variant="outlined"
+            density="compact"
+          />
         </v-card>
 
         <!-- Export Options -->
