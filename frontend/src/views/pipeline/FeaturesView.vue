@@ -944,9 +944,15 @@ const sensorColumns = computed(() =>
 )
 
 // Available sensor columns for raw signal pass-through
-const availableSensorColumns = computed(() =>
-  pipelineStore.dataSession?.metadata?.sensor_columns || []
-)
+// Exclude the regression target column (it's what we're predicting, not an input)
+const availableSensorColumns = computed(() => {
+  const cols = pipelineStore.dataSession?.metadata?.sensor_columns || []
+  const target = pipelineStore.targetColumn
+  if (target) {
+    return cols.filter((c: string) => c !== target)
+  }
+  return cols
+})
 
 // Custom feature toggle state
 const customSelectedFeatures = ref<string[]>([])
