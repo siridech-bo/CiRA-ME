@@ -576,17 +576,61 @@
                 <Bar :data="importanceChartData" :options="importanceChartOptions" />
               </div>
 
-              <!-- Selected Features List -->
-              <h4 class="text-subtitle-2 mb-2">Selected Features:</h4>
-              <div class="d-flex flex-wrap gap-2">
+              <!-- Selected Features List with Toggles -->
+              <div class="d-flex align-center mb-2">
+                <h4 class="text-subtitle-2">Selected Features:</h4>
+                <v-spacer />
+                <v-chip size="x-small" color="primary" variant="flat">
+                  {{ customSelectedFeatures.length }} / {{ selectionResult.selected_features.length }} active
+                </v-chip>
+              </div>
+              <div class="d-flex flex-wrap gap-1">
                 <v-chip
                   v-for="feat in selectionResult.selected_features"
                   :key="feat"
                   size="small"
-                  :color="getFeatureTypeColor(feat)"
-                  variant="tonal"
+                  :color="customSelectedFeatures.includes(feat) ? getFeatureTypeColor(feat) : 'grey'"
+                  :variant="customSelectedFeatures.includes(feat) ? 'tonal' : 'outlined'"
+                  style="cursor: pointer;"
+                  @click="toggleFeature(feat)"
                 >
+                  <v-icon v-if="customSelectedFeatures.includes(feat)" start size="x-small">mdi-check</v-icon>
+                  <v-icon v-else start size="x-small">mdi-close</v-icon>
                   {{ feat }}
+                </v-chip>
+              </div>
+              <div v-if="customSelectedFeatures.length < selectionResult.selected_features.length" class="text-caption text-warning mt-2">
+                {{ selectionResult.selected_features.length - customSelectedFeatures.length }} feature(s) excluded.
+                Click a greyed-out feature to re-include it.
+              </div>
+
+              <!-- Raw Signal Pass-through -->
+              <v-divider class="my-4" />
+              <div class="d-flex align-center mb-2">
+                <h4 class="text-subtitle-2">
+                  <v-icon size="small" class="mr-1">mdi-signal</v-icon>
+                  Include Raw Signals
+                </h4>
+                <v-spacer />
+                <v-chip v-if="rawSignalSelections.length > 0" size="x-small" color="purple" variant="flat">
+                  {{ rawSignalSelections.length }} raw signals
+                </v-chip>
+              </div>
+              <div class="text-caption text-medium-emphasis mb-2">
+                Add per-window mean of raw sensor columns as additional features.
+              </div>
+              <div class="d-flex flex-wrap gap-1">
+                <v-chip
+                  v-for="col in availableSensorColumns"
+                  :key="'raw-'+col"
+                  size="small"
+                  :color="rawSignalSelections.includes(col) ? 'purple' : 'grey'"
+                  :variant="rawSignalSelections.includes(col) ? 'tonal' : 'outlined'"
+                  style="cursor: pointer;"
+                  @click="toggleRawSignal(col)"
+                >
+                  <v-icon v-if="rawSignalSelections.includes(col)" start size="x-small">mdi-check</v-icon>
+                  {{ col }}
                 </v-chip>
               </div>
             </v-card>
@@ -644,7 +688,11 @@
             <v-card v-if="selectionResult" class="pa-4 mt-4">
               <h3 class="text-subtitle-1 font-weight-bold mb-4">Apply Selection</h3>
               <p class="text-caption text-medium-emphasis mb-4">
-                Create a reduced feature set with only the selected features for training.
+                Apply {{ customSelectedFeatures.length }} features
+                <template v-if="rawSignalSelections.length > 0">
+                  + {{ rawSignalSelections.length }} raw signal(s)
+                </template>
+                for training.
               </p>
               <v-btn
                 color="primary"
@@ -653,7 +701,7 @@
                 @click="applyFeatureSelection"
               >
                 <v-icon start>mdi-check</v-icon>
-                Apply Selection
+                Apply Selection ({{ customSelectedFeatures.length + rawSignalSelections.length }} total)
               </v-btn>
             </v-card>
           </v-col>
@@ -893,6 +941,41 @@ const dspFeatures = [
 
 const sensorColumns = computed(() =>
   pipelineStore.dataSession?.metadata?.sensor_columns?.length || 3
+)
+
+// Available sensor columns for raw signal pass-through
+const availableSensorColumns = computed(() =>
+  pipelineStore.dataSession?.metadata?.sensor_columns || []
+)
+
+// Custom feature toggle state
+const customSelectedFeatures = ref<string[]>([])
+const rawSignalSelections = ref<string[]>([])
+
+// Initialize custom selection when selectionResult changes
+watch(() => selectionResult.value, (newVal) => {
+  if (newVal?.selected_features) {
+    customSelectedFeatures.value = [...newVal.selected_features]
+  }
+})
+
+function toggleFeature(feat: string) {
+  const idx = customSelectedFeatures.value.indexOf(feat)
+  if (idx >= 0) {
+    customSelectedFeatures.value.splice(idx, 1)
+  } else {
+    customSelectedFeatures.value.push(feat)
+  }
+}
+
+function toggleRawSignal(col: string) {
+  const idx = rawSignalSelections.value.indexOf(col)
+  if (idx >= 0) {
+    rawSignalSelections.value.splice(idx, 1)
+  } else {
+    rawSignalSelections.value.push(col)
+  }
+}
 )
 
 const filteredTSFreshFeatures = computed(() =>
@@ -1234,13 +1317,15 @@ async function runLLMSelection() {
 }
 
 async function applyFeatureSelection() {
-  if (!selectionResult.value?.selected_features) return
+  if (!customSelectedFeatures.value.length) return
 
   try {
     applyingSelection.value = true
     const response = await api.post('/api/features/apply-selection', {
       session_id: extractionResult.value.session_id,
-      selected_features: selectionResult.value.selected_features
+      selected_features: customSelectedFeatures.value,
+      raw_signals: rawSignalSelections.value.length > 0 ? rawSignalSelections.value : undefined,
+      windowed_session_id: pipelineStore.windowedSession?.session_id || undefined,
     })
 
     appliedSelection.value = response.data

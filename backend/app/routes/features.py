@@ -463,15 +463,47 @@ def apply_feature_selection():
 
     session_id = data.get('session_id')
     selected_features = data.get('selected_features', [])
+    raw_signals = data.get('raw_signals', [])
+    windowed_session_id = data.get('windowed_session_id')
 
     if not session_id:
         return jsonify({'error': 'Session ID required'}), 400
 
-    if not selected_features:
-        return jsonify({'error': 'Selected features list required'}), 400
+    if not selected_features and not raw_signals:
+        return jsonify({'error': 'Selected features or raw signals required'}), 400
 
     try:
         extractor = FeatureExtractor()
+
+        # If raw signals requested, compute per-window stats and add to feature set
+        if raw_signals and windowed_session_id:
+            from ..services.data_loader import _data_sessions
+            windowed = _data_sessions.get(windowed_session_id)
+            if windowed and 'windows' in windowed:
+                import numpy as np
+                windows = windowed['windows']  # (n_windows, window_size, n_channels)
+                metadata = windowed.get('metadata', {})
+                sensor_cols = metadata.get('sensor_columns', [])
+
+                # Compute per-window mean for each selected raw signal
+                raw_feature_names = []
+                raw_feature_values = []
+                for sig_name in raw_signals:
+                    if sig_name in sensor_cols:
+                        ch_idx = sensor_cols.index(sig_name)
+                        if ch_idx < windows.shape[2]:
+                            means = windows[:, :, ch_idx].mean(axis=1)
+                            raw_feature_names.append(f'raw_mean_{sig_name}')
+                            raw_feature_values.append(means)
+
+                if raw_feature_names:
+                    # Add raw features to the feature session
+                    result = extractor.apply_selection_with_raw(
+                        session_id, selected_features,
+                        raw_feature_names, np.column_stack(raw_feature_values) if raw_feature_values else None
+                    )
+                    return jsonify(result)
+
         result = extractor.apply_selection(session_id, selected_features)
         return jsonify(result)
     except Exception as e:

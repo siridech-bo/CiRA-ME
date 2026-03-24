@@ -1332,3 +1332,72 @@ class FeatureExtractor:
             'selected_features': valid_features,
             'num_windows': len(reduced_df)
         }
+
+    def apply_selection_with_raw(
+        self,
+        feature_session_id: str,
+        selected_features: List[str],
+        raw_feature_names: List[str],
+        raw_feature_values: np.ndarray
+    ) -> Dict[str, Any]:
+        """Apply feature selection and append raw signal features.
+
+        Args:
+            feature_session_id: Original feature session ID
+            selected_features: List of DSP features to keep
+            raw_feature_names: Names for raw signal features (e.g. 'raw_mean_RPM')
+            raw_feature_values: Array (n_windows, n_raw_features)
+
+        Returns:
+            New feature session with selected + raw features
+        """
+        session = _feature_sessions.get(feature_session_id)
+        if not session:
+            raise ValueError(f"Feature session not found: {feature_session_id}")
+
+        features_df = session['features']
+        labels = session['labels']
+        categories = session.get('categories')
+
+        # Get valid DSP features
+        valid_features = [f for f in selected_features if f in features_df.columns]
+        reduced_df = features_df[valid_features].copy() if valid_features else pd.DataFrame()
+
+        # Append raw signal features
+        all_feature_names = list(valid_features)
+        if raw_feature_values is not None and len(raw_feature_names) > 0:
+            # Ensure same number of rows
+            if len(raw_feature_values) == len(reduced_df) or len(reduced_df) == 0:
+                for i, name in enumerate(raw_feature_names):
+                    if len(reduced_df) == 0:
+                        reduced_df = pd.DataFrame()
+                    reduced_df[name] = raw_feature_values[:, i] if raw_feature_values.ndim > 1 else raw_feature_values
+                    all_feature_names.append(name)
+
+        if not all_feature_names:
+            raise ValueError("No features selected")
+
+        # Create new session
+        new_session_id = f"selected_{feature_session_id}"
+        _feature_sessions[new_session_id] = {
+            'features': reduced_df,
+            'labels': labels,
+            'categories': categories,
+            'feature_names': all_feature_names,
+            'metadata': {
+                **session.get('metadata', {}),
+                'num_features': len(all_feature_names),
+                'original_session': feature_session_id,
+                'selection_applied': True,
+                'raw_signals_included': raw_feature_names,
+            }
+        }
+
+        return {
+            'session_id': new_session_id,
+            'num_features': len(all_feature_names),
+            'selected_features': all_feature_names,
+            'feature_names': all_feature_names,
+            'num_windows': len(reduced_df),
+            'raw_signals': raw_feature_names,
+        }
