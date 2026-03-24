@@ -1229,7 +1229,8 @@ class DataLoader:
         stride: int = 64,
         label_method: str = 'majority',
         test_ratio: float = 0.2,
-        target_column: str = None
+        target_column: str = None,
+        selected_columns: list = None
     ) -> Dict[str, Any]:
         """
         Apply windowing to loaded data, respecting sample boundaries.
@@ -1261,6 +1262,14 @@ class DataLoader:
         metadata = session['metadata']
 
         sensor_cols = list(metadata['sensor_columns'])
+
+        # Filter to user-selected columns if provided
+        if selected_columns:
+            sensor_cols = [c for c in sensor_cols if c in selected_columns]
+            if not sensor_cols:
+                raise ValueError("No valid sensor columns selected")
+            print(f"[DataLoader] Using {len(sensor_cols)} of {len(metadata['sensor_columns'])} columns: {sensor_cols}")
+
         label_col = metadata.get('label_column')
         has_sample_id = 'sample_id' in df.columns
         has_category = 'category' in df.columns

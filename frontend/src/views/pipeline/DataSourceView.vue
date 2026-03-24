@@ -344,6 +344,20 @@
         </v-chip>
       </div>
 
+      <!-- Column Selection Info -->
+      <div v-if="dataPreview.metadata.sensor_columns?.length" class="d-flex align-center mb-2">
+        <v-icon size="small" class="mr-1">mdi-table-column</v-icon>
+        <span class="text-caption text-medium-emphasis">
+          Click column headers to select/deselect signals for the pipeline.
+        </span>
+        <v-spacer />
+        <v-chip size="x-small" color="primary" variant="flat" class="mr-1">
+          {{ pipelineStore.selectedColumns.length }} / {{ dataPreview.metadata.sensor_columns.length }} sensors selected
+        </v-chip>
+        <v-btn size="x-small" variant="tonal" @click="selectAllColumns" class="mr-1">All</v-btn>
+        <v-btn size="x-small" variant="tonal" @click="selectNoColumns">None</v-btn>
+      </div>
+
       <v-data-table
         v-model:items-per-page="previewItemsPerPage"
         :headers="previewHeaders"
@@ -352,6 +366,24 @@
         density="compact"
         class="preview-table"
       >
+        <!-- Custom column headers with checkboxes for sensor columns -->
+        <template v-for="col in dataPreview.metadata.columns" :key="'header-'+col" #[`header.${col}`]="{ column }">
+          <div
+            v-if="isSensorColumn(col)"
+            class="d-flex align-center"
+            style="cursor: pointer;"
+            @click.stop="toggleColumn(col)"
+          >
+            <v-icon size="x-small" :color="pipelineStore.selectedColumns.includes(col) ? 'primary' : 'grey'" class="mr-1">
+              {{ pipelineStore.selectedColumns.includes(col) ? 'mdi-checkbox-marked' : 'mdi-checkbox-blank-outline' }}
+            </v-icon>
+            <span :style="{ opacity: pipelineStore.selectedColumns.includes(col) ? 1 : 0.4 }">
+              {{ column.title }}
+            </span>
+          </div>
+          <span v-else class="text-medium-emphasis">{{ column.title }}</span>
+        </template>
+
         <template #item.label="{ item }">
           <v-chip
             v-if="item.label"
@@ -1012,6 +1044,39 @@ const previewHeaders = computed(() => {
 })
 
 const canProceed = computed(() => !!dataPreview.value)
+
+// Initialize selected columns when data loads
+watch(() => dataPreview.value, (newVal) => {
+  if (newVal?.metadata?.sensor_columns && pipelineStore.selectedColumns.length === 0) {
+    pipelineStore.selectedColumns = [...newVal.metadata.sensor_columns]
+  }
+})
+
+function isSensorColumn(col: string): boolean {
+  return dataPreview.value?.metadata?.sensor_columns?.includes(col) || false
+}
+
+function toggleColumn(col: string) {
+  const cols = [...pipelineStore.selectedColumns]
+  const idx = cols.indexOf(col)
+  if (idx >= 0) {
+    if (cols.length <= 1) return // Must keep at least 1
+    cols.splice(idx, 1)
+  } else {
+    cols.push(col)
+  }
+  pipelineStore.selectedColumns = cols
+}
+
+function selectAllColumns() {
+  pipelineStore.selectedColumns = [...(dataPreview.value?.metadata?.sensor_columns || [])]
+}
+
+function selectNoColumns() {
+  // Keep at least 1 column
+  const sensors = dataPreview.value?.metadata?.sensor_columns || []
+  pipelineStore.selectedColumns = sensors.length > 0 ? [sensors[0]] : []
+}
 
 function getFileIcon(ext: string | null) {
   switch (ext) {

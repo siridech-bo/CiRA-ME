@@ -123,6 +123,9 @@ export const usePipelineStore = defineStore('pipeline', () => {
     selectionApplied: false
   })
 
+  // Column selection (which sensor columns to use)
+  const selectedColumns = ref<string[]>([])
+
   // Regression target column
   const targetColumn = ref<string | null>(null)
 
@@ -210,7 +213,8 @@ export const usePipelineStore = defineStore('pipeline', () => {
       const response = await api.post('/api/data/windowing', {
         session_id: dataSession.value.session_id,
         ...windowingConfig.value,
-        target_column: targetColumn.value || undefined
+        target_column: targetColumn.value || undefined,
+        selected_columns: selectedColumns.value.length > 0 ? selectedColumns.value : undefined
       })
 
       windowedSession.value = response.data
@@ -348,6 +352,7 @@ export const usePipelineStore = defineStore('pipeline', () => {
     selectedFeatures.value = []
     selectedAlgorithm.value = ''
     hyperparameters.value = {}
+    selectedColumns.value = []
     targetColumn.value = null
     customFeatureToggles.value = []
     rawSignals.value = []
@@ -434,6 +439,7 @@ export const usePipelineStore = defineStore('pipeline', () => {
     selectedFeatures,
     featureSession,
     selectedAlgorithm,
+    selectedColumns,
     targetColumn,
     customFeatureToggles,
     rawSignals,

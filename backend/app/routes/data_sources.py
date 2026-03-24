@@ -715,6 +715,7 @@ def apply_windowing():
     label_method = data.get('label_method', 'majority')
     test_ratio = data.get('test_ratio', 0.2)
     target_column = data.get('target_column')
+    selected_columns = data.get('selected_columns')
 
     if not session_id:
         return jsonify({'error': 'Session ID required'}), 400
@@ -727,7 +728,8 @@ def apply_windowing():
             stride=stride,
             label_method=label_method,
             test_ratio=test_ratio,
-            target_column=target_column
+            target_column=target_column,
+            selected_columns=selected_columns
         )
         return jsonify(result)
     except Exception as e:
