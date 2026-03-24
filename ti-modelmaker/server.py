@@ -1056,43 +1056,44 @@ def _run_ti_inference(project_dir, dataset_path, config):
 
         print(f"[TI Inference] ONNX input: {input_shape}, channels={n_channels}, frame={frame_size}")
 
-        # Load test data — use ALL numeric columns (TI uses last as target)
-        def _load_segments(list_path):
-            if not os.path.exists(list_path):
-                return np.array([]), np.array([])
-            with open(list_path) as f:
-                filenames = [l.strip() for l in f if l.strip()]
-            all_x, all_y = [], []
-            for fname in filenames:
-                fpath = os.path.join(files_dir, fname)
-                if not os.path.exists(fpath):
-                    continue
-                data = pd.read_csv(fpath, header=None).values.astype(np.float32)
-                if data.shape[1] < 2:
-                    continue
-                # TI uses first n_channels columns as input, last column as target
-                x_cols = data[:, :n_channels]
-                y_col = data[:, -1]
-                stride = max(1, frame_size // 2)
-                n_windows = max(0, (len(data) - frame_size) // stride + 1)
-                for i in range(n_windows):
-                    start = i * stride
-                    end = start + frame_size
-                    window = x_cols[start:end]  # shape: (frame_size, n_channels)
-                    all_x.append(window)
-                    all_y.append(float(np.mean(y_col[start:end])))
-            if not all_x:
-                return np.array([]), np.array([])
-            return np.array(all_x, dtype=np.float32), np.array(all_y, dtype=np.float32)
+        # Load ORIGINAL CSV as continuous data (no segment boundaries)
+        # This produces smooth graphs without step artifacts
+        df_orig = pd.read_csv(dataset_path)
+        # Remove time columns
+        cols = [c for c in df_orig.columns if 'time' not in c.lower()
+                and 'date' not in c.lower() and 'index' not in c.lower()]
+        df_orig = df_orig[cols].select_dtypes(include=[np.number])
+        data_all = df_orig.values.astype(np.float32)
 
-        X_test, y_test = _load_segments(val_list_path)
-        X_train, y_train = _load_segments(train_list_path)
+        x_all = data_all[:, :n_channels]
+        y_all = data_all[:, -1]
 
-        if len(X_test) == 0:
-            print("[TI Inference] No test data loaded")
+        # Create continuous windows
+        stride = max(1, frame_size // 2)
+        all_x, all_y = [], []
+        for i in range(max(0, (len(data_all) - frame_size) // stride + 1)):
+            start = i * stride
+            end = start + frame_size
+            all_x.append(x_all[start:end])
+            all_y.append(float(np.mean(y_all[start:end])))
+
+        if not all_x:
             return None
 
-        print(f"[TI Inference] Loaded {len(X_test)} test, {len(X_train)} train windows")
+        X_all = np.array(all_x, dtype=np.float32)
+        y_all_windows = np.array(all_y, dtype=np.float32)
+
+        # Split into train/test (80/20 temporal)
+        n_total = len(X_all)
+        n_train = int(n_total * 0.8)
+        X_train, X_test = X_all[:n_train], X_all[n_train:]
+        y_train, y_test = y_all_windows[:n_train], y_all_windows[n_train:]
+
+        if len(X_test) == 0:
+            print("[TI Inference] No test data")
+            return None
+
+        print(f"[TI Inference] Continuous windows: {len(X_train)} train, {len(X_test)} test")
 
         # Reshape: (N, frame_size, n_channels) → (N, n_channels, frame_size, 1) for TI model
         def _reshape_for_model(X):
