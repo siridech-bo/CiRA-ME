@@ -184,78 +184,13 @@
     </v-card>
 
     <v-row>
-      <!-- Target Device -->
-      <v-col cols="12" md="6">
+      <!-- Step 1: Export Format -->
+      <v-col cols="12" md="5">
         <v-card class="pa-4">
-          <h3 class="text-subtitle-1 font-weight-bold mb-4">Target Device</h3>
-
-          <v-radio-group v-model="targetDevice">
-            <v-radio value="jetson_nano">
-              <template #label>
-                <div>
-                  <div class="font-weight-medium">NVIDIA Jetson Nano</div>
-                  <div class="text-caption text-medium-emphasis">
-                    4GB RAM, Maxwell GPU
-                  </div>
-                </div>
-              </template>
-            </v-radio>
-            <v-radio value="jetson_xavier">
-              <template #label>
-                <div>
-                  <div class="font-weight-medium">NVIDIA Jetson Xavier NX</div>
-                  <div class="text-caption text-medium-emphasis">
-                    8GB RAM, Volta GPU
-                  </div>
-                </div>
-              </template>
-            </v-radio>
-            <v-radio value="raspberry_pi">
-              <template #label>
-                <div>
-                  <div class="font-weight-medium">Raspberry Pi 4</div>
-                  <div class="text-caption text-medium-emphasis">
-                    ARM Cortex-A72
-                  </div>
-                </div>
-              </template>
-            </v-radio>
-            <v-radio value="rdk_x5">
-              <template #label>
-                <div>
-                  <div class="font-weight-medium">Horizon RDK X5</div>
-                  <div class="text-caption text-medium-emphasis">
-                    4GB RAM, BPU 10 TOPS
-                  </div>
-                </div>
-              </template>
-            </v-radio>
-            <v-radio value="ubuntu_x86">
-              <template #label>
-                <div>
-                  <div class="font-weight-medium">Ubuntu x86 PC</div>
-                  <div class="text-caption text-medium-emphasis">
-                    Any Linux x86_64 machine
-                  </div>
-                </div>
-              </template>
-            </v-radio>
-            <v-radio value="custom_ssh">
-              <template #label>
-                <div>
-                  <div class="font-weight-medium">Custom SSH Target</div>
-                  <div class="text-caption text-medium-emphasis">
-                    Any Linux device with SSH
-                  </div>
-                </div>
-              </template>
-            </v-radio>
-          </v-radio-group>
-        </v-card>
-
-        <!-- Export Options -->
-        <v-card class="pa-4 mt-4">
-          <h3 class="text-subtitle-1 font-weight-bold mb-4">Export Options</h3>
+          <h3 class="text-subtitle-1 font-weight-bold mb-4">
+            <v-icon start size="small">mdi-package-variant</v-icon>
+            Step 1: Export Format
+          </h3>
 
           <v-radio-group v-model="exportFormat">
             <v-radio value="onnx">
@@ -313,42 +248,77 @@
             </v-radio>
           </v-radio-group>
 
-          <v-divider class="my-4" />
-
-          <div class="text-subtitle-2 font-weight-medium mb-2">Deploy Mode</div>
-          <v-btn-toggle v-model="deployMode" mandatory density="compact" class="mb-3">
-            <v-btn value="docker" size="small">
-              <v-icon start size="small">mdi-docker</v-icon>
-              Docker Container
-            </v-btn>
-            <v-btn value="files" size="small">
-              <v-icon start size="small">mdi-file-code</v-icon>
-              Python Files
-            </v-btn>
-          </v-btn-toggle>
-          <v-alert
-            v-if="deployMode === 'docker'"
-            type="info" variant="tonal" density="compact" class="mb-3 text-caption"
-          >
-            Requires Docker on the remote device. Transfers Dockerfile, model, and
-            inference script, then runs <code>docker build</code> +
-            <code>docker run</code> on the remote.
-          </v-alert>
-          <v-alert
-            v-else
-            type="info" variant="tonal" density="compact" class="mb-3 text-caption"
-          >
-            Transfers <code>model.pkl</code> and <code>inference.py</code> directly.
-            Run on the remote with:
-            <code>python3 inference.py model.pkl data.csv</code>
-          </v-alert>
         </v-card>
       </v-col>
 
-      <!-- SSH Configuration -->
-      <v-col cols="12" md="6">
+      <!-- Step 2: Deploy Target -->
+      <v-col cols="12" md="7">
         <v-card class="pa-4">
-          <h3 class="text-subtitle-1 font-weight-bold mb-4">SSH Configuration</h3>
+          <h3 class="text-subtitle-1 font-weight-bold mb-4">
+            <v-icon start size="small">mdi-rocket-launch</v-icon>
+            Step 2: Deploy Target
+          </h3>
+
+          <v-radio-group v-model="deployTarget" hide-details class="mb-4">
+            <v-radio value="download">
+              <template #label>
+                <div>
+                  <div class="font-weight-medium">Download to PC</div>
+                  <div class="text-caption text-medium-emphasis">
+                    Download model package as zip file
+                  </div>
+                </div>
+              </template>
+            </v-radio>
+            <v-radio value="ssh">
+              <template #label>
+                <div>
+                  <div class="font-weight-medium">Deploy via SSH</div>
+                  <div class="text-caption text-medium-emphasis">
+                    Transfer and run on remote device
+                  </div>
+                </div>
+              </template>
+            </v-radio>
+          </v-radio-group>
+
+          <!-- SSH options (only when SSH selected) -->
+          <v-expand-transition>
+            <div v-if="deployTarget === 'ssh'">
+              <v-divider class="mb-4" />
+
+              <!-- Target device -->
+              <div class="text-subtitle-2 font-weight-medium mb-2">Target Device</div>
+              <v-select
+                v-model="targetDevice"
+                :items="[
+                  { title: 'NVIDIA Jetson Nano (4GB, Maxwell GPU)', value: 'jetson_nano' },
+                  { title: 'NVIDIA Jetson Xavier NX (8GB, Volta)', value: 'jetson_xavier' },
+                  { title: 'Raspberry Pi 4 (ARM Cortex-A72)', value: 'raspberry_pi' },
+                  { title: 'Horizon RDK X5 (4GB, BPU 10 TOPS)', value: 'rdk_x5' },
+                  { title: 'Ubuntu x86 PC', value: 'ubuntu_x86' },
+                  { title: 'Custom SSH Target', value: 'custom_ssh' },
+                ]"
+                variant="outlined"
+                density="compact"
+                class="mb-3"
+              />
+
+              <!-- Deploy mode -->
+              <div class="text-subtitle-2 font-weight-medium mb-2">Deploy Mode</div>
+              <v-btn-toggle v-model="deployMode" mandatory density="compact" class="mb-4">
+                <v-btn value="docker" size="small">
+                  <v-icon start size="small">mdi-docker</v-icon>
+                  Docker
+                </v-btn>
+                <v-btn value="files" size="small">
+                  <v-icon start size="small">mdi-file-code</v-icon>
+                  Files Only
+                </v-btn>
+              </v-btn-toggle>
+
+              <!-- SSH Config -->
+              <div class="text-subtitle-2 font-weight-medium mb-2">SSH Connection</div>
 
           <!-- Saved Devices -->
           <div v-if="savedDevices.length > 0" class="mb-4">
@@ -825,31 +795,28 @@
         Back
       </v-btn>
 
-      <div>
-        <v-btn
-          color="secondary"
-          size="large"
-          class="mr-2"
-          variant="outlined"
-          @click="exportOnly"
-          :loading="exporting"
-          :disabled="!hasModelSelected"
-        >
-          <v-icon start>mdi-download</v-icon>
-          Export Only
-        </v-btn>
-
-        <v-btn
-          color="primary"
-          size="large"
-          :loading="deploying"
-          :disabled="!canDeploy"
-          @click="deploy"
-        >
-          <v-icon start>mdi-rocket-launch</v-icon>
-          Deploy Now
-        </v-btn>
-      </div>
+      <v-btn
+        v-if="deployTarget === 'download'"
+        color="primary"
+        size="large"
+        :loading="exporting"
+        :disabled="!hasModelSelected"
+        @click="exportOnly"
+      >
+        <v-icon start>mdi-download</v-icon>
+        Download Package
+      </v-btn>
+      <v-btn
+        v-else
+        color="primary"
+        size="large"
+        :loading="deploying"
+        :disabled="!canDeploy"
+        @click="deploy"
+      >
+        <v-icon start>mdi-rocket-launch</v-icon>
+        Deploy to Device
+      </v-btn>
     </div>
 
     <!-- Test with New Data Dialog -->
@@ -1000,6 +967,7 @@ const selectedSavedModelId = ref<number | null>(null)
 const loadingSavedModels = ref(false)
 
 // Deploy config
+const deployTarget = ref<'download' | 'ssh'>('download')
 const targetDevice = ref('jetson_nano')
 const exportFormat = ref('onnx')
 const deployMode = ref<'docker' | 'files'>('docker')
