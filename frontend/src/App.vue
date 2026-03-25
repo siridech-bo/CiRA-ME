@@ -136,6 +136,14 @@
           :to="{ name: 'melab' }"
           rounded="lg"
         />
+
+        <v-list-item
+          prepend-icon="mdi-view-dashboard-variant"
+          title="App Builder"
+          value="app-builder"
+          :to="{ name: 'app-builder' }"
+          rounded="lg"
+        />
       </v-list>
 
       <template #append>

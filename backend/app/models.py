@@ -137,6 +137,25 @@ def init_db(db_path: str):
             )
         ''')
 
+        # App Builder: apps
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS app_builder_apps (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                name TEXT NOT NULL DEFAULT 'Untitled App',
+                slug TEXT UNIQUE,
+                status TEXT NOT NULL DEFAULT 'draft',
+                access TEXT NOT NULL DEFAULT 'private',
+                nodes TEXT NOT NULL DEFAULT '[]',
+                edges TEXT NOT NULL DEFAULT '[]',
+                calls INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT,
+                published_at TEXT,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+        ''')
+
         # Create default admin user if not exists
         cursor.execute('SELECT id FROM users WHERE username = ?', ('admin',))
         if not cursor.fetchone():
@@ -663,3 +682,131 @@ class MeLabApiKey:
             )
             conn.commit()
             return cursor.rowcount > 0
+
+
+class AppBuilderApp:
+    """App Builder app operations."""
+
+    @staticmethod
+    def create(user_id, name='Untitled App', nodes=None, edges=None, access='private'):
+        import json
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO app_builder_apps (user_id, name, nodes, edges, access, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (
+                user_id, name,
+                json.dumps(nodes or []),
+                json.dumps(edges or []),
+                access,
+                datetime.utcnow().isoformat()
+            ))
+            conn.commit()
+            return cursor.lastrowid
+
+    @staticmethod
+    def get_by_id(app_id):
+        import json
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM app_builder_apps WHERE id = ?', (app_id,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            d = dict(row)
+            for k in ('nodes', 'edges'):
+                if d.get(k) and isinstance(d[k], str):
+                    try: d[k] = json.loads(d[k])
+                    except: pass
+            return d
+
+    @staticmethod
+    def get_all(user_id):
+        import json
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT * FROM app_builder_apps WHERE user_id = ? ORDER BY updated_at DESC, created_at DESC',
+                (user_id,)
+            )
+            results = []
+            for row in cursor.fetchall():
+                d = dict(row)
+                for k in ('nodes', 'edges'):
+                    if d.get(k) and isinstance(d[k], str):
+                        try: d[k] = json.loads(d[k])
+                        except: pass
+                results.append(d)
+            return results
+
+    @staticmethod
+    def update(app_id, **kwargs):
+        import json
+        with get_db() as conn:
+            cursor = conn.cursor()
+            allowed_fields = ['name', 'nodes', 'edges', 'access', 'status', 'slug',
+                              'published_at']
+            updates = {}
+            for k, v in kwargs.items():
+                if k in allowed_fields:
+                    if k in ('nodes', 'edges') and isinstance(v, (list, dict)):
+                        updates[k] = json.dumps(v)
+                    else:
+                        updates[k] = v
+            updates['updated_at'] = datetime.utcnow().isoformat()
+            if updates:
+                set_clause = ', '.join(f'{k} = ?' for k in updates.keys())
+                cursor.execute(
+                    f'UPDATE app_builder_apps SET {set_clause} WHERE id = ?',
+                    (*updates.values(), app_id)
+                )
+                conn.commit()
+
+    @staticmethod
+    def delete(app_id, user_id):
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'DELETE FROM app_builder_apps WHERE id = ? AND user_id = ?',
+                (app_id, user_id)
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    @staticmethod
+    def get_by_slug(slug):
+        import json
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM app_builder_apps WHERE slug = ?', (slug,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            d = dict(row)
+            for k in ('nodes', 'edges'):
+                if d.get(k) and isinstance(d[k], str):
+                    try: d[k] = json.loads(d[k])
+                    except: pass
+            return d
+
+    @staticmethod
+    def publish(app_id, slug):
+        with get_db() as conn:
+            cursor = conn.cursor()
+            now = datetime.utcnow().isoformat()
+            cursor.execute(
+                'UPDATE app_builder_apps SET status=?, slug=?, published_at=?, updated_at=? WHERE id=?',
+                ('published', slug, now, now, app_id)
+            )
+            conn.commit()
+
+    @staticmethod
+    def increment_calls(app_id):
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'UPDATE app_builder_apps SET calls = calls + 1 WHERE id = ?',
+                (app_id,)
+            )
+            conn.commit()

@@ -48,6 +48,7 @@ def create_app(config=None):
     from .routes.sensor_recording import sensor_bp
     from .routes.ti_tinyml import ti_bp
     from .routes.melab import melab_bp
+    from .routes.app_builder import app_builder_bp
 
     app.register_blueprint(auth_bp, url_prefix='/api/auth')
     app.register_blueprint(admin_bp, url_prefix='/api/admin')
@@ -58,6 +59,7 @@ def create_app(config=None):
     app.register_blueprint(sensor_bp, url_prefix='/api/sensors')
     app.register_blueprint(ti_bp, url_prefix='/api/ti')
     app.register_blueprint(melab_bp, url_prefix='/api/melab')
+    app.register_blueprint(app_builder_bp, url_prefix='/api/app-builder')
 
     # Health check endpoint
     @app.route('/api/health')

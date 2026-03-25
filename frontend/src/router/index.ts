@@ -63,6 +63,18 @@ const router = createRouter({
       meta: { requiresAuth: true }
     },
     {
+      path: '/app-builder',
+      name: 'app-builder',
+      component: () => import('@/views/AppBuilderListView.vue'),
+      meta: { requiresAuth: true }
+    },
+    {
+      path: '/app-builder/:id',
+      name: 'app-builder-editor',
+      component: () => import('@/views/AppBuilderEditorView.vue'),
+      meta: { requiresAuth: true }
+    },
+    {
       path: '/admin',
       name: 'admin',
       component: () => import('@/views/AdminView.vue'),
