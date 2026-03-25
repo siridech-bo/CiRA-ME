@@ -1567,20 +1567,141 @@ def convert_model_to_c():
         logs = []
         artifacts = _export_emlearn(model, safe_name, feature_names, project_dir, logs)
 
-        # Create zip
+        # Create zip with CCS project template
         zip_path = os.path.join(project_dir, 'ti_mcu_package.zip')
-        with __import__('zipfile').ZipFile(zip_path, 'w') as zf:
+        import zipfile as _zf
+        template_dir = '/app/ccs_templates'
+
+        with _zf.ZipFile(zip_path, 'w', _zf.ZIP_DEFLATED) as zf:
+            # 1. Model artifacts (C header, inference.c, model_info.json)
             for art in artifacts:
                 fpath = os.path.join(project_dir, art['file'])
                 if os.path.exists(fpath):
-                    zf.write(fpath, art['file'])
-            zf.writestr('README.txt',
-                f'CiRA ME - TI MCU C Code Package\n'
-                f'================================\n\n'
-                f'Model: {algorithm} ({model_class})\n'
-                f'Mode: {mode}\n'
-                f'Features: {len(feature_names)}\n\n'
-                f'Files:\n')
+                    zf.write(fpath, f'model/{art["file"]}')
+
+            # 2. CCS template main.c (customized with model header name)
+            template_main = os.path.join(template_dir, 'common', 'cira_main.c')
+            if os.path.exists(template_main):
+                with open(template_main, 'r') as f:
+                    main_c = f.read()
+                # Replace model header include and feature count
+                header_file = next((a['file'] for a in artifacts if a['file'].endswith('_model.h')), 'cira_model.h')
+                main_c = main_c.replace('#include "cira_model.h"', f'#include "{header_file}"')
+                main_c = main_c.replace('cira_model_predict', f'{safe_name}_model_predict')
+                main_c = main_c.replace('#define MODEL_NUM_FEATURES      6',
+                                       f'#define MODEL_NUM_FEATURES      {len(feature_names)}')
+                zf.writestr('src/cira_main.c', main_c)
+
+            # 3. Serial test tool
+            test_py = os.path.join(template_dir, 'common', 'cira_serial_test.py')
+            if os.path.exists(test_py):
+                zf.write(test_py, 'tools/cira_serial_test.py')
+
+            # 4. Feature names list (for reference)
+            zf.writestr('model/feature_names.txt',
+                '\n'.join(feature_names) + '\n')
+
+            # 5. Comprehensive README
+            artifact_list = '\n'.join(f'    {a["file"]:30s} ({a.get("size_kb", 0):.1f} KB)' for a in artifacts)
+            readme = f"""CiRA ME - TI MCU Deployment Package
+====================================
+
+Model:    {algorithm} ({model_class})
+Mode:     {mode}
+Features: {len(feature_names)}
+
+Package Contents
+----------------
+model/
+{artifact_list}
+    feature_names.txt              Feature names reference
+
+src/
+    cira_main.c                    Template firmware (SCI UART + inference loop)
+
+tools/
+    cira_serial_test.py            Python serial test tool
+
+
+Step-by-Step: Deploy to TI C2000 LaunchPad
+-------------------------------------------
+
+PREREQUISITES:
+  - Code Composer Studio (CCS): https://www.ti.com/tool/CCSTUDIO
+  - C2000Ware: https://www.ti.com/tool/C2000WARE
+  - TI C2000 LaunchPad connected via USB
+
+STEP 1: Create CCS Project (one-time setup)
+  1. Open CCS
+  2. File > New > CCS Project
+  3. Target: Select your device (e.g., TMS320F28379D or TMS320F280049C)
+  4. Connection: "Texas Instruments XDS110 USB Debug Probe"
+  5. Project name: "cira_inference"
+  6. Compiler: TI v22.6+ (C2000)
+  7. Click Finish
+
+STEP 2: Configure Project
+  1. Right-click project > Properties
+  2. Build > C2000 Compiler > Include Options
+     Add: ${{C2000WARE}}/driverlib/f2837xd/driverlib (adjust for your device)
+  3. Build > C2000 Compiler > Processor Options
+     Set: Float point support = fpu32
+  4. Build > C2000 Linker > File Search Path
+     Add: ${{C2000WARE}}/driverlib/f2837xd/driverlib/ccs/Debug/driverlib.lib
+
+STEP 3: Add Files
+  1. Copy model/{header_file} into your CCS project folder
+  2. Copy src/cira_main.c into your CCS project folder
+  3. In CCS: right-click project > Add Files, select both files
+  4. Remove the auto-generated main.c (if any)
+
+STEP 4: Build and Flash
+  1. Click the Debug button (bug icon) in CCS toolbar
+  2. CCS will compile, link, and flash the firmware
+  3. Click Run (green play button) to start execution
+  4. The MCU will print "=== CiRA ME Inference Engine ===" on the serial port
+
+STEP 5: Test via Serial
+  Option A - Python test tool:
+    pip install pyserial numpy
+    python tools/cira_serial_test.py --port COM5 --interactive --features {len(feature_names)}
+
+  Option B - Manual serial terminal (115200 baud, 8N1):
+    Send: 0xAA followed by feature count byte and float32 features
+    Receive: 0xBB followed by float32 prediction and uint32 inference time (us)
+
+STEP 6: Update Model (when you retrain)
+  1. Export new model from CiRA ME (TI MCU Package)
+  2. Replace model/{header_file} in your CCS project
+  3. Rebuild and reflash (Step 4)
+  4. No other changes needed - same firmware, new model weights
+
+
+Feature Names (input order)
+----------------------------
+{chr(10).join(f'  [{i}] {name}' for i, name in enumerate(feature_names))}
+
+
+Serial Protocol Reference
+---------------------------
+Inference request:
+  PC -> MCU: [0xAA] [num_features:uint8] [feature_1:float32] ... [feature_N:float32]
+  MCU -> PC: [0xBB] [prediction:float32] [inference_time_us:uint32]
+
+Ping (check connection):
+  PC -> MCU: [0x01]
+  MCU -> PC: [0x01] "CiRA-ME-OK\\r\\n"
+
+Model info:
+  PC -> MCU: [0x02]
+  MCU -> PC: [0xCC] "CiRA ME Inference Engine\\r\\n" ...
+
+All multi-byte values are little-endian.
+
+
+Generated by CiRA ME v1.0.0
+"""
+            zf.writestr('README.txt', readme)
 
         return send_file(zip_path, as_attachment=True,
             download_name=f'ti_mcu_{safe_name}.zip')
