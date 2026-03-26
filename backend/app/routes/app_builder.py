@@ -413,7 +413,25 @@ def run_app(slug):
                 logger.info(f"[AppBuilder] After windowing: shape={current_data.shape}")
 
             elif ntype == 'transform.normalize':
-                current_data = _apply_normalization(current_data, params)
+                # Try to get normalization params from the model's pipeline_config
+                norm_params = dict(params)
+                for n2 in ordered_nodes:
+                    if n2.get('type', '').startswith('model.endpoint.'):
+                        eid = n2['type'].replace('model.endpoint.', '')
+                        ep = MeLabEndpoint.get_by_id(eid)
+                        if ep:
+                            saved = SavedModel.get_by_id(ep.get('saved_model_id'))
+                            if saved:
+                                pc = saved.get('pipeline_config', {})
+                                if isinstance(pc, str):
+                                    pc = json.loads(pc) if pc else {}
+                                model_norm = pc.get('normalization', {})
+                                if model_norm and model_norm.get('channel_min'):
+                                    norm_params['_model_norm'] = model_norm
+                                    norm_params['_sensor_columns'] = column_names
+                                    logger.info(f"[AppBuilder] Using model normalization params")
+                        break
+                current_data = _apply_normalization(current_data, norm_params)
                 logger.info(f"[AppBuilder] After normalize: shape={current_data.shape}")
 
             elif ntype == 'transform.fill_missing':
@@ -679,29 +697,57 @@ def _apply_fill_missing(data, params):
 
 
 def _apply_normalization(data, params):
-    """Apply normalization to data."""
-    method = params.get('method', 'zscore')
+    """Apply normalization to data.
+    If _model_norm is provided, use the training normalization params
+    (channel_min/channel_max) for consistency with how the model was trained.
+    """
+    import pandas as pd
+    if isinstance(data, pd.DataFrame):
+        data = data.select_dtypes(include=[np.number]).values
 
     if not isinstance(data, np.ndarray):
         data = np.array(data, dtype=np.float64)
 
+    # Use model's training normalization if available
+    model_norm = params.get('_model_norm')
+    if model_norm:
+        channel_min = np.array(model_norm.get('channel_min', []), dtype=np.float64)
+        channel_max = np.array(model_norm.get('channel_max', []), dtype=np.float64)
+        sensor_cols = model_norm.get('sensor_columns', [])
+        input_cols = params.get('_sensor_columns', [])
+
+        if len(channel_min) > 0 and len(channel_max) > 0:
+            # Map model's normalization to input data columns
+            # The model's sensor_columns may be a subset of input columns
+            n_cols = data.shape[-1] if data.ndim >= 2 else 1
+            d_min = np.zeros(n_cols)
+            d_max = np.ones(n_cols)
+
+            for i, col in enumerate(input_cols):
+                if col in sensor_cols:
+                    idx = sensor_cols.index(col)
+                    if idx < len(channel_min):
+                        d_min[i] = channel_min[idx]
+                        d_max[i] = channel_max[idx]
+
+            denom = d_max - d_min
+            denom[denom == 0] = 1.0
+            logger.info(f"[AppBuilder] Applying model normalization: min={d_min[:3]}..., max={d_max[:3]}...")
+            return (data - d_min) / denom
+
+    # Fallback: compute normalization from data
+    method = params.get('method', 'zscore')
     if method == 'minmax':
-        d_min = data.min(axis=0) if data.ndim <= 2 else data.min(axis=-2)
-        d_max = data.max(axis=0) if data.ndim <= 2 else data.max(axis=-2)
+        d_min = data.min(axis=0)
+        d_max = data.max(axis=0)
         denom = d_max - d_min
         denom[denom == 0] = 1.0
-        if data.ndim <= 2:
-            return (data - d_min) / denom
-        else:
-            return (data - d_min[:, np.newaxis, :]) / denom[:, np.newaxis, :]
+        return (data - d_min) / denom
     else:  # zscore
-        mean = data.mean(axis=0) if data.ndim <= 2 else data.mean(axis=-2)
-        std = data.std(axis=0) if data.ndim <= 2 else data.std(axis=-2)
+        mean = data.mean(axis=0)
+        std = data.std(axis=0)
         std[std == 0] = 1.0
-        if data.ndim <= 2:
-            return (data - mean) / std
-        else:
-            return (data - mean[:, np.newaxis, :]) / std[:, np.newaxis, :]
+        return (data - mean) / std
 
 
 def _apply_feature_extraction(data, params):
