@@ -316,7 +316,9 @@
                 @update:model-value="v => updateConfig(selectedNode.id, field.key, v)"
                 variant="outlined"
                 density="compact"
-                hide-details
+                :hide-details="!(field.key === 'target_column' && targetColumnHint)"
+                :hint="field.key === 'target_column' ? targetColumnHint : ''"
+                :persistent-hint="field.key === 'target_column'"
                 class="config-input"
               />
 
@@ -851,6 +853,30 @@ const chartSx = (i) => (i / 39) * (chartW - 30) + 15
 const chartSy = (v) => chartH - 8 - ((v - chartMinY) / (chartMaxY - chartMinY)) * (chartH - 16)
 const chartPathD = chartPts.map((v, i) => `${i === 0 ? 'M' : 'L'}${chartSx(i)},${chartSy(v)}`).join(' ')
 const chartAreaD = `${chartPathD} L${chartSx(39)},${chartH} L${chartSx(0)},${chartH} Z`
+
+// Target column hint: derive from model's sensor columns
+const targetColumnHint = computed(() => {
+  const modelNode = nodes.value.find(n => n.type.startsWith('model.endpoint.'))
+  if (!modelNode) return ''
+  const cap = capabilities.value[modelNode.type]
+  if (!cap || cap.mode !== 'regression') return ''
+  const featureNames = cap.feature_names || []
+  // Derive sensor columns from feature names
+  const sensorCols = new Set()
+  const prefixes = ['abs_energy','abs_sum_of_changes','spectral_bandwidth','margin_factor','peak_to_peak','rms','mean','std','max','min','crest_factor','shape_factor']
+  for (const fname of featureNames) {
+    for (const p of prefixes.sort((a,b) => b.length - a.length)) {
+      if (fname.startsWith(p + '_')) {
+        sensorCols.add(fname.slice(p.length + 1))
+        break
+      }
+    }
+  }
+  if (sensorCols.size > 0) {
+    return `Model uses: ${[...sensorCols].join(', ')}. Target is likely the column NOT in this list.`
+  }
+  return ''
+})
 
 function firstConfigSummary(node) {
   const cap = capabilities.value[node.type]
