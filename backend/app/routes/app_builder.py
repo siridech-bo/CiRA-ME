@@ -188,6 +188,35 @@ def get_app(app_id):
     return jsonify(app)
 
 
+@app_builder_bp.route('/apps/by-slug/<slug>', methods=['GET'])
+def get_app_by_slug(slug):
+    """Get published app by slug (no auth for public apps)."""
+    app = AppBuilderApp.get_by_slug(slug)
+    if not app:
+        return jsonify({'error': 'App not found'}), 404
+    if app['status'] != 'published':
+        return jsonify({'error': 'App is not published'}), 404
+    # Derive mode from model nodes
+    import json as json_mod
+    nodes = app.get('nodes', [])
+    if isinstance(nodes, str):
+        nodes = json_mod.loads(nodes)
+    mode = None
+    algorithm = None
+    for node in nodes:
+        if node.get('type', '').startswith('model.endpoint.'):
+            endpoint_id = node['type'].split('.')[-1]
+            endpoint = MeLabEndpoint.get_by_id(endpoint_id)
+            if endpoint:
+                mode = endpoint.get('mode')
+                algorithm = endpoint.get('algorithm')
+            break
+    result = dict(app)
+    result['mode'] = mode
+    result['algorithm'] = algorithm
+    return jsonify(result)
+
+
 @app_builder_bp.route('/apps/<int:app_id>', methods=['PUT'])
 @login_required
 def update_app(app_id):
@@ -244,9 +273,9 @@ def publish_app(app_id):
 
     # Validate: must have at least an input and output node
     node_types = [n.get('type', '') for n in nodes if isinstance(n, dict)]
-    if 'input' not in node_types:
+    if not any(nt.startswith('input.') for nt in node_types):
         return jsonify({'error': 'Pipeline must have an input node'}), 400
-    if 'output' not in node_types:
+    if not any(nt.startswith('output.') for nt in node_types):
         return jsonify({'error': 'Pipeline must have an output node'}), 400
 
     # Validate: model endpoint nodes must reference active endpoints
@@ -316,11 +345,17 @@ def run_app(slug):
     # Execute pipeline
     try:
         current_data = input_data
+        column_names = None  # Track column names through pipeline
+
+        # If input is a DataFrame, remember column names
+        if hasattr(current_data, 'columns'):
+            column_names = list(current_data.columns)
+
         for node in ordered_nodes:
             ntype = node.get('type', '')
-            params = node.get('params', node.get('data', {}).get('params', {})) or {}
+            params = node.get('config', {}) or {}
 
-            if ntype == 'input':
+            if ntype.startswith('input.'):
                 # Input node: data already parsed
                 continue
 
@@ -330,14 +365,21 @@ def run_app(slug):
             elif ntype == 'transform.normalize':
                 current_data = _apply_normalization(current_data, params)
 
+            elif ntype == 'transform.fill_missing':
+                current_data = _apply_fill_missing(current_data, params)
+
             elif ntype == 'transform.feature_extract':
+                # Pass column names for proper DSP feature extraction
+                if column_names:
+                    params = dict(params)
+                    params['_column_names'] = column_names
                 current_data = _apply_feature_extraction(current_data, params)
 
             elif ntype.startswith('model.endpoint.'):
                 endpoint_id = ntype.replace('model.endpoint.', '')
                 current_data = _run_model_inference(endpoint_id, current_data)
 
-            elif ntype == 'output':
+            elif ntype.startswith('output.'):
                 # Output node: finalize
                 continue
 
@@ -432,22 +474,28 @@ def _order_nodes(nodes, edges):
 
 
 def _parse_input(req):
-    """Parse input data from request body (JSON or CSV file)."""
+    """Parse input data from request body (JSON or CSV file).
+    Returns a pandas DataFrame to preserve column names.
+    """
+    import pandas as pd
+
     # Check for file upload
     if req.files and 'file' in req.files:
         file = req.files['file']
         try:
             text = file.read().decode('utf-8')
-            reader = csv.reader(io.StringIO(text))
-            rows = []
-            for row in reader:
-                try:
-                    rows.append([float(v) for v in row])
-                except ValueError:
-                    continue  # Skip header or non-numeric rows
-            if not rows:
+            df = pd.read_csv(io.StringIO(text))
+            # Drop non-numeric columns except timestamp
+            numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+            if not numeric_cols:
                 return jsonify({'error': 'CSV file contains no numeric data'}), 400
-            return np.array(rows, dtype=np.float64)
+            # Keep timestamp if it exists, plus all numeric columns
+            keep_cols = []
+            for col in df.columns:
+                if col in numeric_cols:
+                    keep_cols.append(col)
+            df = df[keep_cols].dropna()
+            return df
         except Exception as e:
             return jsonify({'error': f'Failed to parse CSV: {e}'}), 400
 
@@ -472,7 +520,11 @@ def _parse_input(req):
 def _apply_windowing(data, params):
     """Apply sliding window to data."""
     window_size = params.get('window_size', 100)
-    step_size = params.get('step_size', 50)
+    step_size = params.get('step', params.get('step_size', 50))
+
+    import pandas as pd
+    if isinstance(data, pd.DataFrame):
+        data = data.select_dtypes(include=[np.number]).values
 
     if not isinstance(data, np.ndarray):
         data = np.array(data, dtype=np.float64)
@@ -490,6 +542,26 @@ def _apply_windowing(data, params):
         windows.append(data[start:start + window_size])
 
     return np.array(windows)
+
+
+def _apply_fill_missing(data, params):
+    """Fill missing values in data."""
+    method = params.get('method', 'interpolate')
+    if not isinstance(data, np.ndarray):
+        data = np.array(data, dtype=np.float64)
+    import pandas as pd
+    if data.ndim == 2:
+        df = pd.DataFrame(data)
+        if method == 'ffill':
+            df = df.ffill().bfill()
+        elif method == 'bfill':
+            df = df.bfill().ffill()
+        elif method == 'zero':
+            df = df.fillna(0)
+        else:  # interpolate
+            df = df.interpolate().ffill().bfill()
+        return df.values.astype(np.float64)
+    return np.nan_to_num(data, nan=0.0)
 
 
 def _apply_normalization(data, params):
@@ -519,13 +591,44 @@ def _apply_normalization(data, params):
 
 
 def _apply_feature_extraction(data, params):
-    """Extract statistical features from windowed data."""
+    """Extract features from windowed data using CiRA ME's feature extractor."""
     feature_names = params.get('features', ['mean', 'std', 'rms', 'max', 'min'])
 
     if not isinstance(data, np.ndarray):
         data = np.array(data, dtype=np.float64)
 
-    # If data is 3D (windows x window_size x channels), extract per window
+    # Use column names if available (passed from pipeline context)
+    column_names = params.get('_column_names')
+    if not column_names:
+        column_names = _derive_sensor_columns(feature_names)
+
+    # Try using CiRA ME's feature extractor for DSP features
+    try:
+        from ..services.feature_extractor import FeatureExtractor
+        extractor = FeatureExtractor()
+
+        if data.ndim == 3 and column_names:
+            n_channels = data.shape[2]
+            # Filter column names to match data dimensions (exclude timestamp/label/target)
+            sensor_cols = [c for c in column_names if c not in ('timestamp', 'label', 'class', 'target')]
+            if len(sensor_cols) > n_channels:
+                sensor_cols = sensor_cols[:n_channels]
+
+            if len(sensor_cols) == n_channels:
+                import pandas as pd
+                all_features = []
+                for window in data:
+                    df = pd.DataFrame(window, columns=sensor_cols)
+                    feat_dict = extractor.extract_window_features(df, sensor_cols)
+                    row = []
+                    for fname in feature_names:
+                        row.append(feat_dict.get(fname, 0.0))
+                    all_features.append(row)
+                return np.array(all_features, dtype=np.float64)
+    except Exception as e:
+        logger.warning(f"CiRA ME feature extractor failed: {e}, falling back to generic")
+
+    # Fallback: generic statistical features
     if data.ndim == 3:
         all_features = []
         for window in data:
@@ -538,10 +641,11 @@ def _apply_feature_extraction(data, params):
                         feats.append(result)
                     else:
                         feats.extend(result.tolist())
+                else:
+                    feats.append(0.0)  # unknown feature
             all_features.append(feats)
         return np.array(all_features, dtype=np.float64)
 
-    # If 2D, treat as single window
     if data.ndim == 2:
         feats = []
         for fname in feature_names:
@@ -552,9 +656,34 @@ def _apply_feature_extraction(data, params):
                     feats.append(result)
                 else:
                     feats.extend(result.tolist())
+            else:
+                feats.append(0.0)
         return np.array([feats], dtype=np.float64)
 
     return data
+
+
+def _derive_sensor_columns(feature_names):
+    """Derive sensor column names from CiRA ME feature names.
+    e.g., 'abs_energy_RPM' -> column 'RPM', 'spectral_bandwidth_Vibration_Y' -> column 'Vibration_Y'
+    """
+    # Known CiRA ME feature prefixes
+    known_prefixes = [
+        'abs_energy', 'abs_sum_of_changes', 'spectral_bandwidth',
+        'margin_factor', 'peak_to_peak', 'rms', 'mean', 'std',
+        'max', 'min', 'median', 'variance', 'kurtosis', 'skewness',
+        'crest_factor', 'shape_factor', 'impulse_factor',
+        'spectral_centroid', 'spectral_rolloff', 'spectral_flatness',
+        'zero_crossing_rate', 'band_power',
+    ]
+    columns = set()
+    for fname in feature_names:
+        for prefix in sorted(known_prefixes, key=len, reverse=True):
+            if fname.startswith(prefix + '_'):
+                col = fname[len(prefix) + 1:]
+                columns.add(col)
+                break
+    return sorted(columns) if columns else None
 
 
 def _run_model_inference(endpoint_id, data):

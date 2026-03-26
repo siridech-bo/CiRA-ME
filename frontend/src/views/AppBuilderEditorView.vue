@@ -416,12 +416,109 @@
 
       <!-- Output preview -->
       <main class="preview-main">
-        <OutputPreview
-          :nodes="nodes"
-          :capabilities="capabilities"
-          :app-name="appName"
-          :mode-meta="MODE_META"
-        />
+        <div class="output-preview-wrap">
+          <div v-if="!previewOutputNode || !previewModelNode" class="output-preview-empty">
+            <v-icon size="32" color="grey">mdi-eye-off-outline</v-icon>
+            <div class="text-caption text-medium-emphasis mt-2">Add a Model endpoint + Output node to preview</div>
+          </div>
+
+          <div v-else>
+            <!-- Browser chrome -->
+            <div class="browser-bar">
+              <div class="browser-dots">
+                <div class="browser-dot" /><div class="browser-dot" /><div class="browser-dot" />
+              </div>
+              <span class="browser-url">localhost:3030/apps/{{ previewSlug }}</span>
+              <span v-if="previewMeta" class="browser-mode-badge" :style="{ color: previewMeta.color, background: previewMeta.color + '18' }">
+                {{ previewMeta.label }}
+              </span>
+            </div>
+
+            <div class="browser-body">
+              <div class="d-flex align-center justify-space-between mb-4">
+                <span class="browser-app-title">{{ appName }}</span>
+                <span class="browser-model-info">{{ previewModelCap?.label }} · {{ previewModelCap?.algorithm }}</span>
+              </div>
+
+              <!-- Input widget -->
+              <div v-if="previewInputNode" class="browser-input-widget">
+                <div class="browser-widget-label">
+                  <v-icon size="12" :style="{ color: capabilities[previewInputNode.type]?.color }">{{ capabilities[previewInputNode.type]?.icon }}</v-icon>
+                  {{ capabilities[previewInputNode.type]?.label }}
+                </div>
+                <div v-if="previewInputNode.type === 'input.csv_upload'" class="csv-upload-row">
+                  <div class="csv-drop-zone">drop .csv · {{ previewInputNode.config.value_cols || 'value' }}</div>
+                  <div class="run-btn" :style="{ background: previewMeta?.color }">Run</div>
+                </div>
+                <div v-else class="live-stream-row">
+                  <div class="live-dot" :style="{ background: previewMeta?.color }" />
+                  <span class="live-label">live · {{ previewInputNode.config.interval_ms }}ms</span>
+                </div>
+              </div>
+
+              <!-- Line chart output -->
+              <div v-if="previewOutputNode?.type === 'output.line_chart'">
+                <div class="chart-title">{{ previewOutputNode.config.title || 'Results' }}</div>
+                <svg :width="chartW" :height="chartH" style="width:100%;" viewBox="0 0 360 110">
+                  <defs>
+                    <linearGradient id="preview-grad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" :stop-color="previewMeta?.color" stop-opacity="0.25"/>
+                      <stop offset="100%" :stop-color="previewMeta?.color" stop-opacity="0"/>
+                    </linearGradient>
+                  </defs>
+                  <path :d="chartAreaD" fill="url(#preview-grad)"/>
+                  <path :d="chartPathD" fill="none" :stroke="previewMeta?.color" stroke-width="1.5"/>
+                  <template v-if="previewModelCap?.mode === 'anomaly' && previewOutputNode.config.show_anomalies">
+                    <g v-for="i in chartAIdx" :key="i">
+                      <line :x1="chartSx(i)" y1="0" :x2="chartSx(i)" :y2="chartH" stroke="#f87171" stroke-width="1" stroke-dasharray="3,2" opacity="0.35"/>
+                      <circle :cx="chartSx(i)" :cy="chartSy(chartPts[i])" r="4" fill="#f87171"/>
+                    </g>
+                  </template>
+                  <path v-if="previewModelCap?.mode === 'regression'"
+                    :d="'M' + chartSx(32) + ',' + chartSy(52) + ' L' + chartSx(39) + ',' + chartSy(58)"
+                    :stroke="previewMeta?.color" stroke-width="2" stroke-dasharray="4,3" opacity="0.5"/>
+                </svg>
+                <div class="chart-legend">
+                  <div class="legend-item">
+                    <div class="legend-line" :style="{ background: previewMeta?.color }"/>
+                    <span>signal</span>
+                  </div>
+                  <div v-if="previewModelCap?.mode === 'regression'" class="legend-item">
+                    <div class="legend-line" :style="{ background: previewMeta?.color, opacity: 0.4 }"/>
+                    <span>forecast</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Alert badge output -->
+              <div v-else-if="previewOutputNode?.type === 'output.alert_badge'" class="d-flex gap-3 mt-4">
+                <div class="alert-badge-item" style="border-color: #34d399; color: #34d399;">
+                  <v-icon size="18" color="#34d399">mdi-check-circle</v-icon>
+                  {{ previewOutputNode.config.label_normal || 'Normal' }}
+                </div>
+                <div class="alert-badge-item" style="border-color: #f87171; color: #f87171; opacity: 0.4;">
+                  <v-icon size="18" color="#f87171">mdi-alert-circle</v-icon>
+                  {{ previewOutputNode.config.label_anomaly || 'Anomaly' }}
+                </div>
+              </div>
+
+              <!-- Table output -->
+              <div v-else-if="previewOutputNode?.type === 'output.table'" class="mt-4">
+                <table class="preview-table">
+                  <thead><tr><th>#</th><th>Input</th><th>Prediction</th><th v-if="previewOutputNode.config.show_confidence">Conf.</th></tr></thead>
+                  <tbody>
+                    <tr v-for="r in 3" :key="r">
+                      <td>{{ r }}</td>
+                      <td style="color:#94a3b8">[...]</td>
+                      <td :style="{ color: previewMeta?.color }">{{ previewModelCap?.mode === 'regression' ? (50 + r * 2.3).toFixed(1) : 'Class_' + r }}</td>
+                      <td v-if="previewOutputNode.config.show_confidence" style="color:#94a3b8">{{ (0.95 - r * 0.05).toFixed(2) }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
       </main>
     </div>
 
@@ -703,10 +800,11 @@ const appSlug = computed(() => appName.value.toLowerCase().replace(/\s+/g, '-'))
 const publishLinks = computed(() => {
   if (!publishResult.value) return []
   const slug = publishResult.value.slug || appSlug.value
+  const base = window.location.origin
   return [
-    { label: 'Web App',      value: `https://ciracore.ai/apps/${slug}`,           color: '#a78bfa' },
-    { label: 'API Endpoint', value: `POST /api/app-builder/apps/${slug}/run`,      color: '#34d399' },
-    { label: 'Embed',        value: `<iframe src="https://ciracore.ai/apps/${slug}" />`, color: '#94a3b8' },
+    { label: 'Web App',      value: `${base}/apps/${slug}`,                        color: '#a78bfa' },
+    { label: 'API Endpoint', value: `${base}/api/app-builder/run/${slug}`,          color: '#34d399' },
+    { label: 'Embed',        value: `<iframe src="${base}/apps/${slug}" />`,         color: '#94a3b8' },
   ]
 })
 
@@ -734,6 +832,25 @@ function makeNode(type, cap) {
 function getConfigVal(node, field) {
   return node.config[field.key] !== undefined ? node.config[field.key] : field.default
 }
+
+// ── Preview computeds ─────────────────────────────────────────────
+const previewInputNode  = computed(() => nodes.value.find(n => n.type.startsWith('input.')))
+const previewOutputNode = computed(() => nodes.value.find(n => n.type.startsWith('output.')))
+const previewModelNode  = computed(() => nodes.value.find(n => n.type.startsWith('model.endpoint.')))
+const previewModelCap   = computed(() => previewModelNode.value ? capabilities.value[previewModelNode.value.type] : null)
+const previewMeta       = computed(() => previewModelCap.value ? MODE_META[previewModelCap.value.mode] : null)
+const previewSlug       = computed(() => (appName.value || '').toLowerCase().replace(/\s+/g, '-'))
+
+// Simulated chart data
+const chartPts  = Array.from({ length: 40 }, (_, i) => 50 + Math.sin(i * 0.4) * 18 + Math.sin(i * 1.7) * 5)
+const chartAIdx = [10, 11, 28]
+const chartW = 360, chartH = 110
+const chartMinY = Math.min(...chartPts) - 4
+const chartMaxY = Math.max(...chartPts) + 4
+const chartSx = (i) => (i / 39) * (chartW - 30) + 15
+const chartSy = (v) => chartH - 8 - ((v - chartMinY) / (chartMaxY - chartMinY)) * (chartH - 16)
+const chartPathD = chartPts.map((v, i) => `${i === 0 ? 'M' : 'L'}${chartSx(i)},${chartSy(v)}`).join(' ')
+const chartAreaD = `${chartPathD} L${chartSx(39)},${chartH} L${chartSx(0)},${chartH} Z`
 
 function firstConfigSummary(node) {
   const cap = capabilities.value[node.type]
@@ -892,156 +1009,6 @@ onMounted(async () => {
 })
 </script>
 
-<!-- Output Preview sub-component (defined inline as separate component) -->
-<script>
-import { defineComponent, computed } from 'vue'
-
-export const OutputPreview = defineComponent({
-  name: 'OutputPreview',
-  props: {
-    nodes: Array,
-    capabilities: Object,
-    appName: String,
-    modeMeta: Object,
-  },
-  setup(props) {
-    const inputNode  = computed(() => props.nodes.find(n => n.type.startsWith('input.')))
-    const outputNode = computed(() => props.nodes.find(n => n.type.startsWith('output.')))
-    const modelNode  = computed(() => props.nodes.find(n => n.type.startsWith('model.endpoint.')))
-
-    const cap  = computed(() => modelNode.value ? props.capabilities[modelNode.value.type] : null)
-    const meta = computed(() => cap.value ? props.modeMeta[cap.value.mode] : null)
-    const slug = computed(() => (props.appName || '').toLowerCase().replace(/\s+/g, '-'))
-
-    // Simulated chart data
-    const pts  = Array.from({ length: 40 }, (_, i) => 50 + Math.sin(i * 0.4) * 18 + Math.sin(i * 1.7) * 5)
-    const aIdx = [10, 11, 28]
-    const W = 360, H = 110
-    const minY = Math.min(...pts) - 4
-    const maxY = Math.max(...pts) + 4
-    const sx = i => (i / 39) * (W - 30) + 15
-    const sy = v => H - 8 - ((v - minY) / (maxY - minY)) * (H - 16)
-    const pathD = pts.map((v, i) => `${i === 0 ? 'M' : 'L'}${sx(i)},${sy(v)}`).join(' ')
-    const areaD = `${pathD} L${sx(39)},${H} L${sx(0)},${H} Z`
-
-    return { inputNode, outputNode, modelNode, cap, meta, slug, pts, aIdx, W, H, sx, sy, pathD, areaD }
-  },
-  template: `
-    <div class="output-preview-wrap">
-      <div v-if="!outputNode || !modelNode" class="output-preview-empty">
-        <v-icon size="32" color="grey">mdi-eye-off-outline</v-icon>
-        <div class="text-caption text-medium-emphasis mt-2">Add a Model endpoint + Output node to preview</div>
-      </div>
-
-      <div v-else>
-        <!-- Browser chrome -->
-        <div class="browser-bar">
-          <div class="browser-dots">
-            <div class="browser-dot" /><div class="browser-dot" /><div class="browser-dot" />
-          </div>
-          <span class="browser-url">sandbox.ciracore.ai/apps/{{ slug }}</span>
-          <span class="browser-mode-badge" :style="{ color: meta?.color, background: meta?.color + '18' }">
-            {{ meta?.label }}
-          </span>
-        </div>
-
-        <div class="browser-body">
-          <div class="d-flex align-center justify-space-between mb-4">
-            <span class="browser-app-title">{{ appName }}</span>
-            <span class="browser-model-info">{{ cap?.label }} · {{ cap?.algorithm }}</span>
-          </div>
-
-          <!-- Input widget -->
-          <div v-if="inputNode" class="browser-input-widget">
-            <div class="browser-widget-label">
-              <v-icon size="12" :style="{ color: capabilities[inputNode.type]?.color }">{{ capabilities[inputNode.type]?.icon }}</v-icon>
-              {{ capabilities[inputNode.type]?.label }}
-            </div>
-            <div v-if="inputNode.type === 'input.csv_upload'" class="csv-upload-row">
-              <div class="csv-drop-zone">drop .csv · {{ inputNode.config.value_cols || 'value' }}</div>
-              <div class="run-btn" :style="{ background: meta?.color }">Run</div>
-            </div>
-            <div v-else-if="inputNode.type === 'input.live_stream'" class="live-stream-row">
-              <div class="live-dot" :style="{ background: meta?.color }" />
-              <span class="live-label">live · {{ inputNode.config.interval_ms }}ms</span>
-            </div>
-          </div>
-
-          <!-- Line chart output -->
-          <div v-if="outputNode?.type === 'output.line_chart'">
-            <div class="chart-title">{{ outputNode.config.title || 'Results' }}</div>
-            <svg :width="W" :height="H" style="width:100%;" viewBox="0 0 360 110">
-              <defs>
-                <linearGradient id="preview-grad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" :stop-color="meta?.color" stop-opacity="0.25"/>
-                  <stop offset="100%" :stop-color="meta?.color" stop-opacity="0"/>
-                </linearGradient>
-              </defs>
-              <path :d="areaD" fill="url(#preview-grad)"/>
-              <path :d="pathD" fill="none" :stroke="meta?.color" stroke-width="1.5"/>
-              <template v-if="cap?.mode === 'anomaly' && outputNode.config.show_anomalies">
-                <g v-for="i in aIdx" :key="i">
-                  <line :x1="sx(i)" y1="0" :x2="sx(i)" :y2="H" stroke="#f87171" stroke-width="1" stroke-dasharray="3,2" opacity="0.35"/>
-                  <circle :cx="sx(i)" :cy="sy(pts[i])" r="4" fill="#f87171"/>
-                </g>
-              </template>
-              <path v-if="cap?.mode === 'regression'"
-                :d="'M' + sx(32) + ',' + sy(52) + ' L' + sx(39) + ',' + sy(58)"
-                :stroke="meta?.color" stroke-width="2" stroke-dasharray="4,3" opacity="0.5"/>
-            </svg>
-            <div class="chart-legend">
-              <div class="legend-item">
-                <div class="legend-line" :style="{ background: meta?.color }"/>
-                <span>signal</span>
-              </div>
-              <div v-if="cap?.mode === 'anomaly' && outputNode.config.show_anomalies" class="legend-item">
-                <div class="legend-dot" style="background:#f87171;"/>
-                <span>{{ aIdx.length }} anomalies</span>
-              </div>
-            </div>
-          </div>
-
-          <!-- Alert badge output -->
-          <div v-else-if="outputNode?.type === 'output.alert_badge'" class="alert-badge-row">
-            <div class="alert-badge-normal">
-              <v-icon size="14" color="success">mdi-check</v-icon>
-              {{ outputNode.config.label_normal || 'Normal' }}
-            </div>
-            <div class="alert-badge-anomaly">
-              <v-icon size="14" color="error">mdi-alert</v-icon>
-              {{ outputNode.config.label_anomaly || 'Anomaly Detected' }}
-            </div>
-          </div>
-
-          <!-- Table output -->
-          <div v-else-if="outputNode?.type === 'output.table'">
-            <table class="preview-table">
-              <thead>
-                <tr>
-                  <th>Timestamp</th>
-                  <th>Value</th>
-                  <th>Label</th>
-                  <th v-if="outputNode.config.show_confidence">Conf.</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="(row, i) in [['00:00','0.82','Class A','94%'],['00:01','0.91','Class B','87%'],['00:02','0.78','Class A','91%']]" :key="i">
-                  <td style="color:#64748b">{{ row[0] }}</td>
-                  <td>{{ row[1] }}</td>
-                  <td>
-                    <span class="table-label-badge" :style="{ background: meta?.color + '18', color: meta?.color }">{{ row[2] }}</span>
-                  </td>
-                  <td v-if="outputNode.config.show_confidence" style="color:#64748b">{{ row[3] }}</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-    </div>
-  `,
-})
-</script>
 
 <style scoped>
 /* ── Root layout ───────────────────────────────────────────────── */

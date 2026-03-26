@@ -81,6 +81,12 @@ const router = createRouter({
       meta: { requiresAuth: true, requiresAdmin: true }
     },
     {
+      path: '/apps/:slug',
+      name: 'published-app',
+      component: () => import('@/views/PublishedAppView.vue'),
+      meta: { requiresAuth: false }
+    },
+    {
       path: '/:pathMatch(.*)*',
       redirect: '/'
     }
