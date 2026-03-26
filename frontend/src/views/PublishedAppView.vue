@@ -90,12 +90,56 @@
               <div class="result-stat-label">Std</div>
               <div class="result-stat-value">{{ result.std?.toFixed(4) }}</div>
             </div>
+            <div v-if="result.min !== undefined" class="result-stat">
+              <div class="result-stat-label">Range</div>
+              <div class="result-stat-value">{{ result.min?.toFixed(1) }} – {{ result.max?.toFixed(1) }}</div>
+            </div>
           </div>
-          <div class="result-table-wrap">
+
+          <!-- Line Chart -->
+          <div v-if="chartData.length > 0" class="chart-container">
+            <div class="chart-header">
+              <span class="chart-title-text">Predictions over Time</span>
+              <div class="chart-legend-items">
+                <span class="chart-legend-dot" style="background: #a78bfa"></span>
+                <span class="chart-legend-label">Predicted</span>
+              </div>
+            </div>
+            <svg :viewBox="`0 0 ${chartWidth} ${chartHeight}`" class="prediction-chart">
+              <!-- Grid lines -->
+              <line v-for="i in 4" :key="'g'+i"
+                :x1="chartPadding" :y1="chartPadding + (i-1) * (chartInnerH / 3)"
+                :x2="chartWidth - chartPadding" :y2="chartPadding + (i-1) * (chartInnerH / 3)"
+                stroke="#21262d" stroke-width="0.5" />
+              <!-- Y axis labels -->
+              <text v-for="i in 4" :key="'y'+i"
+                :x="chartPadding - 4" :y="chartPadding + (i-1) * (chartInnerH / 3) + 3"
+                text-anchor="end" fill="#8b949e" font-size="8" font-family="monospace">
+                {{ chartYLabel(i-1) }}
+              </text>
+              <!-- Area fill -->
+              <path :d="chartAreaPath" fill="url(#pred-gradient)" />
+              <!-- Prediction line -->
+              <path :d="chartLinePath" fill="none" stroke="#a78bfa" stroke-width="1.5" />
+              <defs>
+                <linearGradient id="pred-gradient" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stop-color="#a78bfa" stop-opacity="0.2" />
+                  <stop offset="100%" stop-color="#a78bfa" stop-opacity="0" />
+                </linearGradient>
+              </defs>
+            </svg>
+          </div>
+
+          <!-- Data Table (collapsible) -->
+          <div class="table-toggle" @click="showTable = !showTable">
+            <v-icon size="14">{{ showTable ? 'mdi-chevron-down' : 'mdi-chevron-right' }}</v-icon>
+            <span>{{ showTable ? 'Hide' : 'Show' }} data table ({{ result.predictions?.length || 0 }} rows)</span>
+          </div>
+          <div v-if="showTable" class="result-table-wrap">
             <table class="result-table">
               <thead><tr><th>#</th><th>Prediction</th></tr></thead>
               <tbody>
-                <tr v-for="(val, i) in (result.predictions || []).slice(0, 50)" :key="i">
+                <tr v-for="(val, i) in (result.predictions || []).slice(0, 100)" :key="i">
                   <td>{{ i + 1 }}</td>
                   <td :style="{ color: modeColor }">{{ typeof val === 'number' ? val.toFixed(4) : val }}</td>
                 </tr>
@@ -178,6 +222,57 @@ const appData = ref({})
 const selectedFile = ref(null)
 const running = ref(false)
 const result = ref(null)
+const showTable = ref(false)
+
+// Chart dimensions
+const chartWidth = 700
+const chartHeight = 200
+const chartPadding = 40
+const chartInnerW = chartWidth - chartPadding * 2
+const chartInnerH = chartHeight - chartPadding * 2
+
+// Chart data (downsampled predictions for rendering)
+const chartData = computed(() => {
+  const preds = result.value?.predictions || []
+  if (preds.length === 0) return []
+  const nums = preds.filter(v => typeof v === 'number')
+  if (nums.length === 0) return []
+  // Downsample to max 200 points
+  if (nums.length <= 200) return nums
+  const step = nums.length / 200
+  return Array.from({ length: 200 }, (_, i) => nums[Math.floor(i * step)])
+})
+
+const chartMinY = computed(() => {
+  if (chartData.value.length === 0) return 0
+  return Math.min(...chartData.value) * 0.98
+})
+const chartMaxY = computed(() => {
+  if (chartData.value.length === 0) return 1
+  return Math.max(...chartData.value) * 1.02
+})
+const chartRangeY = computed(() => chartMaxY.value - chartMinY.value || 1)
+
+function chartX(i) {
+  return chartPadding + (i / (chartData.value.length - 1 || 1)) * chartInnerW
+}
+function chartY(v) {
+  return chartPadding + chartInnerH - ((v - chartMinY.value) / chartRangeY.value) * chartInnerH
+}
+function chartYLabel(idx) {
+  const v = chartMaxY.value - (idx / 3) * chartRangeY.value
+  return v.toFixed(1)
+}
+
+const chartLinePath = computed(() => {
+  if (chartData.value.length === 0) return ''
+  return chartData.value.map((v, i) => `${i === 0 ? 'M' : 'L'}${chartX(i).toFixed(1)},${chartY(v).toFixed(1)}`).join(' ')
+})
+const chartAreaPath = computed(() => {
+  if (chartData.value.length === 0) return ''
+  const n = chartData.value.length
+  return `${chartLinePath.value} L${chartX(n-1).toFixed(1)},${chartHeight - chartPadding} L${chartX(0).toFixed(1)},${chartHeight - chartPadding} Z`
+})
 const runError = ref(null)
 
 const MODE_COLORS = {
@@ -436,5 +531,62 @@ async function runPipeline() {
   overflow-x: auto;
   max-height: 400px;
   overflow-y: auto;
+}
+
+.chart-container {
+  background: #0d1117;
+  border: 1px solid #21262d;
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+
+.chart-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.chart-title-text {
+  font-size: 13px;
+  font-weight: 600;
+  color: #c9d1d9;
+}
+
+.chart-legend-items {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.chart-legend-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.chart-legend-label {
+  font-size: 10px;
+  color: #8b949e;
+}
+
+.prediction-chart {
+  width: 100%;
+  height: auto;
+}
+
+.table-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 0;
+  cursor: pointer;
+  font-size: 12px;
+  color: #8b949e;
+  user-select: none;
+}
+.table-toggle:hover {
+  color: #c9d1d9;
 }
 </style>
