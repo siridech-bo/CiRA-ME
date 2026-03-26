@@ -1025,15 +1025,25 @@ async function saveApp() {
 async function publishApp() {
   if (!readyToPublish.value || !appId.value) return
   publishing.value = true
+  publishResult.value = null
   try {
+    // Save first to ensure nodes are persisted
+    await api.put(`/api/app-builder/apps/${appId.value}`, {
+      name: appName.value,
+      nodes: nodes.value,
+      edges: buildEdges(),
+    })
+    // Then publish
     const resp = await api.post(`/api/app-builder/apps/${appId.value}/publish`, {
       name: appName.value,
       access: publishSettings.value.access,
       rate_limit: publishSettings.value.rateLimit,
     })
-    publishResult.value = resp.data || { slug: appSlug.value }
+    publishResult.value = resp.data
   } catch (e) {
-    publishResult.value = { slug: appSlug.value }
+    const msg = e.response?.data?.error || 'Publish failed'
+    alert(msg)
+    publishResult.value = null
   } finally {
     publishing.value = false
   }
