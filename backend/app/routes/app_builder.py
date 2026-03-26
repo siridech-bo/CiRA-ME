@@ -363,7 +363,14 @@ def run_app(slug):
 
             elif ntype == 'transform.window':
                 if isinstance(current_data, pd.DataFrame):
-                    current_data = current_data.select_dtypes(include=[np.number]).values
+                    # Exclude timestamp-like columns before windowing
+                    sensor_df = current_data.select_dtypes(include=[np.number])
+                    drop_cols = [c for c in sensor_df.columns if c.lower() in ('timestamp', 'time', 'time_sec', 'index')]
+                    if drop_cols:
+                        sensor_df = sensor_df.drop(columns=drop_cols)
+                    column_names = list(sensor_df.columns)  # Update column names
+                    current_data = sensor_df.values
+                    logger.info(f"[AppBuilder] Windowing input: {current_data.shape}, cols={column_names}")
                 current_data = _apply_windowing(current_data, params)
                 logger.info(f"[AppBuilder] After windowing: shape={current_data.shape}")
 
