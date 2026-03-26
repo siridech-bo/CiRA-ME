@@ -48,6 +48,20 @@ def api_key_required(f):
 def list_endpoints():
     """List all ME-LAB endpoints for current user."""
     endpoints = MeLabEndpoint.get_all(request.current_user['id'])
+
+    # Enrich with target_column from saved model's pipeline_config
+    for ep in endpoints:
+        try:
+            saved = SavedModel.get_by_id(ep.get('saved_model_id'))
+            if saved:
+                pc = saved.get('pipeline_config', {})
+                if isinstance(pc, str):
+                    import json
+                    pc = json.loads(pc) if pc else {}
+                ep['target_column'] = pc.get('target_column')
+        except Exception:
+            ep['target_column'] = None
+
     return jsonify(endpoints)
 
 

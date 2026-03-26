@@ -722,6 +722,7 @@ const capabilities = computed(() => {
         algorithm: e.algorithm,
         feature_count: e.n_features,
         feature_names: e.feature_names || [],
+        target_column: e.target_column || null,
         endpoint_id: e.id,
         inputs: ['features'],
         outputs: [meta.output],
