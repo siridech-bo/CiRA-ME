@@ -380,6 +380,8 @@ def run_app(slug):
             if target_col and target_col in current_data.columns:
                 raw_target = current_data[target_col].values
                 logger.info(f"[AppBuilder] Target column '{target_col}': {len(raw_target)} values")
+            else:
+                raw_target = None
 
         for node in ordered_nodes:
             ntype = node.get('type', '')
@@ -390,27 +392,22 @@ def run_app(slug):
 
             elif ntype == 'transform.window':
                 if isinstance(current_data, pd.DataFrame):
-                    # Exclude timestamp-like columns before windowing
                     sensor_df = current_data.select_dtypes(include=[np.number])
                     drop_cols = [c for c in sensor_df.columns if c.lower() in ('timestamp', 'time', 'time_sec', 'index')]
                     if drop_cols:
                         sensor_df = sensor_df.drop(columns=drop_cols)
                     column_names = list(sensor_df.columns)
-
-                    # Extract per-window target values (mean of target per window)
-                    if target_col and target_col in sensor_df.columns:
-                        target_vals = sensor_df[target_col].values
-                        ws = params.get('window_size', 32)
-                        st = params.get('step', params.get('stride', 16))
-                        actual_values = []
-                        for start in range(0, len(target_vals) - ws + 1, st):
-                            actual_values.append(float(np.mean(target_vals[start:start + ws])))
-                        logger.info(f"[AppBuilder] Actual target values: {len(actual_values)}")
-
                     current_data = sensor_df.values
-                    logger.info(f"[AppBuilder] Windowing input: {current_data.shape}, cols={column_names}")
+
+                # Compute per-window actual values from raw_target (saved before normalize)
+                if raw_target is not None and actual_values is None:
+                    ws = params.get('window_size', 32)
+                    st = params.get('step', params.get('stride', 16))
+                    actual_values = []
+                    for start in range(0, len(raw_target) - ws + 1, st):
+                        actual_values.append(float(np.mean(raw_target[start:start + ws])))
+
                 current_data = _apply_windowing(current_data, params)
-                logger.info(f"[AppBuilder] After windowing: shape={current_data.shape}")
 
             elif ntype == 'transform.normalize':
                 # Convert DataFrame to numpy, dropping timestamp-like columns
