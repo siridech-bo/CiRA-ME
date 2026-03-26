@@ -68,20 +68,84 @@
           No saved models found. Save a benchmark from the Training page first.
         </v-alert>
 
-        <v-table v-else dense hover>
+        <!-- Mode tabs for model table -->
+        <v-btn-toggle v-else v-model="modelTableTab" mandatory density="compact" class="mb-3">
+          <v-btn value="regression" size="small" :color="modelTableTab === 'regression' ? 'purple' : undefined">
+            <v-icon start size="small">mdi-chart-timeline-variant</v-icon>
+            Regression ({{ regressionModels.length }})
+          </v-btn>
+          <v-btn value="classification" size="small" :color="modelTableTab === 'classification' ? 'info' : undefined">
+            <v-icon start size="small">mdi-shape</v-icon>
+            Classification / Anomaly ({{ classAnomalyModels.length }})
+          </v-btn>
+        </v-btn-toggle>
+
+        <!-- Regression Models Table -->
+        <v-table v-if="modelTableTab === 'regression' && regressionModels.length > 0" dense hover>
           <thead>
             <tr>
-              <th></th>
+              <th style="width:40px"></th>
               <th>Name</th>
               <th>Algorithm</th>
-              <th>Mode</th>
-              <th class="text-center" colspan="3">Performance</th>
+              <th class="text-center">R²</th>
+              <th class="text-center">RMSE</th>
+              <th class="text-center">MAE</th>
               <th>Date</th>
+              <th style="width:40px"></th>
             </tr>
           </thead>
           <tbody>
             <tr
-              v-for="model in savedModels"
+              v-for="model in regressionModels"
+              :key="model.id"
+              :class="{ 'bg-purple-darken-4': selectedSavedModelId === model.id }"
+              style="cursor: pointer"
+              @click="selectSavedModel(model)"
+            >
+              <td>
+                <v-radio-group v-model="selectedSavedModelId" hide-details inline>
+                  <v-radio :value="model.id" density="compact" hide-details />
+                </v-radio-group>
+              </td>
+              <td class="font-weight-medium">{{ model.name }}</td>
+              <td class="text-caption">{{ model.algorithm }}</td>
+              <td class="text-center" :style="{ color: model.metrics?.r2 > 0.8 ? '#34d399' : model.metrics?.r2 > 0.5 ? '#fbbf24' : '#f87171' }">
+                {{ model.metrics?.r2 != null ? model.metrics.r2.toFixed(4) : '-' }}
+              </td>
+              <td class="text-center">{{ model.metrics?.rmse != null ? model.metrics.rmse.toFixed(4) : '-' }}</td>
+              <td class="text-center">{{ model.metrics?.mae != null ? model.metrics.mae.toFixed(4) : '-' }}</td>
+              <td class="text-caption">{{ formatDate(model.created_at) }}</td>
+              <td>
+                <v-btn icon size="x-small" variant="text" color="error" @click.stop="confirmDeleteModel(model)">
+                  <v-icon size="small">mdi-delete</v-icon>
+                </v-btn>
+              </td>
+            </tr>
+          </tbody>
+        </v-table>
+        <div v-else-if="modelTableTab === 'regression'" class="text-center text-medium-emphasis py-4">
+          No regression models saved yet.
+        </div>
+
+        <!-- Classification / Anomaly Models Table -->
+        <v-table v-if="modelTableTab === 'classification' && classAnomalyModels.length > 0" dense hover>
+          <thead>
+            <tr>
+              <th style="width:40px"></th>
+              <th>Name</th>
+              <th>Algorithm</th>
+              <th>Mode</th>
+              <th class="text-center">Accuracy</th>
+              <th class="text-center">Precision</th>
+              <th class="text-center">Recall</th>
+              <th class="text-center">F1</th>
+              <th>Date</th>
+              <th style="width:40px"></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="model in classAnomalyModels"
               :key="model.id"
               :class="{ 'bg-primary-darken-3': selectedSavedModelId === model.id }"
               style="cursor: pointer"
@@ -93,26 +157,44 @@
                 </v-radio-group>
               </td>
               <td class="font-weight-medium">{{ model.name }}</td>
-              <td>{{ model.algorithm }}</td>
+              <td class="text-caption">{{ model.algorithm }}</td>
               <td>
-                <v-chip size="x-small" :color="model.mode === 'anomaly' ? 'warning' : model.mode === 'regression' ? 'purple' : 'info'" variant="tonal">
+                <v-chip size="x-small" :color="model.mode === 'anomaly' ? 'warning' : 'info'" variant="tonal">
                   {{ model.mode }}
                 </v-chip>
               </td>
-              <template v-if="model.mode === 'regression'">
-                <td class="text-center">{{ model.metrics?.r2 != null ? model.metrics.r2.toFixed(4) : '-' }}</td>
-                <td class="text-center">{{ model.metrics?.rmse != null ? model.metrics.rmse.toFixed(4) : '-' }}</td>
-                <td class="text-center">{{ model.metrics?.mae != null ? model.metrics.mae.toFixed(4) : '-' }}</td>
-              </template>
-              <template v-else>
-                <td class="text-center">{{ model.metrics?.accuracy != null ? (model.metrics.accuracy * 100).toFixed(1) + '%' : '-' }}</td>
-                <td class="text-center">{{ model.metrics?.precision != null ? (model.metrics.precision * 100).toFixed(1) + '%' : '-' }}</td>
-                <td class="text-center">{{ model.metrics?.recall != null ? (model.metrics.recall * 100).toFixed(1) + '%' : '-' }}</td>
-              </template>
+              <td class="text-center">{{ model.metrics?.accuracy != null ? (model.metrics.accuracy * 100).toFixed(1) + '%' : '-' }}</td>
+              <td class="text-center">{{ model.metrics?.precision != null ? (model.metrics.precision * 100).toFixed(1) + '%' : '-' }}</td>
+              <td class="text-center">{{ model.metrics?.recall != null ? (model.metrics.recall * 100).toFixed(1) + '%' : '-' }}</td>
+              <td class="text-center">{{ model.metrics?.f1 != null ? (model.metrics.f1 * 100).toFixed(1) + '%' : '-' }}</td>
               <td class="text-caption">{{ formatDate(model.created_at) }}</td>
+              <td>
+                <v-btn icon size="x-small" variant="text" color="error" @click.stop="confirmDeleteModel(model)">
+                  <v-icon size="small">mdi-delete</v-icon>
+                </v-btn>
+              </td>
             </tr>
           </tbody>
         </v-table>
+        <div v-else-if="modelTableTab === 'classification'" class="text-center text-medium-emphasis py-4">
+          No classification/anomaly models saved yet.
+        </div>
+
+        <!-- Delete confirmation dialog -->
+        <v-dialog v-model="showDeleteModelDialog" max-width="400">
+          <v-card>
+            <v-card-title>Delete Model</v-card-title>
+            <v-card-text>
+              Are you sure you want to delete <strong>{{ deleteTargetModel?.name }}</strong>?
+              This action cannot be undone.
+            </v-card-text>
+            <v-card-actions>
+              <v-spacer />
+              <v-btn @click="showDeleteModelDialog = false">Cancel</v-btn>
+              <v-btn color="error" variant="flat" :loading="deletingModel" @click="deleteModel">Delete</v-btn>
+            </v-card-actions>
+          </v-card>
+        </v-dialog>
       </div>
 
       <!-- Selected Model Metrics Summary Card -->
@@ -1035,6 +1117,38 @@ const modelSource = ref<'session' | 'saved'>(pipelineStore.trainingSession ? 'se
 const savedModels = ref<any[]>([])
 const selectedSavedModelId = ref<number | null>(null)
 const loadingSavedModels = ref(false)
+const modelTableTab = ref('regression')
+const showDeleteModelDialog = ref(false)
+const deleteTargetModel = ref<any>(null)
+const deletingModel = ref(false)
+
+const regressionModels = computed(() =>
+  savedModels.value.filter(m => m.mode === 'regression')
+)
+const classAnomalyModels = computed(() =>
+  savedModels.value.filter(m => m.mode !== 'regression')
+)
+
+function confirmDeleteModel(model: any) {
+  deleteTargetModel.value = model
+  showDeleteModelDialog.value = true
+}
+
+async function deleteModel() {
+  if (!deleteTargetModel.value) return
+  deletingModel.value = true
+  try {
+    await api.delete(`/api/training/saved-models/${deleteTargetModel.value.id}`)
+    savedModels.value = savedModels.value.filter(m => m.id !== deleteTargetModel.value.id)
+    if (selectedSavedModelId.value === deleteTargetModel.value.id) {
+      selectedSavedModelId.value = null
+    }
+    showDeleteModelDialog.value = false
+  } catch (e: any) {
+    alert(e.response?.data?.error || 'Failed to delete model')
+  }
+  deletingModel.value = false
+}
 
 // Deploy config
 const deployTarget = ref<'download' | 'ssh'>('download')
