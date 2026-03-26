@@ -854,14 +854,23 @@ const chartSy = (v) => chartH - 8 - ((v - chartMinY) / (chartMaxY - chartMinY)) 
 const chartPathD = chartPts.map((v, i) => `${i === 0 ? 'M' : 'L'}${chartSx(i)},${chartSy(v)}`).join(' ')
 const chartAreaD = `${chartPathD} L${chartSx(39)},${chartH} L${chartSx(0)},${chartH} Z`
 
-// Target column hint: derive from model's sensor columns
+// Target column: auto-detect from model's pipeline_config
+const modelTargetColumn = computed(() => {
+  const modelNode = nodes.value.find(n => n.type.startsWith('model.endpoint.'))
+  if (!modelNode) return null
+  const cap = capabilities.value[modelNode.type]
+  return cap?.target_column || null
+})
+
 const targetColumnHint = computed(() => {
+  if (modelTargetColumn.value) {
+    return `Target column from model: ${modelTargetColumn.value}`
+  }
   const modelNode = nodes.value.find(n => n.type.startsWith('model.endpoint.'))
   if (!modelNode) return ''
   const cap = capabilities.value[modelNode.type]
   if (!cap || cap.mode !== 'regression') return ''
   const featureNames = cap.feature_names || []
-  // Derive sensor columns from feature names
   const sensorCols = new Set()
   const prefixes = ['abs_energy','abs_sum_of_changes','spectral_bandwidth','margin_factor','peak_to_peak','rms','mean','std','max','min','crest_factor','shape_factor']
   for (const fname of featureNames) {
@@ -876,6 +885,15 @@ const targetColumnHint = computed(() => {
     return `Model uses: ${[...sensorCols].join(', ')}. Target is likely the column NOT in this list.`
   }
   return ''
+})
+
+// Auto-fill target column on Line Chart when model has target_column
+watch(modelTargetColumn, (tc) => {
+  if (!tc) return
+  const lineChart = nodes.value.find(n => n.type === 'output.line_chart')
+  if (lineChart && !lineChart.config.target_column) {
+    lineChart.config.target_column = tc
+  }
 })
 
 function firstConfigSummary(node) {

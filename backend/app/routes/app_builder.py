@@ -457,6 +457,18 @@ def get_capabilities():
     endpoints = MeLabEndpoint.get_all(request.current_user['id'])
     for ep in endpoints:
         if ep.get('status') == 'active':
+            # Get target_column from saved model's pipeline_config
+            target_col = None
+            try:
+                saved = SavedModel.get_by_id(ep['saved_model_id'])
+                if saved:
+                    pc = saved.get('pipeline_config', {})
+                    if isinstance(pc, str):
+                        pc = json.loads(pc)
+                    target_col = pc.get('target_column')
+            except Exception:
+                pass
+
             catalog.append({
                 'type': f"model.endpoint.{ep['id']}",
                 'label': ep.get('name', ep['algorithm']),
@@ -467,6 +479,7 @@ def get_capabilities():
                 'endpoint_id': ep['id'],
                 'n_features': ep.get('n_features', 0),
                 'feature_names': ep.get('feature_names', []),
+                'target_column': target_col,
             })
 
     return jsonify(catalog)

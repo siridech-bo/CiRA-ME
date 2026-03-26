@@ -3042,6 +3042,8 @@ async function saveBenchmark() {
         selection_session_id: pipelineStore.featureSelectionState.selectionApplied
           ? pipelineStore.featureSelectionState.selectionResult?.session_id || null
           : null,
+        // Target column (regression mode)
+        target_column: pipelineStore.targetColumn || null,
         // Windowing params
         windowing: {
           window_size: pipelineStore.windowingConfig.window_size,
