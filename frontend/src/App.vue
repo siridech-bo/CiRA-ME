@@ -1,8 +1,8 @@
 <template>
   <v-app>
-    <!-- App Bar -->
+    <!-- App Bar (hidden on standalone pages) -->
     <v-app-bar
-      v-if="authStore.isAuthenticated"
+      v-if="authStore.isAuthenticated && !isStandalone"
       elevation="0"
       color="surface"
       border="b"
@@ -70,7 +70,7 @@
 
     <!-- Navigation Drawer -->
     <v-navigation-drawer
-      v-if="authStore.isAuthenticated"
+      v-if="authStore.isAuthenticated && !isStandalone"
       v-model="drawer"
       :rail="rail"
       permanent
@@ -276,7 +276,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { useTheme } from 'vuetify'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { usePipelineStore } from '@/stores/pipeline'
 import { useNotificationStore } from '@/stores/notification'
@@ -288,6 +288,9 @@ const router = useRouter()
 const authStore = useAuthStore()
 const pipelineStore = usePipelineStore()
 const notificationStore = useNotificationStore()
+
+const route = useRoute()
+const isStandalone = computed(() => route.meta?.standalone === true)
 
 const drawer = ref(true)
 const rail = ref(false)

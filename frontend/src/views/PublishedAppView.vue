@@ -31,6 +31,18 @@
           </div>
         </div>
         <div class="app-header-right">
+          <v-btn
+            v-if="!isStandalone"
+            size="small"
+            variant="tonal"
+            color="purple"
+            :href="`/standalone/${slug}`"
+            target="_blank"
+            class="mr-2"
+          >
+            <v-icon start size="small">mdi-open-in-new</v-icon>
+            Open Standalone
+          </v-btn>
           <span class="app-powered">Powered by CiRA ME</span>
         </div>
       </div>
@@ -227,6 +239,7 @@ import api from '@/services/api'
 
 const route = useRoute()
 const slug = computed(() => route.params.slug)
+const isStandalone = computed(() => route.meta?.standalone === true)
 
 const loading = ref(true)
 const error = ref(null)

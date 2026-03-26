@@ -805,9 +805,9 @@ const publishLinks = computed(() => {
   const slug = publishResult.value.slug || appSlug.value
   const base = window.location.origin
   return [
-    { label: 'Web App',      value: `${base}/apps/${slug}`,                        color: '#a78bfa' },
-    { label: 'API Endpoint', value: `${base}/api/app-builder/run/${slug}`,          color: '#34d399' },
-    { label: 'Embed',        value: `<iframe src="${base}/apps/${slug}" />`,         color: '#94a3b8' },
+    { label: 'Standalone App', value: `${base}/standalone/${slug}`,                   color: '#a78bfa' },
+    { label: 'API Endpoint',   value: `${base}/api/app-builder/run/${slug}`,          color: '#34d399' },
+    { label: 'Embed',          value: `<iframe src="${base}/standalone/${slug}" />`,   color: '#94a3b8' },
   ]
 })
 

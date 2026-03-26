@@ -87,6 +87,12 @@ const router = createRouter({
       meta: { requiresAuth: false }
     },
     {
+      path: '/standalone/:slug',
+      name: 'standalone-app',
+      component: () => import('@/views/PublishedAppView.vue'),
+      meta: { requiresAuth: false, standalone: true }
+    },
+    {
       path: '/:pathMatch(.*)*',
       redirect: '/'
     }
