@@ -347,12 +347,39 @@ def run_app(slug):
         current_data = input_data
         column_names = None  # Track column names through pipeline
         model_mode = None
+        actual_values = None  # Ground truth for comparison
 
-        # If input is a DataFrame, remember column names
+        # If input is a DataFrame, remember column names and extract target
         import pandas as pd
         if isinstance(current_data, pd.DataFrame):
             column_names = list(current_data.columns)
             logger.info(f"[AppBuilder] Input: DataFrame {current_data.shape}, columns={column_names}")
+
+            # Try to get target column from output node config
+            target_col = None
+            for node in ordered_nodes:
+                if node.get('type', '').startswith('output.'):
+                    target_col = node.get('config', {}).get('target_column')
+                    if target_col:
+                        break
+            # Also check model's pipeline_config for target_column
+            if not target_col:
+                for node in ordered_nodes:
+                    if node.get('type', '').startswith('model.endpoint.'):
+                        eid = node['type'].replace('model.endpoint.', '')
+                        ep = MeLabEndpoint.get_by_id(eid)
+                        if ep:
+                            saved = SavedModel.get_by_id(ep.get('saved_model_id'))
+                            if saved:
+                                pc = saved.get('pipeline_config', {})
+                                if isinstance(pc, str):
+                                    pc = json.loads(pc) if pc else {}
+                                target_col = pc.get('target_column')
+                        break
+
+            if target_col and target_col in current_data.columns:
+                raw_target = current_data[target_col].values
+                logger.info(f"[AppBuilder] Target column '{target_col}': {len(raw_target)} values")
 
         for node in ordered_nodes:
             ntype = node.get('type', '')
@@ -368,7 +395,18 @@ def run_app(slug):
                     drop_cols = [c for c in sensor_df.columns if c.lower() in ('timestamp', 'time', 'time_sec', 'index')]
                     if drop_cols:
                         sensor_df = sensor_df.drop(columns=drop_cols)
-                    column_names = list(sensor_df.columns)  # Update column names
+                    column_names = list(sensor_df.columns)
+
+                    # Extract per-window target values (mean of target per window)
+                    if target_col and target_col in sensor_df.columns:
+                        target_vals = sensor_df[target_col].values
+                        ws = params.get('window_size', 32)
+                        st = params.get('step', params.get('stride', 16))
+                        actual_values = []
+                        for start in range(0, len(target_vals) - ws + 1, st):
+                            actual_values.append(float(np.mean(target_vals[start:start + ws])))
+                        logger.info(f"[AppBuilder] Actual target values: {len(actual_values)}")
+
                     current_data = sensor_df.values
                     logger.info(f"[AppBuilder] Windowing input: {current_data.shape}, cols={column_names}")
                 current_data = _apply_windowing(current_data, params)
@@ -436,7 +474,7 @@ def run_app(slug):
         'slug': slug,
         'mode': model_mode,
         'predictions': pred_values,
-        'predictions_full': predictions,
+        'actual': actual_values if actual_values else None,
         'count': len(pred_values),
         'latency_ms': round(latency_ms, 1),
     }
@@ -448,6 +486,16 @@ def run_app(slug):
             response['std'] = float(np.std(vals))
             response['min'] = float(np.min(vals))
             response['max'] = float(np.max(vals))
+            # Compute R² if actual values available
+            if actual_values and len(actual_values) == len(vals):
+                actuals = np.array(actual_values)
+                preds = np.array(vals)
+                ss_res = np.sum((actuals - preds) ** 2)
+                ss_tot = np.sum((actuals - np.mean(actuals)) ** 2)
+                r2 = 1 - ss_res / ss_tot if ss_tot > 0 else 0
+                response['r2'] = float(r2)
+                response['rmse'] = float(np.sqrt(np.mean((actuals - preds) ** 2)))
+                response['mae'] = float(np.mean(np.abs(actuals - preds)))
 
     return jsonify(response)
 

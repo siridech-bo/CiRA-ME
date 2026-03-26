@@ -90,20 +90,24 @@
               <div class="result-stat-label">Std</div>
               <div class="result-stat-value">{{ result.std?.toFixed(4) }}</div>
             </div>
-            <div v-if="result.min !== undefined" class="result-stat">
+            <div v-if="result.r2 !== undefined" class="result-stat">
+              <div class="result-stat-label">R²</div>
+              <div class="result-stat-value" :style="{ color: result.r2 > 0.8 ? '#34d399' : result.r2 > 0.5 ? '#fbbf24' : '#f87171' }">{{ result.r2?.toFixed(4) }}</div>
+            </div>
+            <div v-else-if="result.min !== undefined" class="result-stat">
               <div class="result-stat-label">Range</div>
               <div class="result-stat-value">{{ result.min?.toFixed(1) }} – {{ result.max?.toFixed(1) }}</div>
+            </div>
+            <div v-if="result.rmse !== undefined" class="result-stat">
+              <div class="result-stat-label">RMSE</div>
+              <div class="result-stat-value">{{ result.rmse?.toFixed(4) }}</div>
             </div>
           </div>
 
           <!-- Line Chart -->
           <div v-if="chartData.length > 0" class="chart-container">
             <div class="chart-header">
-              <span class="chart-title-text">Predictions over Time</span>
-              <div class="chart-legend-items">
-                <span class="chart-legend-dot" style="background: #a78bfa"></span>
-                <span class="chart-legend-label">Predicted</span>
-              </div>
+              <span class="chart-title-text">{{ actualData.length > 0 ? 'Actual vs Predicted' : 'Predictions over Time' }}</span>
             </div>
             <svg :viewBox="`0 0 ${chartWidth} ${chartHeight}`" class="prediction-chart">
               <!-- Grid lines -->
@@ -119,15 +123,23 @@
               </text>
               <!-- Area fill -->
               <path :d="chartAreaPath" fill="url(#pred-gradient)" />
-              <!-- Prediction line -->
-              <path :d="chartLinePath" fill="none" stroke="#a78bfa" stroke-width="1.5" />
+              <!-- Actual line (cyan solid) -->
+              <path v-if="actualLinePath" :d="actualLinePath" fill="none" stroke="#22d3ee" stroke-width="1.5" />
+              <!-- Prediction line (purple, dashed if actual shown) -->
+              <path :d="chartLinePath" fill="none" stroke="#a78bfa" stroke-width="1.5" :stroke-dasharray="actualLinePath ? '4,2' : 'none'" />
               <defs>
                 <linearGradient id="pred-gradient" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stop-color="#a78bfa" stop-opacity="0.2" />
+                  <stop offset="0%" stop-color="#a78bfa" stop-opacity="0.15" />
                   <stop offset="100%" stop-color="#a78bfa" stop-opacity="0" />
                 </linearGradient>
               </defs>
             </svg>
+            <div class="chart-legend-items" style="margin-top:8px">
+              <span v-if="actualData.length > 0" class="chart-legend-dot" style="background: #22d3ee"></span>
+              <span v-if="actualData.length > 0" class="chart-legend-label">Actual</span>
+              <span class="chart-legend-dot" style="background: #a78bfa"></span>
+              <span class="chart-legend-label">Predicted</span>
+            </div>
           </div>
 
           <!-- Data Table (collapsible) -->
@@ -244,12 +256,12 @@ const chartData = computed(() => {
 })
 
 const chartMinY = computed(() => {
-  if (chartData.value.length === 0) return 0
-  return Math.min(...chartData.value) * 0.98
+  if (allChartValues.value.length === 0) return 0
+  return Math.min(...allChartValues.value) - (Math.max(...allChartValues.value) - Math.min(...allChartValues.value)) * 0.05
 })
 const chartMaxY = computed(() => {
-  if (chartData.value.length === 0) return 1
-  return Math.max(...chartData.value) * 1.02
+  if (allChartValues.value.length === 0) return 1
+  return Math.max(...allChartValues.value) + (Math.max(...allChartValues.value) - Math.min(...allChartValues.value)) * 0.05
 })
 const chartRangeY = computed(() => chartMaxY.value - chartMinY.value || 1)
 
@@ -264,10 +276,34 @@ function chartYLabel(idx) {
   return v.toFixed(1)
 }
 
+// Actual values (downsampled same way)
+const actualData = computed(() => {
+  const actuals = result.value?.actual || []
+  if (actuals.length === 0) return []
+  if (actuals.length <= 200) return actuals
+  const step = actuals.length / 200
+  return Array.from({ length: 200 }, (_, i) => actuals[Math.floor(i * step)])
+})
+
+// Adjust Y range to include both predicted and actual
+const allChartValues = computed(() => {
+  return [...chartData.value, ...actualData.value].filter(v => typeof v === 'number')
+})
+
 const chartLinePath = computed(() => {
   if (chartData.value.length === 0) return ''
   return chartData.value.map((v, i) => `${i === 0 ? 'M' : 'L'}${chartX(i).toFixed(1)},${chartY(v).toFixed(1)}`).join(' ')
 })
+const actualLinePath = computed(() => {
+  if (actualData.value.length === 0) return ''
+  const n = actualData.value.length
+  const maxPts = chartData.value.length || n
+  return actualData.value.map((v, i) => {
+    const x = chartPadding + (i / (n - 1 || 1)) * chartInnerW
+    return `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${chartY(v).toFixed(1)}`
+  }).join(' ')
+})
+
 const chartAreaPath = computed(() => {
   if (chartData.value.length === 0) return ''
   const n = chartData.value.length
