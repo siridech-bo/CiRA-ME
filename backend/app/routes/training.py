@@ -3,6 +3,7 @@ CiRA ME - ML Training Routes
 Handles Anomaly Detection (PyOD), Classification (Scikit-learn), and Deep Learning (TimesNet)
 """
 
+import os
 import math
 import logging
 import pickle
@@ -726,12 +727,38 @@ def save_benchmark():
         ti_mode = data.get('mode', data.get('pipeline_config', {}).get('mode', 'regression'))
 
         if ti_metrics:
-            # Create a virtual session from frontend data
+            # Try to get model from TI container or from ML trainer session
+            model_path = ''
+
+            # Check if it's a Traditional ML model trained via /api/ti/train-ml
+            # which stores in _model_sessions under the algorithm name
+            ml_session = _model_sessions.get(ti_algorithm)
+            if ml_session and ml_session.get('model_path'):
+                model_path = ml_session['model_path']
+
+            # If still no path, try fetching ONNX from TI container
+            if not model_path:
+                try:
+                    from ..services.ti_integration import TIIntegration
+                    ti = TIIntegration()
+                    import requests as req
+                    resp = req.get(f'{ti.base_url}/artifacts/{training_session_id}', timeout=10)
+                    if resp.status_code == 200 and resp.headers.get('content-type', '').startswith('application/'):
+                        import uuid as uuid_mod
+                        onnx_path = f'./models/{uuid_mod.uuid4()}.onnx'
+                        os.makedirs('./models', exist_ok=True)
+                        with open(onnx_path, 'wb') as f:
+                            f.write(resp.content)
+                        model_path = onnx_path
+                        logger.info(f"[SaveBenchmark] Saved TI ONNX model: {onnx_path}")
+                except Exception as e:
+                    logger.warning(f"[SaveBenchmark] Could not fetch TI model: {e}")
+
             session = {
                 'algorithm': ti_algorithm,
                 'mode': ti_mode,
                 'metrics': ti_metrics,
-                'model_path': '',
+                'model_path': model_path,
                 'hyperparameters': {},
                 'created_at': __import__('datetime').datetime.utcnow().isoformat(),
             }

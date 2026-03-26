@@ -516,6 +516,32 @@ def train_model_stream():
 
 
 @app.route('/download/<run_id>', methods=['GET'])
+@app.route('/artifacts/<model_name>', methods=['GET'])
+def get_model_artifact(model_name):
+    """Get the trained ONNX model file for a specific model."""
+    # Search across all projects for this model
+    for project_id in os.listdir(PROJECTS_DIR):
+        project_path = os.path.join(PROJECTS_DIR, project_id)
+        if not os.path.isdir(project_path):
+            continue
+        model_dir = os.path.join(project_path, model_name)
+        if os.path.isdir(model_dir):
+            # Find ONNX file
+            for root, dirs, files in os.walk(model_dir):
+                for f in files:
+                    if f == 'model.onnx':
+                        return send_file(os.path.join(root, f),
+                                       as_attachment=True,
+                                       download_name=f'{model_name}.onnx')
+            # Try emlearn C header
+            for f in os.listdir(model_dir):
+                if f.endswith('_model.h'):
+                    return send_file(os.path.join(model_dir, f),
+                                   as_attachment=True,
+                                   download_name=f)
+    return jsonify({'error': f'Model {model_name} not found'}), 404
+
+
 def download_artifacts(run_id):
     """Download compiled model artifacts as zip."""
     project_dir = os.path.join(PROJECTS_DIR, run_id)
