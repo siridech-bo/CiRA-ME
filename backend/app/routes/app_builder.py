@@ -413,6 +413,15 @@ def run_app(slug):
                 logger.info(f"[AppBuilder] After windowing: shape={current_data.shape}")
 
             elif ntype == 'transform.normalize':
+                # Convert DataFrame to numpy, dropping timestamp-like columns
+                if isinstance(current_data, pd.DataFrame):
+                    sensor_df = current_data.select_dtypes(include=[np.number])
+                    drop_cols = [c for c in sensor_df.columns if c.lower() in ('timestamp', 'time', 'time_sec', 'index')]
+                    if drop_cols:
+                        sensor_df = sensor_df.drop(columns=drop_cols)
+                    column_names = list(sensor_df.columns)
+                    current_data = sensor_df.values
+
                 # Try to get normalization params from the model's pipeline_config
                 norm_params = dict(params)
                 for n2 in ordered_nodes:
@@ -429,10 +438,8 @@ def run_app(slug):
                                 if model_norm and model_norm.get('channel_min'):
                                     norm_params['_model_norm'] = model_norm
                                     norm_params['_sensor_columns'] = column_names
-                                    logger.info(f"[AppBuilder] Using model normalization params")
                         break
                 current_data = _apply_normalization(current_data, norm_params)
-                logger.info(f"[AppBuilder] After normalize: shape={current_data.shape}")
 
             elif ntype == 'transform.fill_missing':
                 current_data = _apply_fill_missing(current_data, params)
