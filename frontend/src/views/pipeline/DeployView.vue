@@ -207,7 +207,7 @@
           </h4>
           <v-spacer />
           <v-btn
-            v-if="modelSource === 'saved'"
+            v-if="modelSource === 'saved' && !isTiNnModel"
             color="info"
             variant="tonal"
             size="small"
@@ -216,6 +216,10 @@
             <v-icon start size="small">mdi-test-tube</v-icon>
             Test with New Data
           </v-btn>
+          <v-chip v-if="modelSource === 'saved' && isTiNnModel" size="small" color="warning" variant="tonal">
+            <v-icon start size="small">mdi-chip</v-icon>
+            TI NN — deploy to MCU for testing
+          </v-chip>
           <v-btn
             v-if="modelSource === 'saved' && selectedModel?.pipeline_config?.normalization"
             color="success"
@@ -1333,9 +1337,20 @@ function formatDate(dateStr: string) {
   })
 }
 
+const isTiNnModel = computed(() => {
+  const model = savedModels.value.find(m => m.id === selectedSavedModelId.value)
+  if (!model) return false
+  const algo = (model.algorithm || '').toUpperCase()
+  return algo.startsWith('REGR') || algo.startsWith('CLF_TS') || algo.startsWith('AE_TS')
+})
+
 function openEvalDialog() {
   const model = savedModels.value.find(m => m.id === selectedSavedModelId.value)
   if (!model) return
+  if (isTiNnModel.value) {
+    alert('TI NN models require deployment to MCU for testing. Use "Download Package" to get the C code for Code Composer Studio.')
+    return
+  }
   evalModel.value = model
   evalResult.value = null
   evalFile.value = null

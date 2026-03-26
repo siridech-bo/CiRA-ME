@@ -126,13 +126,15 @@
         <v-card-text>
           <v-select
             v-model="newEndpoint.saved_model_id"
-            :items="savedModels"
+            :items="eligibleModels"
             item-title="displayName"
             item-value="id"
             label="Select Saved Model"
             variant="outlined"
             density="compact"
             class="mb-3"
+            :hint="eligibleModels.length < savedModels.length ? `${savedModels.length - eligibleModels.length} TI NN model(s) hidden — not compatible with API endpoints` : ''"
+            persistent-hint
           />
           <v-text-field
             v-model="newEndpoint.name"
@@ -228,6 +230,14 @@ const notificationStore = useNotificationStore()
 const endpoints = ref<any[]>([])
 const apiKeys = ref<any[]>([])
 const savedModels = ref<any[]>([])
+// Filter out TI NN models — they use 4D ONNX input incompatible with ME-LAB's flat feature vector API
+const eligibleModels = computed(() => {
+  return savedModels.value.filter(m => {
+    const algo = (m.algorithm || '').toUpperCase()
+    return !algo.startsWith('REGR_') && !algo.startsWith('REGR ') &&
+           !algo.startsWith('CLF_TS') && !algo.startsWith('AE_TS')
+  })
+})
 const newKeyValue = ref('')
 const showCreateDialog = ref(false)
 const showInfoDialog = ref(false)
