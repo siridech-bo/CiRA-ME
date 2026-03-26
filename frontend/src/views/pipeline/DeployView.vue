@@ -86,6 +86,7 @@
             <tr>
               <th style="width:40px"></th>
               <th>Name</th>
+              <th>Type</th>
               <th>Algorithm</th>
               <th class="text-center">R²</th>
               <th class="text-center">RMSE</th>
@@ -108,6 +109,11 @@
                 </v-radio-group>
               </td>
               <td class="font-weight-medium">{{ model.name }}</td>
+              <td>
+                <v-chip size="x-small" :color="getModelTypeInfo(model).color" variant="flat" class="font-weight-bold" style="font-size:9px; letter-spacing:0.5px">
+                  {{ getModelTypeInfo(model).label }}
+                </v-chip>
+              </td>
               <td class="text-caption">{{ model.algorithm }}</td>
               <td class="text-center" :style="{ color: model.metrics?.r2 > 0.8 ? '#34d399' : model.metrics?.r2 > 0.5 ? '#fbbf24' : '#f87171' }">
                 {{ model.metrics?.r2 != null ? model.metrics.r2.toFixed(4) : '-' }}
@@ -133,6 +139,7 @@
             <tr>
               <th style="width:40px"></th>
               <th>Name</th>
+              <th>Type</th>
               <th>Algorithm</th>
               <th>Mode</th>
               <th class="text-center">Accuracy</th>
@@ -157,6 +164,11 @@
                 </v-radio-group>
               </td>
               <td class="font-weight-medium">{{ model.name }}</td>
+              <td>
+                <v-chip size="x-small" :color="getModelTypeInfo(model).color" variant="flat" class="font-weight-bold" style="font-size:9px; letter-spacing:0.5px">
+                  {{ getModelTypeInfo(model).label }}
+                </v-chip>
+              </td>
               <td class="text-caption">{{ model.algorithm }}</td>
               <td>
                 <v-chip size="x-small" :color="model.mode === 'anomaly' ? 'warning' : 'info'" variant="tonal">
@@ -201,6 +213,9 @@
       <v-card v-if="selectedModel" variant="outlined" class="mt-4 pa-4">
         <div class="d-flex align-center mb-3">
           <v-icon color="success" class="mr-2">mdi-check-circle</v-icon>
+          <v-chip size="x-small" :color="getModelTypeInfo(selectedModel).color" variant="flat" class="mr-2 font-weight-bold" style="font-size:9px; letter-spacing:0.5px">
+            {{ getModelTypeInfo(selectedModel).label }}
+          </v-chip>
           <h4 class="text-subtitle-2 font-weight-bold">
             {{ selectedModel.name }}
             <span class="text-medium-emphasis font-weight-regular ml-1">— {{ selectedModel.algorithm }} ({{ selectedModel.mode }})</span>
@@ -232,6 +247,27 @@
             <v-icon start size="small">mdi-package-down</v-icon>
             Download Package
           </v-btn>
+        </div>
+
+        <!-- Capabilities row -->
+        <div class="d-flex align-center gap-2 mb-3">
+          <span class="text-caption text-medium-emphasis">Capabilities:</span>
+          <v-chip size="x-small" :color="getModelTypeInfo(selectedModel).canApi ? 'success' : 'grey'" variant="tonal">
+            <v-icon start size="10">{{ getModelTypeInfo(selectedModel).canApi ? 'mdi-check' : 'mdi-close' }}</v-icon>
+            API / ME-LAB
+          </v-chip>
+          <v-chip size="x-small" :color="getModelTypeInfo(selectedModel).canMcu ? 'success' : 'grey'" variant="tonal">
+            <v-icon start size="10">{{ getModelTypeInfo(selectedModel).canMcu ? 'mdi-check' : 'mdi-close' }}</v-icon>
+            TI MCU
+          </v-chip>
+          <v-chip size="x-small" color="success" variant="tonal">
+            <v-icon start size="10">mdi-check</v-icon>
+            SSH Deploy
+          </v-chip>
+          <v-chip size="x-small" :color="!getModelTypeInfo(selectedModel).canApi && getModelTypeInfo(selectedModel).label === 'TI NN' ? 'grey' : 'success'" variant="tonal">
+            <v-icon start size="10">{{ !getModelTypeInfo(selectedModel).canApi && getModelTypeInfo(selectedModel).label === 'TI NN' ? 'mdi-close' : 'mdi-check' }}</v-icon>
+            Test with Data
+          </v-chip>
         </div>
 
         <!-- Regression metrics -->
@@ -1337,11 +1373,36 @@ function formatDate(dateStr: string) {
   })
 }
 
+function getModelTypeInfo(model: any) {
+  if (!model) return { label: '?', color: 'grey', canApi: false, canMcu: false }
+  const algo = (model.algorithm || '').toUpperCase()
+  const approach = model.pipeline_config?.training_approach || ''
+
+  // TI NN models (trained in TI container with neural networks)
+  if (algo.startsWith('REGR_') || algo.startsWith('REGR ') ||
+      algo.startsWith('CLF_TS') || algo.startsWith('AE_TS')) {
+    return { label: 'TI NN', color: 'orange', canApi: false, canMcu: true, icon: 'mdi-chip' }
+  }
+  // TI Traditional ML (trained via TI tab but sklearn models)
+  if (approach === 'ti' && !algo.startsWith('REGR')) {
+    return { label: 'TI ML', color: 'light-blue', canApi: true, canMcu: true, icon: 'mdi-memory' }
+  }
+  // Deep Learning (TimesNet)
+  if (approach === 'dl' || algo.includes('TIMESNET') || algo.includes('DL_NETWORK') || algo === 'MLP') {
+    return { label: 'DL', color: 'amber', canApi: true, canMcu: false, icon: 'mdi-brain' }
+  }
+  // Custom model
+  if (approach === 'custom') {
+    return { label: 'Custom', color: 'purple', canApi: true, canMcu: false, icon: 'mdi-code-braces' }
+  }
+  // Default: Traditional ML
+  return { label: 'ML', color: 'blue', canApi: true, canMcu: true, icon: 'mdi-cog' }
+}
+
 const isTiNnModel = computed(() => {
   const model = savedModels.value.find(m => m.id === selectedSavedModelId.value)
   if (!model) return false
-  const algo = (model.algorithm || '').toUpperCase()
-  return algo.startsWith('REGR') || algo.startsWith('CLF_TS') || algo.startsWith('AE_TS')
+  return getModelTypeInfo(model).label === 'TI NN'
 })
 
 function openEvalDialog() {
