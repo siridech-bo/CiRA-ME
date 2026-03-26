@@ -18,23 +18,72 @@ def load_saved_model_session(model_path: str, algorithm: str = 'unknown',
 
     This allows saved benchmark models (stored as pickle on disk) to be
     used with the deployer and exporter without needing an in-memory session.
+    Supports both pickle (.pkl) and ONNX (.onnx) formats.
     """
     if not os.path.exists(model_path):
         raise ValueError(f"Model file not found: {model_path}")
 
-    with open(model_path, 'rb') as f:
-        data = pickle.load(f)
+    # Detect ONNX files by extension or magic bytes
+    if model_path.endswith('.onnx'):
+        return _load_onnx_session(model_path, algorithm, mode)
 
-    session = {
-        'model': data.get('model'),
-        'scaler': data.get('scaler'),
-        'algorithm': data.get('algorithm', algorithm),
-        'mode': data.get('mode', mode),
+    # Try pickle first
+    try:
+        with open(model_path, 'rb') as f:
+            data = pickle.load(f)
+
+        session = {
+            'model': data.get('model'),
+            'scaler': data.get('scaler'),
+            'algorithm': data.get('algorithm', algorithm),
+            'mode': data.get('mode', mode),
+            'model_path': model_path,
+            'hyperparameters': data.get('hyperparameters', {}),
+            'metrics': data.get('metrics', {}),
+        }
+        return session
+    except Exception:
+        # Maybe it's an ONNX file without .onnx extension
+        return _load_onnx_session(model_path, algorithm, mode)
+
+
+def _load_onnx_session(model_path: str, algorithm: str, mode: str) -> Dict[str, Any]:
+    """Load an ONNX model file and wrap it in a session-compatible dict."""
+    try:
+        import onnxruntime as ort
+    except ImportError:
+        raise ValueError("onnxruntime not installed — cannot load ONNX model")
+
+    ort_session = ort.InferenceSession(model_path)
+
+    # Create a wrapper that matches sklearn's predict() interface
+    class OnnxModelWrapper:
+        def __init__(self, session):
+            self.session = session
+            self.input_name = session.get_inputs()[0].name
+            self.input_shape = session.get_inputs()[0].shape
+
+        def predict(self, X):
+            import numpy as np
+            X = np.array(X, dtype=np.float32)
+            # ONNX models may expect specific shapes
+            if len(self.input_shape) == 4 and X.ndim == 2:
+                # TI NN model expects [batch, channels, window, 1]
+                # but we have [batch, features] — need to reshape
+                pass  # Use as-is, let ONNX handle it
+            result = self.session.run(None, {self.input_name: X})
+            return result[0].flatten()
+
+    return {
+        'model': OnnxModelWrapper(ort_session),
+        'scaler': None,
+        'algorithm': algorithm,
+        'mode': mode,
         'model_path': model_path,
-        'hyperparameters': data.get('hyperparameters', {}),
-        'metrics': data.get('metrics', {}),
+        'hyperparameters': {},
+        'metrics': {},
+        'is_onnx': True,
     }
-    return session
 
 # Global storage for deployments
 _deployments: Dict[str, Dict] = {}

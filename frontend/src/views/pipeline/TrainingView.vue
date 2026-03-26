@@ -143,7 +143,7 @@
         </template>
         <template v-else-if="trainingApproach === 'ti'">
           <strong>TI TinyML:</strong> Train quantized models from TI's model zoo for deployment on TMS320 MCUs.
-          Uses TI's tinyml-modelmaker with Haar/Hadamard feature extraction and MCU Neural Network Compiler.
+          Train quantized neural networks and traditional ML models for TMS320 MCUs using TI's tinyml-modelmaker.
         </template>
         <template v-else>
           <strong>Deep Learning (TimesNet):</strong> End-to-end learning directly from windowed data.
