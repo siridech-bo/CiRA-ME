@@ -107,7 +107,7 @@
     </v-card>
 
     <!-- Create App Dialog -->
-    <v-dialog v-model="showCreateDialog" max-width="440" @keydown.enter="createApp">
+    <v-dialog v-model="showCreateDialog" max-width="560">
       <v-card>
         <v-card-title class="pt-5 pb-2 px-5">
           <v-icon start size="small">mdi-plus-circle-outline</v-icon>
@@ -123,8 +123,35 @@
             placeholder="e.g. Vibration Monitor"
             :error-messages="createError"
             autofocus
+            class="mb-4"
             @input="createError = ''"
+            @keydown.enter="createApp"
           />
+
+          <div class="text-caption font-weight-bold text-medium-emphasis mb-2">TEMPLATE</div>
+          <v-row dense>
+            <v-col v-for="tpl in TEMPLATES" :key="tpl.id" cols="6">
+              <v-card
+                variant="outlined"
+                :color="selectedTemplate === tpl.id ? 'purple' : undefined"
+                class="pa-3 template-card"
+                :class="{ 'template-selected': selectedTemplate === tpl.id }"
+                @click="selectedTemplate = tpl.id"
+                style="cursor: pointer; min-height: 90px"
+              >
+                <div class="d-flex align-center gap-2 mb-1">
+                  <v-icon size="16" :color="tpl.color">{{ tpl.icon }}</v-icon>
+                  <span class="text-body-2 font-weight-bold">{{ tpl.name }}</span>
+                </div>
+                <div class="text-caption text-medium-emphasis">{{ tpl.description }}</div>
+                <div class="mt-1">
+                  <v-chip v-for="node in tpl.nodeLabels" :key="node" size="x-small" variant="tonal" class="mr-1 mt-1" style="font-size:9px">
+                    {{ node }}
+                  </v-chip>
+                </div>
+              </v-card>
+            </v-col>
+          </v-row>
         </v-card-text>
         <v-card-actions class="px-5 pb-4">
           <v-spacer />
@@ -190,12 +217,71 @@ const notificationStore = useNotificationStore()
 const apps = ref<App[]>([])
 const loading = ref(false)
 
+// Templates
+const TEMPLATES = [
+  {
+    id: 'regression_monitor',
+    name: 'Regression Monitor',
+    description: 'Normalize → Window → Features → Model → Chart',
+    icon: 'mdi-chart-timeline-variant',
+    color: '#a78bfa',
+    nodeLabels: ['Normalize', 'Window', 'Features', 'Model', 'Chart'],
+    nodes: [
+      { id: 'n1', type: 'input.csv_upload', config: { timestamp_col: 'timestamp', value_cols: 'value' } },
+      { id: 'n2', type: 'transform.normalize', config: { method: 'minmax' } },
+      { id: 'n3', type: 'transform.window', config: { window_size: 32, step: 16 } },
+      { id: 'n4', type: 'transform.feature_extract', config: { features: [] } },
+      // model node added by user
+      { id: 'n6', type: 'output.line_chart', config: { title: 'Predictions', target_column: '', show_anomalies: false } },
+    ],
+  },
+  {
+    id: 'anomaly_detector',
+    name: 'Anomaly Detector',
+    description: 'Normalize → Window → Features → Model → Alert',
+    icon: 'mdi-shield-alert',
+    color: '#f87171',
+    nodeLabels: ['Normalize', 'Window', 'Features', 'Model', 'Alert'],
+    nodes: [
+      { id: 'n1', type: 'input.csv_upload', config: { timestamp_col: 'timestamp', value_cols: 'value' } },
+      { id: 'n2', type: 'transform.normalize', config: { method: 'minmax' } },
+      { id: 'n3', type: 'transform.window', config: { window_size: 32, step: 16 } },
+      { id: 'n4', type: 'transform.feature_extract', config: { features: [] } },
+      { id: 'n6', type: 'output.alert_badge', config: { label_normal: 'Normal', label_anomaly: 'Anomaly Detected', webhook_url: '' } },
+    ],
+  },
+  {
+    id: 'classifier',
+    name: 'Classifier',
+    description: 'Window → Features → Model → Table',
+    icon: 'mdi-shape',
+    color: '#34d399',
+    nodeLabels: ['Window', 'Features', 'Model', 'Table'],
+    nodes: [
+      { id: 'n1', type: 'input.csv_upload', config: { timestamp_col: 'timestamp', value_cols: 'value' } },
+      { id: 'n3', type: 'transform.window', config: { window_size: 32, step: 16 } },
+      { id: 'n4', type: 'transform.feature_extract', config: { features: [] } },
+      { id: 'n6', type: 'output.table', config: { max_rows: 50, show_confidence: true } },
+    ],
+  },
+  {
+    id: 'blank',
+    name: 'Blank',
+    description: 'Start from scratch',
+    icon: 'mdi-file-outline',
+    color: '#94a3b8',
+    nodeLabels: [],
+    nodes: [],
+  },
+]
+
 // Create dialog
 const showCreateDialog = ref(false)
 const newAppName = ref('')
 const createError = ref('')
 const creating = ref(false)
 const createNameField = ref<HTMLElement | null>(null)
+const selectedTemplate = ref('regression_monitor')
 
 // Delete dialog
 const showDeleteDialog = ref(false)
@@ -246,6 +332,7 @@ async function fetchApps() {
 function openCreateDialog() {
   newAppName.value = ''
   createError.value = ''
+  selectedTemplate.value = 'regression_monitor'
   showCreateDialog.value = true
   // autofocus is handled by the text-field attribute, but nextTick ensures the dialog is rendered
   nextTick(() => {
@@ -269,7 +356,12 @@ async function createApp() {
   }
   creating.value = true
   try {
-    const resp = await api.post('/api/app-builder/apps', { name })
+    const tpl = TEMPLATES.find(t => t.id === selectedTemplate.value)
+    const nodes = tpl ? JSON.parse(JSON.stringify(tpl.nodes)) : []
+    const edges = nodes.slice(1).map((n: any, i: number) => ({
+      id: `e${i}`, source: nodes[i].id, target: n.id,
+    }))
+    const resp = await api.post('/api/app-builder/apps', { name, nodes, edges })
     const newId = resp.data?.id ?? resp.data?.app?.id
     notificationStore.showSuccess(`App "${name}" created.`)
     closeCreateDialog()
@@ -317,3 +409,15 @@ onMounted(() => {
   fetchApps()
 })
 </script>
+
+<style scoped>
+.template-card {
+  transition: all 0.15s;
+}
+.template-card:hover {
+  border-color: #555 !important;
+}
+.template-selected {
+  background: rgba(167, 139, 250, 0.08) !important;
+}
+</style>
