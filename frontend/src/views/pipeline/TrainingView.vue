@@ -258,25 +258,73 @@
               </div>
             </template>
 
-            <!-- Regression hyperparameters -->
+            <!-- Regression hyperparameters (context-aware) -->
             <template v-else-if="pipelineStore.mode === 'regression'">
+              <!-- n_estimators: only for ensemble models -->
               <v-text-field
+                v-if="regNeedsEstimators"
                 v-model.number="mlHyperparameters.n_estimators"
                 label="Number of Estimators"
                 type="number"
                 :min="10"
                 :max="500"
-                hint="For tree-based models (RF, XGBoost, LightGBM)"
+                hint="Number of trees (RF, XGBoost, LightGBM)"
               />
 
+              <!-- max_depth: for tree-based models -->
               <v-text-field
+                v-if="regNeedsMaxDepth"
                 v-model.number="mlHyperparameters.max_depth"
                 label="Max Depth"
                 type="number"
                 :min="1"
                 :max="50"
-                hint="Leave empty for unlimited depth"
+                hint="Maximum tree depth"
                 clearable
+              />
+
+              <!-- n_neighbors: KNN only -->
+              <v-text-field
+                v-if="regNeedsNeighbors"
+                v-model.number="mlHyperparameters.n_neighbors"
+                label="Number of Neighbors (K)"
+                type="number"
+                :min="1"
+                :max="50"
+                hint="Number of nearest neighbors to consider"
+              />
+
+              <!-- SVR kernel -->
+              <v-select
+                v-if="regNeedsSvrParams"
+                v-model="mlHyperparameters.svr_kernel"
+                label="Kernel"
+                :items="['rbf', 'linear', 'poly', 'sigmoid']"
+                hint="SVR kernel function"
+              />
+
+              <!-- SVR C -->
+              <v-text-field
+                v-if="regNeedsSvrParams"
+                v-model.number="mlHyperparameters.svr_C"
+                label="Regularization (C)"
+                type="number"
+                :min="0.01"
+                :max="1000"
+                :step="0.1"
+                hint="Higher C = less regularization"
+              />
+
+              <!-- SVR epsilon -->
+              <v-text-field
+                v-if="regNeedsSvrParams"
+                v-model.number="mlHyperparameters.svr_epsilon"
+                label="Epsilon"
+                type="number"
+                :min="0.001"
+                :max="1"
+                :step="0.01"
+                hint="Width of the no-penalty tube"
               />
 
               <div class="mb-4">
@@ -1888,8 +1936,29 @@ const mlHyperparameters = reactive({
   n_estimators: 100,
   contamination: 0.1,
   max_depth: null as number | null,
-  test_size: pipelineStore.windowingConfig.test_ratio || 0.2
+  test_size: pipelineStore.windowingConfig.test_ratio || 0.2,
+  n_neighbors: 5,
+  svr_kernel: 'rbf',
+  svr_C: 1.0,
+  svr_epsilon: 0.1,
 })
+
+// Context-aware hyperparameter visibility for regression
+const ENSEMBLE_ALGOS = ['rf_reg', 'xgb_reg', 'lgbm_reg']
+const TREE_ALGOS = ['rf_reg', 'xgb_reg', 'lgbm_reg', 'dt_reg']
+
+const regNeedsEstimators = computed(() =>
+  selectedAlgorithms.value.some(a => ENSEMBLE_ALGOS.includes(a))
+)
+const regNeedsMaxDepth = computed(() =>
+  selectedAlgorithms.value.some(a => TREE_ALGOS.includes(a))
+)
+const regNeedsNeighbors = computed(() =>
+  selectedAlgorithms.value.includes('knn_reg')
+)
+const regNeedsSvrParams = computed(() =>
+  selectedAlgorithms.value.includes('svr')
+)
 
 // TimesNet state
 const timesnetConfig = reactive({

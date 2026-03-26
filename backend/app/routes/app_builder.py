@@ -346,57 +346,103 @@ def run_app(slug):
     try:
         current_data = input_data
         column_names = None  # Track column names through pipeline
+        model_mode = None
 
         # If input is a DataFrame, remember column names
-        if hasattr(current_data, 'columns'):
+        import pandas as pd
+        if isinstance(current_data, pd.DataFrame):
             column_names = list(current_data.columns)
+            logger.info(f"[AppBuilder] Input: DataFrame {current_data.shape}, columns={column_names}")
 
         for node in ordered_nodes:
             ntype = node.get('type', '')
             params = node.get('config', {}) or {}
 
             if ntype.startswith('input.'):
-                # Input node: data already parsed
                 continue
 
             elif ntype == 'transform.window':
+                if isinstance(current_data, pd.DataFrame):
+                    current_data = current_data.select_dtypes(include=[np.number]).values
                 current_data = _apply_windowing(current_data, params)
+                logger.info(f"[AppBuilder] After windowing: shape={current_data.shape}")
 
             elif ntype == 'transform.normalize':
                 current_data = _apply_normalization(current_data, params)
+                logger.info(f"[AppBuilder] After normalize: shape={current_data.shape}")
 
             elif ntype == 'transform.fill_missing':
                 current_data = _apply_fill_missing(current_data, params)
 
             elif ntype == 'transform.feature_extract':
-                # Pass column names for proper DSP feature extraction
                 if column_names:
                     params = dict(params)
                     params['_column_names'] = column_names
                 current_data = _apply_feature_extraction(current_data, params)
+                logger.info(f"[AppBuilder] After feature_extract: shape={current_data.shape}")
 
             elif ntype.startswith('model.endpoint.'):
                 endpoint_id = ntype.replace('model.endpoint.', '')
+                # Get mode for response formatting
+                ep = MeLabEndpoint.get_by_id(endpoint_id)
+                if ep:
+                    model_mode = ep.get('mode')
                 current_data = _run_model_inference(endpoint_id, current_data)
+                logger.info(f"[AppBuilder] After model inference: {len(current_data)} predictions")
 
             elif ntype.startswith('output.'):
-                # Output node: finalize
                 continue
 
     except Exception as e:
-        logger.error(f"[AppBuilder] Pipeline error in app {slug}: {e}")
+        import traceback
+        logger.error(f"[AppBuilder] Pipeline error in app {slug}: {e}\n{traceback.format_exc()}")
         return jsonify({'error': f'Pipeline execution failed: {str(e)}'}), 500
 
     # Increment calls
     AppBuilderApp.increment_calls(app['id'])
 
     latency_ms = (time.time() - start_time) * 1000
-    return jsonify({
+
+    # Format response based on model predictions
+    predictions = []
+    if isinstance(current_data, list):
+        predictions = current_data  # List[Dict] from ModelManager.predict()
+    elif isinstance(current_data, np.ndarray):
+        predictions = current_data.tolist()
+
+    # Extract prediction values for the frontend
+    pred_values = []
+    if predictions and isinstance(predictions[0], dict):
+        for p in predictions:
+            if 'value' in p:
+                pred_values.append(p['value'])
+            elif 'label' in p:
+                pred_values.append(p['label'])
+            else:
+                pred_values.append(p)
+    else:
+        pred_values = predictions
+
+    # Compute summary stats for regression
+    response = {
         'app': app['name'],
         'slug': slug,
-        'result': current_data if not isinstance(current_data, np.ndarray) else current_data.tolist(),
+        'mode': model_mode,
+        'predictions': pred_values,
+        'predictions_full': predictions,
+        'count': len(pred_values),
         'latency_ms': round(latency_ms, 1),
-    })
+    }
+
+    if model_mode == 'regression' and pred_values:
+        vals = [v for v in pred_values if isinstance(v, (int, float))]
+        if vals:
+            response['mean'] = float(np.mean(vals))
+            response['std'] = float(np.std(vals))
+            response['min'] = float(np.min(vals))
+            response['max'] = float(np.max(vals))
+
+    return jsonify(response)
 
 
 # ─── Capabilities ────────────────────────────────────────────────
@@ -609,22 +655,25 @@ def _apply_feature_extraction(data, params):
 
         if data.ndim == 3 and column_names:
             n_channels = data.shape[2]
-            # Filter column names to match data dimensions (exclude timestamp/label/target)
             sensor_cols = [c for c in column_names if c not in ('timestamp', 'label', 'class', 'target')]
             if len(sensor_cols) > n_channels:
                 sensor_cols = sensor_cols[:n_channels]
 
             if len(sensor_cols) == n_channels:
-                import pandas as pd
-                all_features = []
-                for window in data:
-                    df = pd.DataFrame(window, columns=sensor_cols)
-                    feat_dict = extractor.extract_window_features(df, sensor_cols)
-                    row = []
-                    for fname in feature_names:
-                        row.append(feat_dict.get(fname, 0.0))
-                    all_features.append(row)
-                return np.array(all_features, dtype=np.float64)
+                # Use extract_from_windows_direct — produces ALL DSP features
+                result_df = extractor.extract_from_windows_direct(data, sensor_cols)
+                logger.info(f"[AppBuilder] Extracted {result_df.shape[1]} features from {data.shape[0]} windows")
+
+                # Select only the features the model needs (in order)
+                selected = []
+                for fname in feature_names:
+                    if fname in result_df.columns:
+                        selected.append(result_df[fname].values)
+                    else:
+                        logger.warning(f"[AppBuilder] Feature '{fname}' not found in extracted features")
+                        selected.append(np.zeros(len(result_df)))
+
+                return np.column_stack(selected) if selected else result_df.values
     except Exception as e:
         logger.warning(f"CiRA ME feature extractor failed: {e}, falling back to generic")
 
