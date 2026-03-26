@@ -358,6 +358,32 @@ async function createApp() {
   try {
     const tpl = TEMPLATES.find(t => t.id === selectedTemplate.value)
     const nodes = tpl ? JSON.parse(JSON.stringify(tpl.nodes)) : []
+
+    // Auto-insert first active ME-LAB endpoint as model node (between feature_extract and output)
+    if (tpl && tpl.id !== 'blank') {
+      try {
+        const epResp = await api.get('/api/melab/endpoints')
+        const endpoints = (epResp.data || []).filter((e: any) => e.status === 'active')
+        if (endpoints.length > 0) {
+          const ep = endpoints[0]
+          const modelNode = {
+            id: `n_model_${Date.now()}`,
+            type: `model.endpoint.${ep.id}`,
+            config: ep.mode === 'regression' ? { horizon: 10 }
+                  : ep.mode === 'anomaly' ? { threshold: 0.8, sensitivity: 'medium' }
+                  : { top_k: 1 },
+          }
+          // Insert before the last node (output node)
+          const outputIdx = nodes.findIndex((n: any) => n.type.startsWith('output.'))
+          if (outputIdx >= 0) {
+            nodes.splice(outputIdx, 0, modelNode)
+          } else {
+            nodes.push(modelNode)
+          }
+        }
+      } catch { /* ME-LAB not available, user will add model manually */ }
+    }
+
     const edges = nodes.slice(1).map((n: any, i: number) => ({
       id: `e${i}`, source: nodes[i].id, target: n.id,
     }))
