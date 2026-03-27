@@ -307,13 +307,23 @@ def replay_ml_pipeline(csv_path: str, pipeline_config: dict,
     if not canonical_names and pipeline_config.get('training', {}).get('class_names'):
         canonical_names = [str(c) for c in pipeline_config['training']['class_names']]
 
-    # Decode predictions: integer index → canonical name
-    if canonical_names and mode != 'regression':
-        idx_to_name = {i: name for i, name in enumerate(canonical_names)}
-        y_pred_display = np.array([idx_to_name.get(int(p), str(p)) for p in y_pred])
-    elif mode != 'regression':
-        # No mapping available — use raw predictions as strings
-        y_pred_display = np.array([str(p) for p in y_pred])
+    # Decode predictions: integer index → canonical name (only if predictions are numeric)
+    if mode != 'regression':
+        # Check if predictions are numeric (encoded) or already string labels
+        pred_is_numeric = False
+        try:
+            if len(y_pred) > 0:
+                float(y_pred[0])
+                pred_is_numeric = True
+        except (ValueError, TypeError):
+            pred_is_numeric = False
+
+        if pred_is_numeric and canonical_names:
+            idx_to_name = {i: name for i, name in enumerate(canonical_names)}
+            y_pred_display = np.array([idx_to_name.get(int(float(p)), str(p)) for p in y_pred])
+        else:
+            # Predictions are already string labels — use as-is
+            y_pred_display = np.array([str(p) for p in y_pred])
     else:
         y_pred_display = y_pred
 
