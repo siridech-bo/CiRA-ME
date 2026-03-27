@@ -117,15 +117,33 @@ try:
         try:
             y_train.astype(float)
         except (ValueError, TypeError):
-            # Labels are strings — encode them
-            from sklearn.preprocessing import LabelEncoder
-            label_encoder = LabelEncoder()
-            label_encoder.fit(np.concatenate([y_train, y_val]))
-            y_train = label_encoder.transform(y_train)
-            y_val = label_encoder.transform(y_val)
-            class_names = [str(c) for c in label_encoder.classes_]
+            # Labels are strings — encode to contiguous integers starting from 0
+            # Fit on TRAINING data only so classes are 0..N-1
+            all_labels = sorted(set(list(y_train)) | set(list(y_val)))
+            train_labels = sorted(set(list(y_train)))
+            label_map = {label: idx for idx, label in enumerate(train_labels)}
+            # Map unseen val labels to a new index
+            for label in all_labels:
+                if label not in label_map:
+                    label_map[label] = len(label_map)
+            y_train = np.array([label_map[l] for l in y_train])
+            y_val = np.array([label_map[l] for l in y_val])
+            class_names = [str(l) for l in train_labels]
+            # Add unseen classes
+            for label in all_labels:
+                if str(label) not in class_names:
+                    class_names.append(str(label))
             n_classes = len(class_names)
-            result['logs'].append(f"Encoded labels: {list(label_encoder.classes_)} -> {list(range(n_classes))}")
+            # Create a simple encoder for inverse transform
+            class SimpleEncoder:
+                def __init__(self, mapping, classes):
+                    self.mapping = mapping
+                    self.classes_ = classes
+                    self.inverse_map = {v: k for k, v in mapping.items()}
+                def inverse_transform(self, y):
+                    return np.array([self.inverse_map.get(int(v), f'class_{v}') for v in y])
+            label_encoder = SimpleEncoder(label_map, class_names)
+            result['logs'].append(f"Encoded {len(train_labels)} train classes to [0..{len(train_labels)-1}]")
 
     # Execute user code (defines their model class)
     exec_globals = {'__builtins__': __builtins__, 'np': np, 'numpy': np}
