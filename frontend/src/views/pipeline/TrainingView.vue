@@ -2997,8 +2997,12 @@ watch(() => pipelineStore.mode, (newMode) => {
     fetchCustomTemplates()
   } else if (trainingApproach.value === 'ti') {
     fetchTiDevices()
-    tiSelectedModel.value = ''
+    tiSelectedModels.value = []
     tiModels.value = {}
+    // Re-fetch models for the new mode if device is already selected
+    if (tiSelectedDevice.value) {
+      fetchTiModels()
+    }
   }
 })
 
