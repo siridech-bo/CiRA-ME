@@ -144,7 +144,7 @@ def replay_ml_pipeline(csv_path: str, pipeline_config: dict,
                 label_col = candidate
                 break
 
-    labels_raw = df[label_col].values if label_col else None
+    labels_raw = df[label_col].astype(str).values if label_col else None
 
     # Step 2: Window
     wc = pipeline_config.get('windowing', {})
@@ -328,7 +328,7 @@ def replay_dl_pipeline(csv_path: str, pipeline_config: dict,
             label_col = candidate
             break
 
-    labels_raw = df[label_col].values if label_col else None
+    labels_raw = df[label_col].astype(str).values if label_col else None
 
     # Step 2: Window
     wc = pipeline_config.get('windowing', {})
