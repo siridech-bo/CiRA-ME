@@ -175,15 +175,26 @@ def replay_ml_pipeline(csv_path: str, pipeline_config: dict,
             if not canon:
                 canon = pipeline_config.get('training', {}).get('class_names')
 
-            if pd.api.types.is_numeric_dtype(raw_series) and canon:
-                # Numeric labels (encoded integers) — decode using canonical names
-                labels_raw = np.array([
-                    canon[int(v)] if 0 <= int(v) < len(canon) else str(v)
-                    for v in raw_series.values
-                ])
-                logger.info(f"Pipeline replay: decoded numeric labels: {np.unique(labels_raw)}")
+            if pd.api.types.is_numeric_dtype(raw_series):
+                # Numeric labels — decode to string class names
+                # Priority: dataset_labels (alphabetically sorted, matches Edge Impulse encoding)
+                #         > canon (model class_names)
+                #         > model.classes_ (may be subset if some classes only in test)
+                dataset_labels = pipeline_config.get('_dataset_labels', [])
+                max_idx = int(raw_series.max())
+
+                if dataset_labels and max_idx < len(dataset_labels):
+                    # Best source: original dataset's full label list (sorted alphabetically)
+                    labels_raw = np.array([dataset_labels[int(v)] for v in raw_series.values])
+                elif canon and max_idx < len(canon):
+                    labels_raw = np.array([canon[int(v)] for v in raw_series.values])
+                else:
+                    # Can't decode — use string representation
+                    labels_raw = raw_series.astype(str).values
+                    logger.warning(f"Pipeline replay: can't decode numeric label {max_idx} "
+                                   f"(dataset_labels={len(dataset_labels)}, canon={len(canon) if canon else 0})")
+                logger.info(f"Pipeline replay: decoded labels: {np.unique(labels_raw)}")
             else:
-                # String labels — normalize case for comparison
                 labels_raw = raw_series.astype(str).values
 
             # Filter out 'nan' strings

@@ -1031,6 +1031,13 @@ def evaluate_raw_csv():
 
         from ..services.pipeline_replay import replay_ml_pipeline, replay_dl_pipeline
 
+        # Inject dataset labels into pipeline_config for label decoding
+        dataset_info = saved.get('dataset_info', {})
+        if isinstance(dataset_info, str):
+            dataset_info = json.loads(dataset_info) if dataset_info else {}
+        if dataset_info.get('labels'):
+            pipeline_config['_dataset_labels'] = sorted([str(l) for l in dataset_info['labels']])
+
         approach = pipeline_config.get('training_approach', 'ml')
 
         if approach == 'dl':
