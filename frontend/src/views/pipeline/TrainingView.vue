@@ -492,9 +492,9 @@
               </v-chip>
             </div>
 
-            <div v-if="Object.keys(tiModels).length > 0" class="algorithm-list" style="max-height: 350px; overflow-y: auto;">
+            <div v-if="Object.keys(tiModelsFiltered).length > 0" class="algorithm-list" style="max-height: 350px; overflow-y: auto;">
               <v-checkbox
-                v-for="(model, key) in tiModels"
+                v-for="(model, key) in tiModelsFiltered"
                 :key="key"
                 v-model="tiSelectedModels"
                 :value="key"
@@ -513,10 +513,6 @@
                         <template v-if="model.min_epochs"> | min {{ model.min_epochs }} epochs</template>
                       </div>
                     </div>
-                    <v-chip v-if="model.npu_only" size="x-small" color="warning" variant="tonal" class="ml-1"
-                      title="Requires TI NN Compiler (not yet integrated). Training may fail.">
-                      <v-icon start size="10">mdi-alert</v-icon>NPU
-                    </v-chip>
                     <v-chip v-if="model.source === 'traditional_ml'" size="x-small" color="orange" variant="tonal" class="ml-1"
                       title="Uses CiRA ME's extracted features → emlearn C export">CiRA Features</v-chip>
                     <v-chip v-else-if="model.source === 'ti_zoo'" size="x-small" color="info" variant="tonal" class="ml-1"
@@ -1917,6 +1913,17 @@ const tiSelectedDevice = ref('')
 const tiModels = ref<Record<string, any>>({})
 const tiModelSource = ref('all')
 const tiSelectedModels = ref<string[]>([])
+
+// Filter out NPU models (require TI NN Compiler which is not integrated)
+const tiModelsFiltered = computed(() => {
+  const result: Record<string, any> = {}
+  for (const [key, model] of Object.entries(tiModels.value)) {
+    if (!model.npu_only) {
+      result[key] = model
+    }
+  }
+  return result
+})
 const tiComparisonResult = ref<any>(null)
 const tiConfig = reactive({
   epochs: 100,
@@ -2544,7 +2551,7 @@ async function fetchTiModels() {
 }
 
 function tiSelectAll() {
-  tiSelectedModels.value = Object.keys(tiModels.value)
+  tiSelectedModels.value = Object.keys(tiModelsFiltered.value)
 }
 
 // Auto-suggest epochs based on selected models
