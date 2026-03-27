@@ -455,7 +455,9 @@
                 <v-list-item v-bind="itemProps">
                   <v-list-item-subtitle>
                     {{ item.raw.family }} | {{ item.raw.flash_kb }}KB Flash
-                    <v-chip v-if="item.raw.npu" size="x-small" color="success" variant="tonal" class="ml-1">NPU</v-chip>
+                    <v-chip v-if="item.raw.npu" size="x-small" color="warning" variant="tonal" class="ml-1">
+                      <v-icon start size="10">mdi-alert</v-icon>NPU
+                    </v-chip>
                   </v-list-item-subtitle>
                 </v-list-item>
               </template>
@@ -511,7 +513,10 @@
                         <template v-if="model.min_epochs"> | min {{ model.min_epochs }} epochs</template>
                       </div>
                     </div>
-                    <v-chip v-if="model.npu_only" size="x-small" color="success" variant="tonal" class="ml-1">NPU</v-chip>
+                    <v-chip v-if="model.npu_only" size="x-small" color="warning" variant="tonal" class="ml-1"
+                      title="Requires TI NN Compiler (not yet integrated). Training may fail.">
+                      <v-icon start size="10">mdi-alert</v-icon>NPU
+                    </v-chip>
                     <v-chip v-if="model.source === 'traditional_ml'" size="x-small" color="orange" variant="tonal" class="ml-1"
                       title="Uses CiRA ME's extracted features → emlearn C export">CiRA Features</v-chip>
                     <v-chip v-else-if="model.source === 'ti_zoo'" size="x-small" color="info" variant="tonal" class="ml-1"
