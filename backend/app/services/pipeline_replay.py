@@ -144,7 +144,31 @@ def replay_ml_pipeline(csv_path: str, pipeline_config: dict,
                 label_col = candidate
                 break
 
-    labels_raw = df[label_col].astype(str).values if label_col else None
+    # Clean and validate labels
+    labels_raw = None
+    if label_col:
+        raw_series = df[label_col]
+        # Drop rows with NaN labels
+        nan_mask = raw_series.isna()
+        n_nan = nan_mask.sum()
+        if n_nan > 0:
+            logger.warning(f"Pipeline replay: dropping {n_nan} rows with NaN labels")
+            df = df[~nan_mask].reset_index(drop=True)
+            raw_series = df[label_col]
+
+        if mode == 'regression':
+            # Regression: labels must be numeric
+            try:
+                labels_raw = raw_series.astype(float).values
+            except (ValueError, TypeError):
+                logger.warning("Pipeline replay: target column has non-numeric values, skipping metrics")
+                labels_raw = None
+                label_col = None
+        else:
+            # Classification/anomaly: enforce consistent string type
+            labels_raw = raw_series.astype(str).values
+            # Filter out 'nan' strings that may come from NaN conversion
+            labels_raw = np.where(labels_raw == 'nan', 'unknown', labels_raw)
 
     # Step 2: Window
     wc = pipeline_config.get('windowing', {})
@@ -152,25 +176,39 @@ def replay_ml_pipeline(csv_path: str, pipeline_config: dict,
     stride = wc.get('stride', 64)
     label_method = wc.get('label_method', 'majority')
 
+    # Validate window_size against data length
+    if len(df) < window_size:
+        raise ValueError(
+            f"CSV has {len(df)} rows after cleaning but pipeline requires "
+            f"window_size={window_size}. Upload a larger file or reduce window size."
+        )
+
     # For regression, exclude target from sensor data if it's in sensor_columns
     active_sensor_cols = sensor_columns
     if mode == 'regression' and label_col and label_col in sensor_columns:
         active_sensor_cols = [c for c in sensor_columns if c != label_col]
 
-    sensor_data = df[active_sensor_cols].values
+    # Validate sensor data has no NaN/inf
+    sensor_data = df[active_sensor_cols].values.astype(np.float64)
+    if np.any(np.isnan(sensor_data)):
+        nan_count = np.isnan(sensor_data).sum()
+        logger.warning(f"Pipeline replay: replacing {nan_count} NaN values in sensor data with 0")
+        sensor_data = np.nan_to_num(sensor_data, nan=0.0)
+    if np.any(np.isinf(sensor_data)):
+        inf_count = np.isinf(sensor_data).sum()
+        logger.warning(f"Pipeline replay: replacing {inf_count} inf values in sensor data with 0")
+        sensor_data = np.nan_to_num(sensor_data, posinf=0.0, neginf=0.0)
 
     # For regression, compute per-window mean of target column
     if mode == 'regression' and labels_raw is not None:
-        regression_targets = labels_raw.astype(float)
         all_windows_raw, _ = _window_data(sensor_data, window_size, stride, None, label_method)
-        # Compute per-window mean of target
         window_labels = []
         n_windows = len(all_windows_raw)
         for i in range(n_windows):
             start = i * stride
             end = start + window_size
-            if end <= len(regression_targets):
-                window_labels.append(float(np.mean(regression_targets[start:end])))
+            if end <= len(labels_raw):
+                window_labels.append(float(np.mean(labels_raw[start:end])))
         all_windows = all_windows_raw
     else:
         all_windows, window_labels = _window_data(
@@ -213,15 +251,27 @@ def replay_ml_pipeline(csv_path: str, pipeline_config: dict,
                 feature_matrix[col] = 0.0
         feature_matrix = feature_matrix[expected_features]
 
-    X_new = feature_matrix.values
+    X_new = feature_matrix.values.astype(np.float64)
+
+    # Check for NaN/inf in features (can happen with edge cases in DSP)
+    if np.any(np.isnan(X_new)):
+        nan_feats = np.isnan(X_new).sum()
+        logger.warning(f"Pipeline replay: {nan_feats} NaN values in features, replacing with 0")
+        X_new = np.nan_to_num(X_new, nan=0.0)
+    if np.any(np.isinf(X_new)):
+        X_new = np.nan_to_num(X_new, posinf=0.0, neginf=0.0)
 
     # Step 6: Scale and predict
     model = model_data['model']
     scaler = model_data.get('scaler')
 
-    if scaler is not None:
-        X_new_scaled = scaler.transform(X_new)
-    else:
+    try:
+        if scaler is not None:
+            X_new_scaled = scaler.transform(X_new)
+        else:
+            X_new_scaled = X_new
+    except Exception as scale_err:
+        logger.warning(f"Pipeline replay: scaler failed ({scale_err}), using unscaled features")
         X_new_scaled = X_new
 
     y_pred = model.predict(X_new_scaled)
@@ -280,16 +330,23 @@ def replay_ml_pipeline(csv_path: str, pipeline_config: dict,
             # Classification/anomaly metrics — use decoded predictions
             from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
             y_eval = y_pred_display if label_mapping else y_pred
-            result['new_metrics'] = {
-                'accuracy': float(accuracy_score(y_true, y_eval)),
-                'precision': float(precision_score(
-                    y_true, y_eval, average='weighted', zero_division=0)),
-                'recall': float(recall_score(
-                    y_true, y_eval, average='weighted', zero_division=0)),
-                'f1': float(f1_score(
-                    y_true, y_eval, average='weighted', zero_division=0)),
-                'test_samples': len(y_true),
-            }
+            # Ensure both are same type (string) for comparison
+            y_true_str = np.array([str(v) for v in y_true])
+            y_eval_str = np.array([str(v) for v in y_eval])
+            try:
+                result['new_metrics'] = {
+                    'accuracy': float(accuracy_score(y_true_str, y_eval_str)),
+                    'precision': float(precision_score(
+                        y_true_str, y_eval_str, average='weighted', zero_division=0)),
+                    'recall': float(recall_score(
+                        y_true_str, y_eval_str, average='weighted', zero_division=0)),
+                    'f1': float(f1_score(
+                        y_true_str, y_eval_str, average='weighted', zero_division=0)),
+                    'test_samples': len(y_true),
+                }
+            except Exception as metric_err:
+                logger.warning(f"Pipeline replay: classification metrics failed: {metric_err}")
+                result['new_metrics'] = {'test_samples': len(y_true), 'error': str(metric_err)}
         result['has_labels'] = True
     else:
         result['has_labels'] = False
