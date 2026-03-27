@@ -218,11 +218,14 @@ try:
             result['metrics']['recall'] = float(recall_score(y_val_display, y_pred_display, average='weighted', zero_division=0))
             result['metrics']['f1'] = float(f1_score(y_val_display, y_pred_display, average='weighted', zero_division=0))
 
-            # Confusion matrix with original label names
-            labels = sorted(set(list(y_val_display) + list(y_pred_display)), key=str)
-            cm = confusion_matrix(y_val_display, y_pred_display, labels=labels)
+            # Confusion matrix with original label names — preserve encoder order
+            if class_names:
+                cm_labels = [str(c) for c in class_names]
+            else:
+                cm_labels = sorted(set(list(y_val_display) + list(y_pred_display)), key=str)
+            cm = confusion_matrix(y_val_display, y_pred_display, labels=cm_labels)
             result['metrics']['confusion_matrix'] = cm.tolist()
-            result['metrics']['class_names'] = [str(l) for l in labels]
+            result['metrics']['class_names'] = cm_labels
 
             result['logs'].append(f"Classification: acc={result['metrics']['accuracy']:.4f}, f1={result['metrics']['f1']:.4f}")
 
@@ -420,7 +423,8 @@ class CustomModelRunner:
                         model_obj = pickle.load(f)
 
                     # Save with scaler and class names for label decoding
-                    save_class_names = run_result.get('metrics', {}).get('class_names', class_names)
+                    # Use class_names from the execute scope (encoder order), NOT from metrics (alphabetical)
+                    save_class_names = class_names
                     with open(perm_model_path, 'wb') as f:
                         pickle.dump({
                             'model': model_obj,

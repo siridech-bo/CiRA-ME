@@ -165,22 +165,28 @@ def replay_ml_pipeline(csv_path: str, pipeline_config: dict,
                 labels_raw = None
                 label_col = None
         else:
-            # Classification/anomaly: enforce consistent string type
-            # Check if labels are numeric (encoded integers) — decode them
-            if pd.api.types.is_numeric_dtype(raw_series):
-                # Try to decode using class_names from model
-                class_names = model_data.get('class_names', [])
-                if class_names:
-                    labels_raw = np.array([
-                        class_names[int(v)] if 0 <= int(v) < len(class_names) else str(v)
-                        for v in raw_series.values
-                    ])
-                    logger.info(f"Pipeline replay: decoded numeric labels using class_names: {np.unique(labels_raw)}")
-                else:
-                    labels_raw = raw_series.astype(str).values
+            # Classification/anomaly: normalize labels to canonical string form
+            # Build canonical mapping from model (same source as prediction decoding)
+            canon = model_data.get('class_names')
+            if not canon and hasattr(model_data.get('model'), 'classes_'):
+                cls = model_data['model'].classes_
+                if len(cls) > 0 and isinstance(cls[0], (str, np.str_)):
+                    canon = [str(c) for c in cls]
+            if not canon:
+                canon = pipeline_config.get('training', {}).get('class_names')
+
+            if pd.api.types.is_numeric_dtype(raw_series) and canon:
+                # Numeric labels (encoded integers) — decode using canonical names
+                labels_raw = np.array([
+                    canon[int(v)] if 0 <= int(v) < len(canon) else str(v)
+                    for v in raw_series.values
+                ])
+                logger.info(f"Pipeline replay: decoded numeric labels: {np.unique(labels_raw)}")
             else:
+                # String labels — normalize case for comparison
                 labels_raw = raw_series.astype(str).values
-            # Filter out 'nan' strings that may come from NaN conversion
+
+            # Filter out 'nan' strings
             labels_raw = np.where(labels_raw == 'nan', 'unknown', labels_raw)
 
     # Step 2: Window
@@ -289,23 +295,25 @@ def replay_ml_pipeline(csv_path: str, pipeline_config: dict,
 
     y_pred = model.predict(X_new_scaled)
 
-    # Decode integer predictions to class names if model has classes
-    label_mapping = None
+    # ── Build canonical label mapping ──
+    # Goal: both predictions and true labels use the SAME string representation
+    # Priority: model_data['class_names'] > model.classes_ (if strings) > pipeline_config
+    canonical_names = None
     if model_data.get('class_names'):
-        # Prefer saved class_names (original label names before encoding)
-        label_mapping = {i: str(c) for i, c in enumerate(model_data['class_names'])}
-    elif hasattr(model, 'classes_'):
-        classes = model.classes_
-        # Only use model.classes_ if they are actual label names (strings), not encoded integers
-        if len(classes) > 0 and isinstance(classes[0], str):
-            label_mapping = {i: str(c) for i, c in enumerate(classes)}
-        # If classes are integers, check if they match known label names from pipeline_config
-        elif pipeline_config.get('training', {}).get('class_names'):
-            saved_names = pipeline_config['training']['class_names']
-            label_mapping = {i: str(c) for i, c in enumerate(saved_names)}
+        canonical_names = [str(c) for c in model_data['class_names']]
+    elif hasattr(model, 'classes_') and len(model.classes_) > 0:
+        if isinstance(model.classes_[0], (str, np.str_)):
+            canonical_names = [str(c) for c in model.classes_]
+    if not canonical_names and pipeline_config.get('training', {}).get('class_names'):
+        canonical_names = [str(c) for c in pipeline_config['training']['class_names']]
 
-    if label_mapping and mode != 'regression':
-        y_pred_display = np.array([label_mapping.get(int(p), str(p)) for p in y_pred])
+    # Decode predictions: integer index → canonical name
+    if canonical_names and mode != 'regression':
+        idx_to_name = {i: name for i, name in enumerate(canonical_names)}
+        y_pred_display = np.array([idx_to_name.get(int(p), str(p)) for p in y_pred])
+    elif mode != 'regression':
+        # No mapping available — use raw predictions as strings
+        y_pred_display = np.array([str(p) for p in y_pred])
     else:
         y_pred_display = y_pred
 
@@ -350,10 +358,10 @@ def replay_ml_pipeline(csv_path: str, pipeline_config: dict,
         else:
             # Classification/anomaly metrics — use decoded predictions
             from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
-            y_eval = y_pred_display if label_mapping else y_pred
-            # Ensure both are same type (string) for comparison
-            y_true_str = np.array([str(v) for v in y_true])
-            y_eval_str = np.array([str(v) for v in y_eval])
+            y_eval = y_pred_display
+            # Normalize both sides: lowercase string for robust comparison
+            y_true_str = np.array([str(v).strip().lower() for v in y_true])
+            y_eval_str = np.array([str(v).strip().lower() for v in y_eval])
             try:
                 result['new_metrics'] = {
                     'accuracy': float(accuracy_score(y_true_str, y_eval_str)),
