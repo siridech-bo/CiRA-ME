@@ -419,7 +419,8 @@ class CustomModelRunner:
                     with open(model_pkl_path, 'rb') as f:
                         model_obj = pickle.load(f)
 
-                    # Save with scaler
+                    # Save with scaler and class names for label decoding
+                    save_class_names = run_result.get('metrics', {}).get('class_names', class_names)
                     with open(perm_model_path, 'wb') as f:
                         pickle.dump({
                             'model': model_obj,
@@ -429,6 +430,7 @@ class CustomModelRunner:
                             'hyperparameters': user_config,
                             'feature_session_id': feature_session_id,
                             'feature_names': _feature_sessions.get(feature_session_id, {}).get('feature_names', []),
+                            'class_names': save_class_names,
                         }, f)
 
                     _model_sessions[training_session_id] = {
@@ -439,6 +441,7 @@ class CustomModelRunner:
                         'metrics': run_result.get('metrics', {}),
                         'model_path': perm_model_path,
                         'hyperparameters': user_config,
+                        'class_names': save_class_names,
                         'created_at': datetime.utcnow().isoformat()
                     }
 

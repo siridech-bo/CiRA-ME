@@ -278,10 +278,18 @@ def replay_ml_pipeline(csv_path: str, pipeline_config: dict,
 
     # Decode integer predictions to class names if model has classes
     label_mapping = None
-    if hasattr(model, 'classes_'):
-        label_mapping = {i: str(c) for i, c in enumerate(model.classes_)}
-    elif model_data.get('class_names'):
+    if model_data.get('class_names'):
+        # Prefer saved class_names (original label names before encoding)
         label_mapping = {i: str(c) for i, c in enumerate(model_data['class_names'])}
+    elif hasattr(model, 'classes_'):
+        classes = model.classes_
+        # Only use model.classes_ if they are actual label names (strings), not encoded integers
+        if len(classes) > 0 and isinstance(classes[0], str):
+            label_mapping = {i: str(c) for i, c in enumerate(classes)}
+        # If classes are integers, check if they match known label names from pipeline_config
+        elif pipeline_config.get('training', {}).get('class_names'):
+            saved_names = pipeline_config['training']['class_names']
+            label_mapping = {i: str(c) for i, c in enumerate(saved_names)}
 
     if label_mapping and mode != 'regression':
         y_pred_display = np.array([label_mapping.get(int(p), str(p)) for p in y_pred])
