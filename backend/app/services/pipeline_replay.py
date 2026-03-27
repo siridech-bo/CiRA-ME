@@ -226,15 +226,27 @@ def replay_ml_pipeline(csv_path: str, pipeline_config: dict,
 
     y_pred = model.predict(X_new_scaled)
 
+    # Decode integer predictions to class names if model has classes
+    label_mapping = None
+    if hasattr(model, 'classes_'):
+        label_mapping = {i: str(c) for i, c in enumerate(model.classes_)}
+    elif model_data.get('class_names'):
+        label_mapping = {i: str(c) for i, c in enumerate(model_data['class_names'])}
+
+    if label_mapping and mode != 'regression':
+        y_pred_display = np.array([label_mapping.get(int(p), str(p)) for p in y_pred])
+    else:
+        y_pred_display = y_pred
+
     result: Dict[str, Any] = {
-        'predictions': y_pred.tolist(),
-        'num_windows': len(y_pred),
+        'predictions': y_pred_display.tolist(),
+        'num_windows': len(y_pred_display),
         'pipeline_steps': ['load_csv', 'windowing', 'normalize',
                            'feature_extract', 'scale', 'predict'],
     }
 
     # Prediction distribution
-    unique, counts = np.unique(y_pred, return_counts=True)
+    unique, counts = np.unique(y_pred_display, return_counts=True)
     result['prediction_distribution'] = dict(zip(
         [str(u) for u in unique.tolist()], counts.tolist()
     ))
@@ -248,7 +260,6 @@ def replay_ml_pipeline(csv_path: str, pipeline_config: dict,
             pass
 
     # Step 7: Compute metrics if labels present
-    mode = model_data.get('mode', 'classification')
     if window_labels:
         y_true = np.array(window_labels)
 
@@ -266,16 +277,17 @@ def replay_ml_pipeline(csv_path: str, pipeline_config: dict,
             except (ValueError, TypeError):
                 result['new_metrics'] = {'test_samples': len(y_true)}
         else:
-            # Classification/anomaly metrics
+            # Classification/anomaly metrics — use decoded predictions
             from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+            y_eval = y_pred_display if label_mapping else y_pred
             result['new_metrics'] = {
-                'accuracy': float(accuracy_score(y_true, y_pred)),
+                'accuracy': float(accuracy_score(y_true, y_eval)),
                 'precision': float(precision_score(
-                    y_true, y_pred, average='weighted', zero_division=0)),
+                    y_true, y_eval, average='weighted', zero_division=0)),
                 'recall': float(recall_score(
-                    y_true, y_pred, average='weighted', zero_division=0)),
+                    y_true, y_eval, average='weighted', zero_division=0)),
                 'f1': float(f1_score(
-                    y_true, y_pred, average='weighted', zero_division=0)),
+                    y_true, y_eval, average='weighted', zero_division=0)),
                 'test_samples': len(y_true),
             }
         result['has_labels'] = True
