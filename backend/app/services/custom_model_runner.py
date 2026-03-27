@@ -161,12 +161,55 @@ try:
         pickle.dump(model_obj, f)
     result['model_path'] = model_output_path
 
-    # Try to get predictions for validation metrics
+    # Compute standard metrics automatically
     try:
         y_pred = model.predict(X_val)
         result['predictions_shape'] = list(y_pred.shape)
+
+        if task == 'classification':
+            from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
+            y_val_int = y_val.astype(int) if y_val.dtype != int else y_val
+            y_pred_int = y_pred.astype(int) if hasattr(y_pred, 'astype') else y_pred
+
+            result['metrics']['accuracy'] = float(accuracy_score(y_val_int, y_pred_int))
+            result['metrics']['precision'] = float(precision_score(y_val_int, y_pred_int, average='weighted', zero_division=0))
+            result['metrics']['recall'] = float(recall_score(y_val_int, y_pred_int, average='weighted', zero_division=0))
+            result['metrics']['f1'] = float(f1_score(y_val_int, y_pred_int, average='weighted', zero_division=0))
+
+            # Confusion matrix
+            cm = confusion_matrix(y_val_int, y_pred_int)
+            result['metrics']['confusion_matrix'] = cm.tolist()
+            result['metrics']['class_names'] = class_names
+
+            result['logs'].append(f"Classification: acc={result['metrics']['accuracy']:.4f}, f1={result['metrics']['f1']:.4f}")
+
+        elif task == 'regression':
+            from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
+            result['metrics']['r2'] = float(r2_score(y_val, y_pred))
+            result['metrics']['rmse'] = float(np.sqrt(mean_squared_error(y_val, y_pred)))
+            result['metrics']['mae'] = float(mean_absolute_error(y_val, y_pred))
+            result['metrics']['mse'] = float(mean_squared_error(y_val, y_pred))
+
+            # Scatter data for actual vs predicted plot
+            result['metrics']['scatter_data'] = {
+                'actual': y_val.tolist(),
+                'predicted': y_pred.tolist(),
+            }
+
+            result['logs'].append(f"Regression: R2={result['metrics']['r2']:.4f}, RMSE={result['metrics']['rmse']:.4f}")
+
+        elif task == 'anomaly':
+            # For anomaly, compute basic metrics if labels available
+            if y_val is not None and len(np.unique(y_val)) > 1:
+                from sklearn.metrics import accuracy_score, f1_score
+                result['metrics']['accuracy'] = float(accuracy_score(y_val, y_pred))
+                result['metrics']['f1'] = float(f1_score(y_val, y_pred, average='weighted', zero_division=0))
+
+        result['metrics']['train_samples'] = int(X_train.shape[0])
+        result['metrics']['test_samples'] = int(X_val.shape[0])
+
     except Exception as pred_err:
-        result['logs'].append(f"Warning: predict() failed: {pred_err}")
+        result['logs'].append(f"Warning: auto-metrics failed: {pred_err}")
 
     result['status'] = 'success'
     result['logs'].append("Done.")
