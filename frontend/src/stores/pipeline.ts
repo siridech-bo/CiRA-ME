@@ -190,6 +190,11 @@ export const usePipelineStore = defineStore('pipeline', () => {
       const response = await api.post(endpoint, { file_path: filePath })
 
       dataSession.value = response.data
+      // Reset column selection when new dataset is loaded
+      selectedColumns.value = []
+      targetColumn.value = null
+      windowedSession.value = null
+      featureSession.value = null
       currentStep.value = 'windowing'
 
       return { success: true, data: response.data }
