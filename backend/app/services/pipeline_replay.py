@@ -166,7 +166,20 @@ def replay_ml_pipeline(csv_path: str, pipeline_config: dict,
                 label_col = None
         else:
             # Classification/anomaly: enforce consistent string type
-            labels_raw = raw_series.astype(str).values
+            # Check if labels are numeric (encoded integers) — decode them
+            if pd.api.types.is_numeric_dtype(raw_series):
+                # Try to decode using class_names from model
+                class_names = model_data.get('class_names', [])
+                if class_names:
+                    labels_raw = np.array([
+                        class_names[int(v)] if 0 <= int(v) < len(class_names) else str(v)
+                        for v in raw_series.values
+                    ])
+                    logger.info(f"Pipeline replay: decoded numeric labels using class_names: {np.unique(labels_raw)}")
+                else:
+                    labels_raw = raw_series.astype(str).values
+            else:
+                labels_raw = raw_series.astype(str).values
             # Filter out 'nan' strings that may come from NaN conversion
             labels_raw = np.where(labels_raw == 'nan', 'unknown', labels_raw)
 
