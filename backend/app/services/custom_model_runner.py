@@ -168,18 +168,17 @@ try:
 
         if task == 'classification':
             from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
-            y_val_int = y_val.astype(int) if y_val.dtype != int else y_val
-            y_pred_int = y_pred.astype(int) if hasattr(y_pred, 'astype') else y_pred
 
-            result['metrics']['accuracy'] = float(accuracy_score(y_val_int, y_pred_int))
-            result['metrics']['precision'] = float(precision_score(y_val_int, y_pred_int, average='weighted', zero_division=0))
-            result['metrics']['recall'] = float(recall_score(y_val_int, y_pred_int, average='weighted', zero_division=0))
-            result['metrics']['f1'] = float(f1_score(y_val_int, y_pred_int, average='weighted', zero_division=0))
+            result['metrics']['accuracy'] = float(accuracy_score(y_val, y_pred))
+            result['metrics']['precision'] = float(precision_score(y_val, y_pred, average='weighted', zero_division=0))
+            result['metrics']['recall'] = float(recall_score(y_val, y_pred, average='weighted', zero_division=0))
+            result['metrics']['f1'] = float(f1_score(y_val, y_pred, average='weighted', zero_division=0))
 
             # Confusion matrix
-            cm = confusion_matrix(y_val_int, y_pred_int)
+            labels = sorted(set(list(y_val) + list(y_pred)))
+            cm = confusion_matrix(y_val, y_pred, labels=labels)
             result['metrics']['confusion_matrix'] = cm.tolist()
-            result['metrics']['class_names'] = class_names
+            result['metrics']['class_names'] = [str(l) for l in labels]
 
             result['logs'].append(f"Classification: acc={result['metrics']['accuracy']:.4f}, f1={result['metrics']['f1']:.4f}")
 
