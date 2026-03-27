@@ -321,6 +321,9 @@ def replay_ml_pipeline(csv_path: str, pipeline_config: dict,
         if pred_is_numeric and canonical_names:
             idx_to_name = {i: name for i, name in enumerate(canonical_names)}
             y_pred_display = np.array([idx_to_name.get(int(float(p)), str(p)) for p in y_pred])
+        elif pred_is_numeric and mode == 'anomaly':
+            # Anomaly detectors: -1 = anomaly, 1 = normal (sklearn convention)
+            y_pred_display = np.array(['Anomaly' if int(float(p)) == -1 else 'Normal' for p in y_pred])
         else:
             # Predictions are already string labels — use as-is
             y_pred_display = np.array([str(p) for p in y_pred])

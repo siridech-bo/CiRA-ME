@@ -1017,6 +1017,18 @@ def evaluate_raw_csv():
         with open(model_path, 'rb') as f:
             model_data = pickle.load(f)
 
+        # Validate model data structure
+        if not isinstance(model_data, dict) or 'model' not in model_data:
+            return jsonify({
+                'error': 'This model was saved in an old format that does not support evaluation. '
+                         'Please re-train and save the model.'
+            }), 400
+        if not hasattr(model_data['model'], 'predict'):
+            return jsonify({
+                'error': 'Model object does not have a predict method. '
+                         'This may be a corrupted or incompatible model file.'
+            }), 400
+
         from ..services.pipeline_replay import replay_ml_pipeline, replay_dl_pipeline
 
         approach = pipeline_config.get('training_approach', 'ml')
