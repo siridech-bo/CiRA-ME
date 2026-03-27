@@ -110,6 +110,23 @@ try:
 
     result['logs'].append(f"Data loaded: {X_train.shape[0]} train, {X_val.shape[0]} val, {n_features} features")
 
+    # Encode string labels to integers for models that require numeric labels
+    label_encoder = None
+    original_y_val = y_val.copy()
+    if task == 'classification':
+        try:
+            y_train.astype(float)
+        except (ValueError, TypeError):
+            # Labels are strings — encode them
+            from sklearn.preprocessing import LabelEncoder
+            label_encoder = LabelEncoder()
+            label_encoder.fit(np.concatenate([y_train, y_val]))
+            y_train = label_encoder.transform(y_train)
+            y_val = label_encoder.transform(y_val)
+            class_names = [str(c) for c in label_encoder.classes_]
+            n_classes = len(class_names)
+            result['logs'].append(f"Encoded labels: {list(label_encoder.classes_)} -> {list(range(n_classes))}")
+
     # Execute user code (defines their model class)
     exec_globals = {'__builtins__': __builtins__, 'np': np, 'numpy': np}
 
@@ -169,14 +186,23 @@ try:
         if task == 'classification':
             from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
 
-            result['metrics']['accuracy'] = float(accuracy_score(y_val, y_pred))
-            result['metrics']['precision'] = float(precision_score(y_val, y_pred, average='weighted', zero_division=0))
-            result['metrics']['recall'] = float(recall_score(y_val, y_pred, average='weighted', zero_division=0))
-            result['metrics']['f1'] = float(f1_score(y_val, y_pred, average='weighted', zero_division=0))
+            # Decode predictions back to original labels for metrics
+            y_val_display = original_y_val
+            y_pred_display = y_pred
+            if label_encoder is not None:
+                try:
+                    y_pred_display = label_encoder.inverse_transform(y_pred.astype(int))
+                except Exception:
+                    y_pred_display = y_pred
 
-            # Confusion matrix
-            labels = sorted(set(list(y_val) + list(y_pred)))
-            cm = confusion_matrix(y_val, y_pred, labels=labels)
+            result['metrics']['accuracy'] = float(accuracy_score(y_val_display, y_pred_display))
+            result['metrics']['precision'] = float(precision_score(y_val_display, y_pred_display, average='weighted', zero_division=0))
+            result['metrics']['recall'] = float(recall_score(y_val_display, y_pred_display, average='weighted', zero_division=0))
+            result['metrics']['f1'] = float(f1_score(y_val_display, y_pred_display, average='weighted', zero_division=0))
+
+            # Confusion matrix with original label names
+            labels = sorted(set(list(y_val_display) + list(y_pred_display)), key=str)
+            cm = confusion_matrix(y_val_display, y_pred_display, labels=labels)
             result['metrics']['confusion_matrix'] = cm.tolist()
             result['metrics']['class_names'] = [str(l) for l in labels]
 
