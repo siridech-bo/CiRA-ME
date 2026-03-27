@@ -1278,14 +1278,10 @@ class MyXGBoost(CiraModel):
             colsample_bytree=0.8,
             random_state=42,
             verbosity=0,
-            use_label_encoder=False,
-            eval_metric='mlogloss'
         )
 
     def train(self, X_train, y_train, X_val, y_val):
-        self.model.fit(X_train, y_train,
-                       eval_set=[(X_val, y_val)],
-                       verbose=False)
+        self.model.fit(X_train, y_train)
         y_pred = self.model.predict(X_val)
         return {
             "accuracy": accuracy_score(y_val, y_pred),
