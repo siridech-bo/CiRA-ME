@@ -936,15 +936,42 @@ const windowRecommendation = computed(() => {
   const minTrainWindows = mode === 'regression' ? 10 : 5
   const minTotalWindows = minTrainWindows + minTestWindows
 
+  // Check if dataset has preset split (Edge Impulse testing/training folders)
+  const hasPresetSplit = !!(pipelineStore.dataSession?.metadata?.testing_samples && pipelineStore.dataSession?.metadata?.training_samples)
+
   // Calculate for current settings
   const currentWS = windowingConfig.window_size
   const currentStride = windowingConfig.stride
-  const gap = mode === 'regression' ? 0 : currentWS  // regression can skip gap
-  const testRows = Math.max(currentWS, Math.round(dataLen * testRatio))
-  const trainRows = dataLen - testRows - gap
-  const trainWindows = trainRows >= currentWS ? Math.floor((trainRows - currentWS) / currentStride) + 1 : 0
-  const testWindows = testRows >= currentWS ? Math.floor((testRows - currentWS) / currentStride) + 1 : 0
-  const totalWindows = (trainWindows + testWindows) * numSamples
+
+  let trainWindows: number
+  let testWindows: number
+  let totalWindows: number
+
+  if (hasPresetSplit) {
+    // Preset split: estimate from training/testing sample counts
+    const trainSamples = pipelineStore.dataSession?.metadata?.training_samples || 0
+    const testSamples = pipelineStore.dataSession?.metadata?.testing_samples || 0
+    const winsPerSample = dataLen >= currentWS ? Math.floor((dataLen - currentWS) / currentStride) + 1 : 0
+    trainWindows = winsPerSample * trainSamples
+    testWindows = winsPerSample * testSamples
+    totalWindows = trainWindows + testWindows
+  } else {
+    // Temporal split
+    const gap = mode === 'regression' ? 0 : currentWS
+    const testRows = Math.max(currentWS, Math.round(dataLen * testRatio))
+    const trainRows = dataLen - testRows - gap
+    trainWindows = trainRows >= currentWS ? Math.floor((trainRows - currentWS) / currentStride) + 1 : 0
+    testWindows = testRows >= currentWS ? Math.floor((testRows - currentWS) / currentStride) + 1 : 0
+    totalWindows = (trainWindows + testWindows) * numSamples
+  }
+
+  // If windowed session exists, use actual counts (most accurate)
+  if (pipelineStore.windowedSession?.summary?.category_distribution) {
+    const dist = pipelineStore.windowedSession.summary.category_distribution
+    trainWindows = dist.training || 0
+    testWindows = dist.testing || 0
+    totalWindows = trainWindows + testWindows
+  }
 
   // Find optimal window size
   // Try powers of 2: 16, 32, 64, 128, 256...
