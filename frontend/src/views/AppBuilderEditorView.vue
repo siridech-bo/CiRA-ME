@@ -320,9 +320,35 @@
                 />
               </div>
 
-              <!-- text -->
+              <!-- MQTT topic field with discover button -->
+              <div v-if="field.type === 'text' && field.key === 'topic' && selectedNode?.type === 'input.live_stream'" class="mb-2">
+                <div class="d-flex align-center gap-1">
+                  <v-text-field
+                    :model-value="getConfigVal(selectedNode, field)"
+                    @update:model-value="v => updateConfig(selectedNode.id, field.key, v)"
+                    variant="outlined"
+                    density="compact"
+                    hide-details
+                    class="config-input flex-grow-1"
+                  />
+                  <v-btn size="small" variant="tonal" color="info" :loading="discoveringTopics" @click="discoverTopics">
+                    <v-icon size="small">mdi-magnify</v-icon>
+                  </v-btn>
+                </div>
+                <div v-if="discoveredTopics.length > 0" class="mt-1 d-flex flex-wrap" style="gap: 3px;">
+                  <button
+                    v-for="t in discoveredTopics"
+                    :key="t"
+                    class="discovered-topic-chip"
+                    :class="{ active: getConfigVal(selectedNode, field) === t }"
+                    @click="updateConfig(selectedNode.id, field.key, t)"
+                  >{{ t }}</button>
+                </div>
+              </div>
+
+              <!-- text (generic) -->
               <v-text-field
-                v-if="field.type === 'text'"
+                v-else-if="field.type === 'text'"
                 :model-value="getConfigVal(selectedNode, field)"
                 @update:model-value="v => updateConfig(selectedNode.id, field.key, v)"
                 variant="outlined"
@@ -960,6 +986,21 @@ function switchEndpoint(newEndpointId) {
     type: newType,
     config: Object.fromEntries((newCap.configSchema || []).map(f => [f.key, f.default])),
   }
+}
+
+// MQTT topic discovery
+const discoveringTopics = ref(false)
+const discoveredTopics = ref([])
+
+async function discoverTopics() {
+  discoveringTopics.value = true
+  try {
+    const resp = await api.get('/api/mqtt/topics?duration=5')
+    discoveredTopics.value = (resp.data || []).map(t => t.topic)
+  } catch {
+    discoveredTopics.value = []
+  }
+  discoveringTopics.value = false
 }
 
 function getMultiselectOptions(node, field) {
@@ -1686,6 +1727,24 @@ onMounted(async () => {
   background: rgba(124, 58, 237, 0.15);
   border-color: #7c3aed;
   color: #c4b5fd;
+}
+
+.discovered-topic-chip {
+  font-size: 9px;
+  font-family: monospace;
+  padding: 2px 6px;
+  border-radius: 3px;
+  border: 1px solid #30363d;
+  background: #0d1117;
+  color: #60a5fa;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.discovered-topic-chip:hover { border-color: #60a5fa; }
+.discovered-topic-chip.active {
+  background: rgba(96, 165, 250, 0.15);
+  border-color: #60a5fa;
+  color: #93c5fd;
 }
 
 .multiselect-count {
