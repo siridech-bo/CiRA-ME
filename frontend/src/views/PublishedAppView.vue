@@ -389,11 +389,16 @@ const MODE_COLORS = {
   regression: '#a78bfa',
 }
 
+// Parse nodes once (API may return string or array)
+const parsedNodes = computed(() => {
+  let nodes = appData.value.nodes || []
+  if (typeof nodes === 'string') {
+    try { nodes = JSON.parse(nodes) } catch { nodes = [] }
+  }
+  return Array.isArray(nodes) ? nodes : []
+})
+
 const appMode = computed(() => {
-  const nodes = appData.value.nodes || []
-  const modelNode = nodes.find(n => n.type?.startsWith('model.endpoint.'))
-  if (!modelNode) return null
-  // Try to get mode from the node type's capability or from stored metadata
   return appData.value.mode || 'regression'
 })
 
@@ -405,13 +410,8 @@ const appAlgorithm = computed(() => {
 
 // Pipeline info from nodes
 const pipelineInfo = computed(() => {
-  let nodes = appData.value.nodes || []
-  if (typeof nodes === 'string') {
-    try { nodes = JSON.parse(nodes) } catch { nodes = [] }
-  }
-  const windowNode = nodes.find(n => n.type === 'transform.window')
-  const featNode = nodes.find(n => n.type === 'transform.feature_extract')
-  const modelNode = nodes.find(n => n.type?.startsWith('model.endpoint.'))
+  const windowNode = parsedNodes.value.find(n => n.type === 'transform.window')
+  const featNode = parsedNodes.value.find(n => n.type === 'transform.feature_extract')
   if (!windowNode) return null
   return {
     window_size: windowNode.config?.window_size || '?',
