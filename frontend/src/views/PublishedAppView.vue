@@ -48,12 +48,14 @@
       </div>
 
       <!-- Pipeline info -->
-      <div v-if="pipelineInfo" class="app-section" style="padding: 10px 16px;">
+      <div v-if="parsedNodes.length > 0" class="app-section" style="padding: 10px 16px;">
         <div class="d-flex flex-wrap align-center" style="gap: 6px;">
-          <v-chip size="x-small" color="info" variant="tonal">Window: {{ pipelineInfo.window_size }}</v-chip>
-          <v-chip size="x-small" color="info" variant="tonal">Stride: {{ pipelineInfo.stride }}</v-chip>
-          <v-chip size="x-small" color="info" variant="tonal">Features: {{ pipelineInfo.n_features }}</v-chip>
-          <v-chip size="x-small" color="purple" variant="tonal">{{ pipelineInfo.algorithm }}</v-chip>
+          <v-chip v-if="pipelineInfo" size="x-small" color="info" variant="tonal">Window: {{ pipelineInfo.window_size }}</v-chip>
+          <v-chip v-if="pipelineInfo" size="x-small" color="info" variant="tonal">Stride: {{ pipelineInfo.stride }}</v-chip>
+          <v-chip v-if="pipelineInfo" size="x-small" color="info" variant="tonal">Features: {{ pipelineInfo.n_features }}</v-chip>
+          <v-chip size="x-small" :color="modeColor" variant="tonal">{{ appMode?.toUpperCase() || 'MODEL' }}</v-chip>
+          <v-chip size="x-small" color="purple" variant="tonal">{{ appAlgorithm || 'model' }}</v-chip>
+          <v-chip size="x-small" variant="outlined" style="font-size:9px">{{ parsedNodes.length }} nodes</v-chip>
         </div>
       </div>
 
