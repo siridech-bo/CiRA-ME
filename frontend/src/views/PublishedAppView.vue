@@ -405,7 +405,10 @@ const appAlgorithm = computed(() => {
 
 // Pipeline info from nodes
 const pipelineInfo = computed(() => {
-  const nodes = appData.value.nodes || []
+  let nodes = appData.value.nodes || []
+  if (typeof nodes === 'string') {
+    try { nodes = JSON.parse(nodes) } catch { nodes = [] }
+  }
   const windowNode = nodes.find(n => n.type === 'transform.window')
   const featNode = nodes.find(n => n.type === 'transform.feature_extract')
   const modelNode = nodes.find(n => n.type?.startsWith('model.endpoint.'))
