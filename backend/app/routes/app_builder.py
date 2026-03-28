@@ -392,12 +392,7 @@ def run_app(slug):
 
             elif ntype == 'transform.window':
                 if isinstance(current_data, pd.DataFrame):
-                    sensor_df = current_data.select_dtypes(include=[np.number])
-                    drop_cols = [c for c in sensor_df.columns if c.lower() in ('timestamp', 'time', 'time_sec', 'index')]
-                    if drop_cols:
-                        sensor_df = sensor_df.drop(columns=drop_cols)
-                    column_names = list(sensor_df.columns)
-                    current_data = sensor_df.values
+                    current_data, column_names = _extract_sensor_data(current_data, ordered_nodes)
 
                 # Compute per-window actual values from raw_target (saved before normalize)
                 if raw_target is not None and actual_values is None:
@@ -410,14 +405,9 @@ def run_app(slug):
                 current_data = _apply_windowing(current_data, params)
 
             elif ntype == 'transform.normalize':
-                # Convert DataFrame to numpy, dropping timestamp-like columns
+                # Convert DataFrame to numpy, keeping only sensor columns
                 if isinstance(current_data, pd.DataFrame):
-                    sensor_df = current_data.select_dtypes(include=[np.number])
-                    drop_cols = [c for c in sensor_df.columns if c.lower() in ('timestamp', 'time', 'time_sec', 'index')]
-                    if drop_cols:
-                        sensor_df = sensor_df.drop(columns=drop_cols)
-                    column_names = list(sensor_df.columns)
-                    current_data = sensor_df.values
+                    current_data, column_names = _extract_sensor_data(current_data, ordered_nodes)
 
                 # Try to get normalization params from the model's pipeline_config
                 norm_params = dict(params)
@@ -678,6 +668,45 @@ def _apply_windowing(data, params):
         windows.append(data[start:start + window_size])
 
     return np.array(windows)
+
+
+def _extract_sensor_data(df, ordered_nodes):
+    """Extract sensor-only numeric data from DataFrame.
+    Drops timestamp, label, category, and any columns not in the model's sensor_columns.
+    Returns (numpy_array, column_names_list).
+    """
+    import pandas as pd
+    sensor_df = df.select_dtypes(include=[np.number])
+
+    # Find model's sensor columns from pipeline_config
+    model_sensors = None
+    for n in ordered_nodes:
+        if n.get('type', '').startswith('model.endpoint.'):
+            eid = n['type'].replace('model.endpoint.', '')
+            ep = MeLabEndpoint.get_by_id(eid)
+            if ep:
+                saved = SavedModel.get_by_id(ep.get('saved_model_id'))
+                if saved:
+                    pc = saved.get('pipeline_config', {})
+                    if isinstance(pc, str):
+                        pc = json.loads(pc) if pc else {}
+                    model_sensors = pc.get('normalization', {}).get('sensor_columns', [])
+            break
+
+    if model_sensors:
+        # Keep only model's sensor columns
+        keep = [c for c in model_sensors if c in sensor_df.columns]
+        if keep:
+            sensor_df = sensor_df[keep]
+    else:
+        # Fallback: drop known non-sensor columns
+        non_sensor = ('timestamp', 'time', 'time_sec', 'index',
+                      'label', 'class', 'target', 'category', 'sample_id')
+        drop = [c for c in sensor_df.columns if c.lower() in non_sensor]
+        if drop:
+            sensor_df = sensor_df.drop(columns=drop)
+
+    return sensor_df.values.astype(np.float64), list(sensor_df.columns)
 
 
 def _apply_fill_missing(data, params):
