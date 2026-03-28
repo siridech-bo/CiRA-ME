@@ -196,11 +196,17 @@
 
         <!-- Classification results -->
         <div v-else-if="appMode === 'classification'" class="app-results">
+          <div class="result-stats">
+            <div class="result-stat">
+              <div class="result-stat-label">Windows</div>
+              <div class="result-stat-value">{{ result.count || 0 }}</div>
+            </div>
+          </div>
           <div class="result-table-wrap">
             <table class="result-table">
               <thead><tr><th>#</th><th>Label</th><th>Confidence</th></tr></thead>
               <tbody>
-                <tr v-for="(val, i) in (result.predictions || []).slice(0, 50)" :key="i">
+                <tr v-for="(val, i) in (result.predictions_full || result.predictions || []).slice(0, 100)" :key="i">
                   <td>{{ i + 1 }}</td>
                   <td :style="{ color: modeColor }">{{ val.label || val }}</td>
                   <td>{{ val.confidence ? (val.confidence * 100).toFixed(1) + '%' : '-' }}</td>
@@ -215,9 +221,32 @@
           <div class="result-stats">
             <div class="result-stat">
               <div class="result-stat-label">Total Windows</div>
-              <div class="result-stat-value">{{ result.predictions?.length || 0 }}</div>
+              <div class="result-stat-value">{{ result.count || 0 }}</div>
             </div>
             <div class="result-stat">
+              <div class="result-stat-label">Anomalies</div>
+              <div class="result-stat-value" style="color: #f87171">{{ result.anomaly_count || 0 }}</div>
+            </div>
+            <div class="result-stat">
+              <div class="result-stat-label">Normal</div>
+              <div class="result-stat-value" style="color: #34d399">{{ result.normal_count || 0 }}</div>
+            </div>
+          </div>
+          <div class="result-table-wrap">
+            <table class="result-table">
+              <thead><tr><th>#</th><th>Label</th><th>Score</th></tr></thead>
+              <tbody>
+                <tr v-for="(val, i) in (result.predictions_full || result.predictions || []).slice(0, 100)" :key="i">
+                  <td>{{ i + 1 }}</td>
+                  <td :style="{ color: (val.label || val) === 'anomaly' ? '#f87171' : '#34d399' }">
+                    {{ val.label || val }}
+                  </td>
+                  <td>{{ val.score ? val.score.toFixed(4) : '-' }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
               <div class="result-stat-label">Anomalies</div>
               <div class="result-stat-value" style="color: #f87171">
                 {{ (result.predictions || []).filter(p => (p.label || p) === 'Anomaly' || p === -1).length }}

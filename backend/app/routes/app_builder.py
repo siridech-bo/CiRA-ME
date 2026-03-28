@@ -489,16 +489,27 @@ def run_app(slug):
     else:
         pred_values = predictions
 
-    # Compute summary stats for regression
+    # Build full predictions with metadata for anomaly/classification
+    predictions_full = []
+    if predictions and isinstance(predictions[0], dict):
+        predictions_full = predictions  # Keep full dicts with label, score, confidence
+
     response = {
         'app': app['name'],
         'slug': slug,
         'mode': model_mode,
         'predictions': pred_values,
+        'predictions_full': predictions_full,
         'actual': actual_values if actual_values else None,
         'count': len(pred_values),
         'latency_ms': round(latency_ms, 1),
     }
+
+    # Anomaly summary
+    if model_mode == 'anomaly' and pred_values:
+        n_anomaly = sum(1 for p in pred_values if str(p).lower() in ('anomaly', '1', '-1'))
+        response['anomaly_count'] = n_anomaly
+        response['normal_count'] = len(pred_values) - n_anomaly
 
     if model_mode == 'regression' and pred_values:
         vals = [v for v in pred_values if isinstance(v, (int, float))]
