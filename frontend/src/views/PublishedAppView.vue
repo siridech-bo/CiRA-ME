@@ -527,6 +527,12 @@ onMounted(async () => {
       error.value = 'This app does not exist or has not been published.'
     }
   }
+  // Initialize MQTT config from pipeline nodes
+  if (isLiveStream.value) {
+    const cfg = liveStreamConfig.value
+    mqttBrokerUrl.value = cfg.broker_url || 'ws://localhost:9001/mqtt'
+    mqttTopic.value = cfg.topic || 'sensors/#'
+  }
   loading.value = false
 })
 
@@ -558,8 +564,8 @@ const liveChannels = computed(() => {
   return appData.value.sensor_columns || []
 })
 
-const mqttBrokerUrl = ref('ws://localhost:9001/mqtt')
-const mqttTopic = ref('sensors/#')
+const mqttBrokerUrl = ref('')
+const mqttTopic = ref('')
 const mqttConnected = ref(false)
 const mqttError = ref(null)
 const mqttMessageCount = ref(0)
