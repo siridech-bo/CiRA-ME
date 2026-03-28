@@ -151,6 +151,93 @@
       </div>
     </v-card>
 
+    <!-- MQTT Test Publisher -->
+    <v-card class="pa-4 mt-6">
+      <h3 class="text-subtitle-1 font-weight-bold mb-3">
+        <v-icon start size="small">mdi-access-point</v-icon>
+        MQTT Test Publisher
+      </h3>
+      <p class="text-caption text-medium-emphasis mb-3">
+        Simulate sensor data by publishing CSV rows to the MQTT broker. Use this to test live stream apps without real sensors.
+      </p>
+
+      <div class="d-flex align-center gap-2 mb-3" style="flex-wrap: wrap;">
+        <v-select
+          v-model="mqttTestFile"
+          :items="mqttDatasets"
+          item-title="name"
+          item-value="path"
+          label="CSV Dataset"
+          variant="outlined"
+          density="compact"
+          hide-details
+          style="max-width: 300px;"
+          :loading="loadingDatasets"
+        />
+        <v-text-field
+          v-model="mqttTestTopic"
+          label="Topic"
+          variant="outlined"
+          density="compact"
+          hide-details
+          style="max-width: 200px;"
+        />
+        <v-text-field
+          v-model.number="mqttTestRate"
+          label="Rate (msg/s)"
+          type="number"
+          variant="outlined"
+          density="compact"
+          hide-details
+          style="max-width: 120px;"
+        />
+        <v-checkbox
+          v-model="mqttTestLoop"
+          label="Loop"
+          density="compact"
+          hide-details
+          style="max-width: 80px;"
+        />
+      </div>
+
+      <div class="d-flex align-center gap-2">
+        <v-btn
+          v-if="!mqttPublishing"
+          color="success"
+          variant="flat"
+          size="small"
+          :disabled="!mqttTestFile"
+          :loading="mqttStarting"
+          @click="startMqttPublish"
+        >
+          <v-icon start size="small">mdi-play</v-icon>
+          Start Publishing
+        </v-btn>
+        <v-btn
+          v-else
+          color="error"
+          variant="tonal"
+          size="small"
+          @click="stopMqttPublish"
+        >
+          <v-icon start size="small">mdi-stop</v-icon>
+          Stop
+        </v-btn>
+
+        <span v-if="mqttPublishing" class="text-caption text-success">
+          <v-icon size="10" color="success" class="mr-1">mdi-circle</v-icon>
+          Publishing to {{ mqttTestTopic }} — {{ mqttPublished }}/{{ mqttTotal }} rows
+        </span>
+        <span v-if="mqttBrokerStatus !== null" class="text-caption" :class="mqttBrokerStatus ? 'text-success' : 'text-error'">
+          Broker: {{ mqttBrokerStatus ? 'Connected' : 'Not available' }}
+        </span>
+      </div>
+
+      <v-alert v-if="mqttError" type="error" variant="tonal" density="compact" class="mt-2" closable @click:close="mqttError = ''">
+        {{ mqttError }}
+      </v-alert>
+    </v-card>
+
     <!-- Create App Dialog -->
     <v-dialog v-model="showCreateDialog" max-width="560">
       <v-card>
@@ -310,6 +397,53 @@ const TEMPLATES = [
       { id: 'n6', type: 'output.table', config: { max_rows: 50, show_confidence: true } },
     ],
   },
+  // ── MQTT Live Stream Templates ──
+  {
+    id: 'live_regression',
+    name: 'Live Regression',
+    description: 'MQTT → Normalize → Window → Features → Model → Chart',
+    icon: 'mdi-chart-timeline-variant',
+    color: '#a78bfa',
+    nodeLabels: ['MQTT', 'Normalize', 'Window', 'Features', 'Model', 'Chart'],
+    nodes: [
+      { id: 'n1', type: 'input.live_stream', config: { broker_url: 'ws://localhost:9001/mqtt', topic: 'sensors/machine1/#', channels: '' } },
+      { id: 'n2', type: 'transform.normalize', config: { method: 'minmax' } },
+      { id: 'n3', type: 'transform.window', config: { window_size: 32, step: 16 } },
+      { id: 'n4', type: 'transform.feature_extract', config: { features: [] } },
+      { id: 'n6', type: 'output.line_chart', config: { title: 'Live Predictions', target_column: '', show_anomalies: false } },
+    ],
+  },
+  {
+    id: 'live_anomaly',
+    name: 'Live Anomaly Detector',
+    description: 'MQTT → Normalize → Window → Features → Model → Alert',
+    icon: 'mdi-shield-alert',
+    color: '#f87171',
+    nodeLabels: ['MQTT', 'Normalize', 'Window', 'Features', 'Model', 'Alert'],
+    nodes: [
+      { id: 'n1', type: 'input.live_stream', config: { broker_url: 'ws://localhost:9001/mqtt', topic: 'sensors/machine1/#', channels: '' } },
+      { id: 'n2', type: 'transform.normalize', config: { method: 'minmax' } },
+      { id: 'n3', type: 'transform.window', config: { window_size: 32, step: 16 } },
+      { id: 'n4', type: 'transform.feature_extract', config: { features: [] } },
+      { id: 'n6', type: 'output.alert_badge', config: { label_normal: 'Normal', label_anomaly: 'Anomaly Detected', webhook_url: '' } },
+    ],
+  },
+  {
+    id: 'live_classifier',
+    name: 'Live Classifier',
+    description: 'MQTT → Normalize → Window → Features → Model → Table',
+    icon: 'mdi-shape',
+    color: '#34d399',
+    nodeLabels: ['MQTT', 'Normalize', 'Window', 'Features', 'Model', 'Table'],
+    nodes: [
+      { id: 'n1', type: 'input.live_stream', config: { broker_url: 'ws://localhost:9001/mqtt', topic: 'sensors/machine1/#', channels: '' } },
+      { id: 'n2', type: 'transform.normalize', config: { method: 'minmax' } },
+      { id: 'n3', type: 'transform.window', config: { window_size: 128, step: 64 } },
+      { id: 'n4', type: 'transform.feature_extract', config: { features: [] } },
+      { id: 'n6', type: 'output.table', config: { max_rows: 50, show_confidence: true } },
+    ],
+  },
+  // ── Blank ──
   {
     id: 'blank',
     name: 'Blank',
@@ -320,6 +454,91 @@ const TEMPLATES = [
     nodes: [],
   },
 ]
+
+// MQTT Test Publisher
+const mqttTestFile = ref('')
+const mqttTestTopic = ref('sensors/test')
+const mqttTestRate = ref(10)
+const mqttTestLoop = ref(false)
+const mqttDatasets = ref([])
+const loadingDatasets = ref(false)
+const mqttStarting = ref(false)
+const mqttPublishing = ref(false)
+const mqttPublished = ref(0)
+const mqttTotal = ref(0)
+const mqttSessionId = ref('')
+const mqttBrokerStatus = ref(null)
+const mqttError = ref('')
+let mqttPollInterval = null
+
+async function fetchMqttDatasets() {
+  loadingDatasets.value = true
+  try {
+    const resp = await api.get('/api/mqtt/datasets')
+    mqttDatasets.value = resp.data || []
+  } catch { mqttDatasets.value = [] }
+  loadingDatasets.value = false
+}
+
+async function checkMqttBroker() {
+  try {
+    const resp = await api.get('/api/mqtt/status')
+    mqttBrokerStatus.value = resp.data?.broker_connected || false
+    // Check if any publisher is still running
+    const active = resp.data?.active_publishers || []
+    const running = active.find(p => p.running)
+    if (running) {
+      mqttPublishing.value = true
+      mqttPublished.value = running.published
+      mqttTotal.value = running.total
+      mqttSessionId.value = running.session_id
+    }
+  } catch { mqttBrokerStatus.value = null }
+}
+
+async function startMqttPublish() {
+  if (!mqttTestFile.value) return
+  mqttStarting.value = true
+  mqttError.value = ''
+  try {
+    const resp = await api.post('/api/mqtt/publish', {
+      file_path: mqttTestFile.value,
+      topic: mqttTestTopic.value,
+      rate: mqttTestRate.value,
+      loop: mqttTestLoop.value,
+    })
+    mqttSessionId.value = resp.data.session_id
+    mqttTotal.value = resp.data.total_rows
+    mqttPublished.value = 0
+    mqttPublishing.value = true
+    // Poll for progress
+    mqttPollInterval = setInterval(async () => {
+      try {
+        const s = await api.get('/api/mqtt/status')
+        const pub = (s.data?.active_publishers || []).find(p => p.session_id === mqttSessionId.value)
+        if (pub) {
+          mqttPublished.value = pub.published
+          if (!pub.running) {
+            mqttPublishing.value = false
+            clearInterval(mqttPollInterval)
+          }
+        }
+      } catch {}
+    }, 1000)
+  } catch (e) {
+    mqttError.value = e.response?.data?.error || 'Failed to start publisher'
+  }
+  mqttStarting.value = false
+}
+
+async function stopMqttPublish() {
+  if (!mqttSessionId.value) return
+  try {
+    await api.post(`/api/mqtt/publish/${mqttSessionId.value}/stop`)
+  } catch {}
+  mqttPublishing.value = false
+  if (mqttPollInterval) clearInterval(mqttPollInterval)
+}
 
 // Access control options
 const accessOptions = [
@@ -496,6 +715,8 @@ async function deleteApp() {
 
 onMounted(() => {
   fetchApps()
+  fetchMqttDatasets()
+  checkMqttBroker()
 })
 </script>
 
