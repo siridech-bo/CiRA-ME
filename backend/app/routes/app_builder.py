@@ -874,6 +874,28 @@ def _run_model_inference(endpoint_id, data):
     model_data = ModelManager.load_model(saved['model_path'])
     predictions = ModelManager.predict(model_data, data, endpoint['mode'])
 
+    # Decode integer labels for classification/anomaly
+    if endpoint['mode'] != 'regression' and predictions:
+        # Build label mapping from model
+        model_obj = model_data.get('model')
+        class_names = model_data.get('class_names')
+        if not class_names and hasattr(model_obj, 'classes_'):
+            cls = model_obj.classes_
+            if len(cls) > 0 and isinstance(cls[0], (str, np.str_)):
+                class_names = [str(c) for c in cls]
+
+        if class_names:
+            for p in predictions:
+                label = p.get('label', '')
+                # Check if label is a numeric string that needs decoding
+                try:
+                    idx = int(float(label))
+                    if 0 <= idx < len(class_names):
+                        p['label'] = class_names[idx]
+                        p['prediction'] = class_names[idx]
+                except (ValueError, TypeError):
+                    pass  # Already a string label, keep as-is
+
     # Record the inference
     MeLabEndpoint.record_inference(endpoint_id)
 

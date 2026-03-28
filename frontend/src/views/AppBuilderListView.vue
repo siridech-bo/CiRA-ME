@@ -253,13 +253,14 @@ const TEMPLATES = [
   {
     id: 'classifier',
     name: 'Classifier',
-    description: 'Window → Features → Model → Table',
+    description: 'Normalize → Window → Features → Model → Table',
     icon: 'mdi-shape',
     color: '#34d399',
-    nodeLabels: ['Window', 'Features', 'Model', 'Table'],
+    nodeLabels: ['Normalize', 'Window', 'Features', 'Model', 'Table'],
     nodes: [
       { id: 'n1', type: 'input.csv_upload', config: { timestamp_col: 'timestamp', value_cols: 'value' } },
-      { id: 'n3', type: 'transform.window', config: { window_size: 32, step: 16 } },
+      { id: 'n2', type: 'transform.normalize', config: { method: 'minmax' } },
+      { id: 'n3', type: 'transform.window', config: { window_size: 128, step: 64 } },
       { id: 'n4', type: 'transform.feature_extract', config: { features: [] } },
       { id: 'n6', type: 'output.table', config: { max_rows: 50, show_confidence: true } },
     ],
