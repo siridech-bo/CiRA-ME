@@ -56,12 +56,36 @@
                 variant="flat"
                 :color="app.status === 'published' ? 'success' : 'grey'"
               >
+                <v-icon v-if="app.status === 'published'" start size="10">mdi-circle</v-icon>
                 {{ app.status || 'draft' }}
               </v-chip>
+              <div v-if="app.status === 'published' && app.slug" class="mt-1">
+                <a
+                  :href="`/standalone/${app.slug}`"
+                  target="_blank"
+                  class="published-link"
+                  @click.stop
+                >
+                  <v-icon size="10" class="mr-1">mdi-open-in-new</v-icon>
+                  {{ app.slug }}
+                </a>
+              </div>
             </td>
             <td class="text-caption">{{ formatDate(app.created_at) }}</td>
-            <td class="text-center">{{ app.calls_count ?? 0 }}</td>
+            <td class="text-center">{{ app.calls_count ?? app.calls ?? 0 }}</td>
             <td>
+              <v-btn
+                v-if="app.status === 'published' && app.slug"
+                icon
+                size="x-small"
+                variant="text"
+                color="purple"
+                title="Open Standalone App"
+                :href="`/standalone/${app.slug}`"
+                target="_blank"
+              >
+                <v-icon size="small">mdi-open-in-new</v-icon>
+              </v-btn>
               <v-btn
                 icon
                 size="x-small"
@@ -446,5 +470,17 @@ onMounted(() => {
 }
 .template-selected {
   background: rgba(167, 139, 250, 0.08) !important;
+}
+.published-link {
+  font-size: 10px;
+  font-family: monospace;
+  color: #a78bfa;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+}
+.published-link:hover {
+  color: #c4b5fd;
+  text-decoration: underline;
 }
 </style>
