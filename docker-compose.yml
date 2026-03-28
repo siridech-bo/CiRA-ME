@@ -136,11 +136,42 @@ services:
           cpus: '1.0'
           memory: 2G
 
+  # MQTT Broker - Mosquitto (for live sensor streaming)
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: cirame-mosquitto
+    restart: unless-stopped
+
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf
+      - mosquitto-data:/mosquitto/data
+
+    ports:
+      - "1883:1883"    # MQTT TCP (for IoT devices, gateways, sensors)
+      - "9001:9001"    # MQTT WebSocket (for browser connections)
+
+    networks:
+      - cirame-network
+
+    healthcheck:
+      test: ["CMD", "mosquitto_sub", "-t", "$$SYS/#", "-C", "1", "-i", "healthcheck", "-W", "3"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 128M
+
 # Named volumes for persistent data
 volumes:
   backend-data:
   backend-models:
   ti-projects:
+  mosquitto-data:
 
 # Network for service communication
 networks:

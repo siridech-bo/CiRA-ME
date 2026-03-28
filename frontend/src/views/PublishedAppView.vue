@@ -59,8 +59,110 @@
         </div>
       </div>
 
-      <!-- Input section -->
-      <div class="app-section">
+      <!-- MQTT Live Stream Mode -->
+      <div v-if="isLiveStream" class="app-section">
+        <div class="app-section-title">
+          <v-icon size="16" :color="mqttConnected ? 'success' : 'grey'">mdi-access-point</v-icon>
+          Live Stream (MQTT)
+          <v-chip v-if="mqttConnected" size="x-small" color="success" variant="flat" class="ml-2">
+            <v-icon start size="8">mdi-circle</v-icon> LIVE
+          </v-chip>
+          <v-chip v-else-if="mqttError" size="x-small" color="error" variant="tonal" class="ml-2">
+            Error
+          </v-chip>
+        </div>
+
+        <!-- Connection config -->
+        <div class="d-flex align-center gap-2 mb-3" style="flex-wrap: wrap;">
+          <v-text-field
+            v-model="mqttBrokerUrl"
+            label="Broker URL"
+            variant="outlined"
+            density="compact"
+            hide-details
+            style="max-width: 300px; font-size: 12px;"
+            :disabled="mqttConnected"
+          />
+          <v-text-field
+            v-model="mqttTopic"
+            label="Topic"
+            variant="outlined"
+            density="compact"
+            hide-details
+            style="max-width: 200px; font-size: 12px;"
+            :disabled="mqttConnected"
+          />
+          <v-btn
+            v-if="!mqttConnected"
+            color="success"
+            variant="flat"
+            size="small"
+            @click="startLiveStream"
+          >
+            <v-icon start size="small">mdi-play</v-icon>
+            Connect
+          </v-btn>
+          <v-btn
+            v-else
+            color="error"
+            variant="tonal"
+            size="small"
+            @click="stopLiveStream"
+          >
+            <v-icon start size="small">mdi-stop</v-icon>
+            Disconnect
+          </v-btn>
+        </div>
+
+        <!-- Error message -->
+        <v-alert v-if="mqttError" type="error" variant="tonal" density="compact" class="mb-3" closable>
+          {{ mqttError }}
+        </v-alert>
+
+        <!-- Live stats -->
+        <div v-if="mqttConnected" class="d-flex flex-wrap gap-3 mb-3">
+          <div class="live-stat">
+            <div class="live-stat-label">Messages</div>
+            <div class="live-stat-value">{{ mqttMessageCount.toLocaleString() }}</div>
+          </div>
+          <div class="live-stat">
+            <div class="live-stat-label">Rate</div>
+            <div class="live-stat-value">{{ mqttMessagesPerSec }}/s</div>
+          </div>
+          <div class="live-stat">
+            <div class="live-stat-label">Buffer</div>
+            <div class="live-stat-value">{{ sensorBufferLen }}/{{ liveWindowSize }}</div>
+          </div>
+          <div class="live-stat">
+            <div class="live-stat-label">Inferences</div>
+            <div class="live-stat-value">{{ liveInferenceCount }}</div>
+          </div>
+        </div>
+
+        <!-- Buffer progress bar -->
+        <v-progress-linear
+          v-if="mqttConnected"
+          :model-value="sensorBufferProgress * 100"
+          color="purple"
+          height="6"
+          rounded
+          class="mb-3"
+        />
+
+        <!-- Live prediction -->
+        <div v-if="livePrediction !== null" class="live-prediction">
+          <div class="live-prediction-label">Latest Prediction</div>
+          <div class="live-prediction-value" :style="{ color: modeColor }">
+            {{ livePrediction }}
+          </div>
+          <div v-if="liveLastUpdated" class="live-prediction-time">
+            {{ liveLastUpdatedText }}
+          </div>
+        </div>
+      </div>
+
+      <!-- CSV Upload Mode -->
+      <div v-else class="app-section">
         <div class="app-section-title">
           <v-icon size="16" color="blue">mdi-upload</v-icon>
           Upload Data
@@ -273,9 +375,10 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import api from '@/services/api'
+import mqtt from 'mqtt'
 
 const route = useRoute()
 const slug = computed(() => route.params.slug)
@@ -428,6 +531,166 @@ onMounted(async () => {
 })
 
 const fileInput = ref(null)
+
+// ── Live Stream (MQTT) ─────────────────────────────────
+const isLiveStream = computed(() => {
+  return parsedNodes.value.some(n => n.type === 'input.live_stream')
+})
+
+const liveStreamConfig = computed(() => {
+  const node = parsedNodes.value.find(n => n.type === 'input.live_stream')
+  return node?.config || {}
+})
+
+const liveWindowSize = computed(() => {
+  const wNode = parsedNodes.value.find(n => n.type === 'transform.window')
+  return wNode?.config?.window_size || 128
+})
+
+const liveStride = computed(() => {
+  const wNode = parsedNodes.value.find(n => n.type === 'transform.window')
+  return wNode?.config?.step || wNode?.config?.stride || 64
+})
+
+const liveChannels = computed(() => {
+  const channels = liveStreamConfig.value.channels || ''
+  if (channels) return channels.split(',').map((c) => c.trim()).filter(Boolean)
+  return appData.value.sensor_columns || []
+})
+
+const mqttBrokerUrl = ref('ws://localhost:9001/mqtt')
+const mqttTopic = ref('sensors/#')
+const mqttConnected = ref(false)
+const mqttError = ref(null)
+const mqttMessageCount = ref(0)
+const mqttMessagesPerSec = ref(0)
+const sensorBufferLen = ref(0)
+const sensorBufferProgress = ref(0)
+const liveInferenceCount = ref(0)
+const livePrediction = ref(null)
+const liveLastUpdated = ref(null)
+let mqttClient = null
+let sensorBuffer = []
+let rateCounter = 0
+let rateInterval = null
+
+const liveLastUpdatedText = computed(() => {
+  if (!liveLastUpdated.value) return ''
+  const ago = Math.round((Date.now() - liveLastUpdated.value) / 1000)
+  return ago < 2 ? 'just now' : `${ago}s ago`
+})
+
+// Update "ago" text reactively
+const liveUpdateTicker = ref(0)
+let tickerInterval = null
+
+function startLiveStream() {
+  mqttError.value = null
+  try {
+    mqttClient = mqtt.connect(mqttBrokerUrl.value, {
+      clientId: `cira-live-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+      clean: true,
+      keepalive: 30,
+      reconnectPeriod: 3000,
+    })
+
+    mqttClient.on('connect', () => {
+      mqttConnected.value = true
+      mqttError.value = null
+      mqttClient.subscribe(mqttTopic.value, { qos: 0 })
+    })
+
+    mqttClient.on('error', (err) => {
+      mqttError.value = err.message || 'Connection failed'
+      mqttConnected.value = false
+    })
+
+    mqttClient.on('close', () => {
+      mqttConnected.value = false
+    })
+
+    mqttClient.on('message', (_topic, payload) => {
+      mqttMessageCount.value++
+      rateCounter++
+      try {
+        const data = JSON.parse(payload.toString())
+        pushSensorSample(data)
+      } catch { /* ignore non-JSON */ }
+    })
+
+    // Rate counter
+    rateInterval = setInterval(() => {
+      mqttMessagesPerSec.value = rateCounter
+      rateCounter = 0
+      liveUpdateTicker.value++
+    }, 1000)
+
+  } catch (e) {
+    mqttError.value = e.message || 'Failed to connect'
+  }
+}
+
+function stopLiveStream() {
+  if (mqttClient) {
+    mqttClient.end(true)
+    mqttClient = null
+  }
+  if (rateInterval) {
+    clearInterval(rateInterval)
+    rateInterval = null
+  }
+  mqttConnected.value = false
+  sensorBuffer = []
+  sensorBufferLen.value = 0
+  sensorBufferProgress.value = 0
+}
+
+function pushSensorSample(sample) {
+  sensorBuffer.push(sample)
+  sensorBufferLen.value = sensorBuffer.length
+
+  const ws = liveWindowSize.value
+  sensorBufferProgress.value = Math.min(sensorBuffer.length / ws, 1)
+
+  if (sensorBuffer.length >= ws) {
+    // Extract window and run inference
+    const window = sensorBuffer.slice(0, ws)
+    const stride = liveStride.value
+    sensorBuffer = sensorBuffer.slice(stride)
+    sensorBufferLen.value = sensorBuffer.length
+    sensorBufferProgress.value = Math.min(sensorBuffer.length / ws, 1)
+    runLiveInference(window)
+  }
+}
+
+async function runLiveInference(windowData) {
+  // Convert to CSV-like format for the pipeline runner
+  const channels = liveChannels.value
+  const csvRows = windowData.map(sample => {
+    if (Array.isArray(sample)) return sample
+    return channels.map((ch) => sample[ch] ?? 0)
+  })
+
+  try {
+    const resp = await api.post(`/api/app-builder/run/${slug.value}`, {
+      data: csvRows,
+      channels: channels,
+    }, { timeout: 30000 })
+
+    liveInferenceCount.value++
+    liveLastUpdated.value = Date.now()
+
+    const preds = resp.data?.predictions || []
+    if (preds.length > 0) {
+      livePrediction.value = preds[preds.length - 1]
+    }
+
+    // Also update result for the results section
+    result.value = resp.data
+  } catch (e) {
+    console.error('Live inference error:', e)
+  }
+}
 
 function onFileSelect(e) {
   selectedFile.value = e.target.files[0] || null
@@ -716,6 +979,50 @@ async function runPipeline() {
 }
 .table-toggle:hover {
   color: #c9d1d9;
+}
+
+.live-stat {
+  background: #0d1117;
+  border: 1px solid #21262d;
+  border-radius: 6px;
+  padding: 8px 14px;
+  min-width: 80px;
+}
+.live-stat-label {
+  font-size: 9px;
+  color: #8b949e;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.live-stat-value {
+  font-size: 16px;
+  font-weight: 600;
+  font-family: monospace;
+  color: #e6edf3;
+}
+.live-prediction {
+  background: #0d1117;
+  border: 1px solid #21262d;
+  border-radius: 8px;
+  padding: 16px;
+  text-align: center;
+}
+.live-prediction-label {
+  font-size: 10px;
+  color: #8b949e;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 4px;
+}
+.live-prediction-value {
+  font-size: 28px;
+  font-weight: 700;
+  font-family: monospace;
+}
+.live-prediction-time {
+  font-size: 10px;
+  color: #484f58;
+  margin-top: 4px;
 }
 
 .expected-format {

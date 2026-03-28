@@ -666,6 +666,12 @@ def _parse_input(req):
         arr = np.array(data, dtype=np.float64)
         if arr.ndim == 1:
             arr = arr.reshape(1, -1)
+
+        # If channel names provided (from live stream), return DataFrame
+        channels = body.get('channels')
+        if channels and len(channels) == arr.shape[1]:
+            return pd.DataFrame(arr, columns=channels)
+
         return arr
     except (ValueError, TypeError) as e:
         return jsonify({'error': f'Invalid data format: {e}'}), 400
