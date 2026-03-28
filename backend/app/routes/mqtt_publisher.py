@@ -167,6 +167,170 @@ def list_datasets():
     return jsonify(files[:100])  # Limit to 100 files
 
 
+@mqtt_bp.route('/broker-info', methods=['GET'])
+@login_required
+def broker_info():
+    """Return broker host, port, WebSocket port, connection status, and $SYS stats."""
+    broker_host = os.environ.get('MQTT_BROKER_HOST', 'cirame-mosquitto')
+    broker_port = int(os.environ.get('MQTT_BROKER_PORT', '1883'))
+    ws_port = int(os.environ.get('MQTT_BROKER_WS_PORT', '9001'))
+
+    result = {
+        'host': broker_host,
+        'port': broker_port,
+        'ws_port': ws_port,
+        'connected': False,
+        'version': None,
+        'clients_connected': None,
+        'messages_received': None,
+        'messages_sent': None,
+        'uptime': None,
+    }
+
+    try:
+        import paho.mqtt.client as paho_mqtt
+
+        sys_data = {}
+        got_data = threading.Event()
+
+        def on_connect(client, userdata, flags, rc, properties=None):
+            client.subscribe('$SYS/#')
+
+        def on_message(client, userdata, msg):
+            try:
+                sys_data[msg.topic] = msg.payload.decode('utf-8', errors='replace')
+            except Exception:
+                pass
+
+        client = paho_mqtt.Client(paho_mqtt.CallbackAPIVersion.VERSION2)
+        client.on_connect = on_connect
+        client.on_message = on_message
+        client.connect(broker_host, broker_port, keepalive=10)
+        client.loop_start()
+
+        # Wait up to 2 seconds for $SYS messages
+        time.sleep(2)
+
+        client.loop_stop()
+        client.disconnect()
+
+        result['connected'] = True
+        result['version'] = sys_data.get('$SYS/broker/version')
+        result['clients_connected'] = sys_data.get('$SYS/broker/clients/connected')
+        result['messages_received'] = sys_data.get('$SYS/broker/messages/received')
+        result['messages_sent'] = sys_data.get('$SYS/broker/messages/sent')
+        result['uptime'] = sys_data.get('$SYS/broker/uptime')
+
+    except Exception as e:
+        logger.warning(f"Broker info fetch failed: {e}")
+
+    return jsonify(result)
+
+
+@mqtt_bp.route('/topics', methods=['GET'])
+@login_required
+def list_topics():
+    """Subscribe to # for 2 seconds and return discovered topics."""
+    broker_host = os.environ.get('MQTT_BROKER_HOST', 'cirame-mosquitto')
+    broker_port = int(os.environ.get('MQTT_BROKER_PORT', '1883'))
+
+    topics = {}
+
+    try:
+        import paho.mqtt.client as paho_mqtt
+
+        def on_connect(client, userdata, flags, rc, properties=None):
+            client.subscribe('#')
+
+        def on_message(client, userdata, msg):
+            topic = msg.topic
+            if not topic.startswith('$SYS'):
+                topics[topic] = time.time()
+
+        client = paho_mqtt.Client(paho_mqtt.CallbackAPIVersion.VERSION2)
+        client.on_connect = on_connect
+        client.on_message = on_message
+        client.connect(broker_host, broker_port, keepalive=10)
+        client.loop_start()
+
+        time.sleep(2)
+
+        client.loop_stop()
+        client.disconnect()
+
+    except Exception as e:
+        logger.warning(f"Topic discovery failed: {e}")
+
+    result = []
+    for topic, ts in sorted(topics.items()):
+        result.append({
+            'topic': topic,
+            'last_seen': ts,
+        })
+
+    return jsonify(result)
+
+
+@mqtt_bp.route('/topics/subscribe-test', methods=['POST'])
+@login_required
+def subscribe_test():
+    """Test subscribe to a topic and return last N messages."""
+    data = request.get_json()
+    if not data or not data.get('topic'):
+        return jsonify({'error': 'topic is required'}), 400
+
+    topic = data['topic']
+    count = int(data.get('count', 5))
+    timeout = min(float(data.get('timeout', 5)), 10)  # max 10 seconds
+
+    broker_host = os.environ.get('MQTT_BROKER_HOST', 'cirame-mosquitto')
+    broker_port = int(os.environ.get('MQTT_BROKER_PORT', '1883'))
+
+    messages = []
+
+    try:
+        import paho.mqtt.client as paho_mqtt
+
+        def on_connect(client, userdata, flags, rc, properties=None):
+            client.subscribe(topic)
+
+        def on_message(client, userdata, msg):
+            try:
+                payload = msg.payload.decode('utf-8', errors='replace')
+            except Exception:
+                payload = str(msg.payload)
+            messages.append({
+                'topic': msg.topic,
+                'payload': payload,
+                'timestamp': time.time(),
+                'qos': msg.qos,
+            })
+
+        client = paho_mqtt.Client(paho_mqtt.CallbackAPIVersion.VERSION2)
+        client.on_connect = on_connect
+        client.on_message = on_message
+        client.connect(broker_host, broker_port, keepalive=10)
+        client.loop_start()
+
+        # Wait until we have enough messages or timeout
+        start = time.time()
+        while len(messages) < count and (time.time() - start) < timeout:
+            time.sleep(0.1)
+
+        client.loop_stop()
+        client.disconnect()
+
+    except Exception as e:
+        logger.warning(f"Subscribe test failed: {e}")
+        return jsonify({'error': str(e), 'messages': []}), 500
+
+    return jsonify({
+        'topic': topic,
+        'count': len(messages),
+        'messages': messages[:count],
+    })
+
+
 def _publish_worker(session_id, df, sensor_cols, topic, rate, loop):
     """Background thread that publishes CSV rows to MQTT."""
     import paho.mqtt.client as paho_mqtt

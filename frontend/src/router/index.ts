@@ -63,6 +63,12 @@ const router = createRouter({
       meta: { requiresAuth: true }
     },
     {
+      path: '/mqtt',
+      name: 'mqtt-management',
+      component: () => import('@/views/MqttManagementView.vue'),
+      meta: { requiresAuth: true }
+    },
+    {
       path: '/app-builder',
       name: 'app-builder',
       component: () => import('@/views/AppBuilderListView.vue'),

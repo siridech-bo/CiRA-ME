@@ -138,6 +138,14 @@
         />
 
         <v-list-item
+          prepend-icon="mdi-lan"
+          title="MQTT Broker"
+          value="mqtt-management"
+          :to="{ name: 'mqtt-management' }"
+          rounded="lg"
+        />
+
+        <v-list-item
           prepend-icon="mdi-view-dashboard-variant"
           title="App Builder"
           value="app-builder"
