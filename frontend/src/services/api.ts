@@ -30,10 +30,12 @@ api.interceptors.response.use(
     return response
   },
   (error) => {
-    // Handle 401 Unauthorized
+    // Handle 401 Unauthorized — redirect to login
+    // BUT not on public pages (standalone apps, published apps)
     if (error.response?.status === 401) {
-      // Redirect to login if not already there
-      if (window.location.pathname !== '/login') {
+      const path = window.location.pathname
+      const isPublicPage = path.startsWith('/standalone/') || path.startsWith('/apps/')
+      if (!isPublicPage && path !== '/login') {
         window.location.href = '/login'
       }
     }
