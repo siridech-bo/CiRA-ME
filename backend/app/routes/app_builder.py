@@ -343,7 +343,7 @@ def run_app(slug):
         if not user_id:
             return jsonify({'error': 'Authentication required (session or X-API-Key)'}), 401
         if app['user_id'] != user_id:
-        return jsonify({'error': 'Access denied'}), 403
+            return jsonify({'error': 'Access denied'}), 403
 
     start_time = time.time()
 
