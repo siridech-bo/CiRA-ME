@@ -306,21 +306,8 @@ def replay_ml_pipeline(csv_path: str, pipeline_config: dict,
 
     y_pred = model.predict(X_new_scaled)
 
-    # ── Build canonical label mapping ──
-    # Goal: both predictions and true labels use the SAME string representation
-    # Priority: model_data['class_names'] > model.classes_ (if strings) > pipeline_config
-    canonical_names = None
-    if model_data.get('class_names'):
-        canonical_names = [str(c) for c in model_data['class_names']]
-    elif hasattr(model, 'classes_') and len(model.classes_) > 0:
-        if isinstance(model.classes_[0], (str, np.str_)):
-            canonical_names = [str(c) for c in model.classes_]
-    if not canonical_names and pipeline_config.get('training', {}).get('class_names'):
-        canonical_names = [str(c) for c in pipeline_config['training']['class_names']]
-
-    # Decode predictions: integer index → canonical name (only if predictions are numeric)
+    # ── Decode predictions ──
     if mode != 'regression':
-        # Check if predictions are numeric (encoded) or already string labels
         pred_is_numeric = False
         try:
             if len(y_pred) > 0:
@@ -329,14 +316,26 @@ def replay_ml_pipeline(csv_path: str, pipeline_config: dict,
         except (ValueError, TypeError):
             pred_is_numeric = False
 
-        if pred_is_numeric and canonical_names:
-            idx_to_name = {i: name for i, name in enumerate(canonical_names)}
-            y_pred_display = np.array([idx_to_name.get(int(float(p)), str(p)) for p in y_pred])
-        elif pred_is_numeric and mode == 'anomaly':
-            # Anomaly detectors: -1 = anomaly, 1 = normal (sklearn convention)
-            y_pred_display = np.array(['Anomaly' if int(float(p)) == -1 else 'Normal' for p in y_pred])
+        if pred_is_numeric:
+            # Build decode map: priority label_inverse_map > class_names > model.classes_
+            decode_map = None
+            inv_map = model_data.get('label_inverse_map')
+            if inv_map:
+                decode_map = {int(k): str(v) for k, v in inv_map.items()}
+            elif model_data.get('class_names'):
+                cn = model_data['class_names']
+                decode_map = {i: cn[i] for i in range(len(cn))}
+            elif hasattr(model, 'classes_') and len(model.classes_) > 0:
+                if isinstance(model.classes_[0], (str, np.str_)):
+                    decode_map = {i: str(c) for i, c in enumerate(model.classes_)}
+
+            if decode_map:
+                y_pred_display = np.array([decode_map.get(int(float(p)), str(p)) for p in y_pred])
+            elif mode == 'anomaly':
+                y_pred_display = np.array(['Anomaly' if int(float(p)) == -1 else 'Normal' for p in y_pred])
+            else:
+                y_pred_display = np.array([str(p) for p in y_pred])
         else:
-            # Predictions are already string labels — use as-is
             y_pred_display = np.array([str(p) for p in y_pred])
     else:
         y_pred_display = y_pred

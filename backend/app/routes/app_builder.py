@@ -905,25 +905,34 @@ def _run_model_inference(endpoint_id, data):
 
     # Decode integer labels for classification/anomaly
     if endpoint['mode'] != 'regression' and predictions:
-        # Build label mapping from model
         model_obj = model_data.get('model')
-        class_names = model_data.get('class_names')
-        if not class_names and hasattr(model_obj, 'classes_'):
-            cls = model_obj.classes_
-            if len(cls) > 0 and isinstance(cls[0], (str, np.str_)):
-                class_names = [str(c) for c in cls]
 
-        if class_names:
+        # Build prediction decoder: index → class name
+        decode_map = None
+
+        # Priority 1: label_inverse_map (exact encoder mapping from training)
+        inv_map = model_data.get('label_inverse_map')
+        if inv_map:
+            decode_map = {int(k): str(v) for k, v in inv_map.items()}
+        # Priority 2: model.classes_ with string values (sklearn native)
+        elif hasattr(model_obj, 'classes_') and len(model_obj.classes_) > 0:
+            if isinstance(model_obj.classes_[0], (str, np.str_)):
+                decode_map = None  # Predictions are already strings
+        # Priority 3: class_names (may be wrong order for old models, but best we have)
+        if not decode_map and not inv_map and model_data.get('class_names'):
+            cn = model_data['class_names']
+            decode_map = {i: cn[i] for i in range(len(cn))}
+
+        if decode_map:
             for p in predictions:
                 label = p.get('label', '')
-                # Check if label is a numeric string that needs decoding
                 try:
                     idx = int(float(label))
-                    if 0 <= idx < len(class_names):
-                        p['label'] = class_names[idx]
-                        p['prediction'] = class_names[idx]
+                    if idx in decode_map:
+                        p['label'] = decode_map[idx]
+                        p['prediction'] = decode_map[idx]
                 except (ValueError, TypeError):
-                    pass  # Already a string label, keep as-is
+                    pass
 
     # Record the inference
     MeLabEndpoint.record_inference(endpoint_id)

@@ -143,6 +143,8 @@ try:
                 def inverse_transform(self, y):
                     return np.array([self.inverse_map.get(int(v), f'class_{v}') for v in y])
             label_encoder = SimpleEncoder(label_map, class_names)
+            # Save the inverse mapping for prediction decoding
+            result['label_inverse_map'] = {int(v): str(k) for k, v in label_map.items()}
             result['logs'].append(f"Encoded {len(train_labels)} train classes to [0..{len(train_labels)-1}]")
 
     # Execute user code (defines their model class)
@@ -422,9 +424,9 @@ class CustomModelRunner:
                     with open(model_pkl_path, 'rb') as f:
                         model_obj = pickle.load(f)
 
-                    # Save with scaler and class names for label decoding
-                    # Use class_names from the execute scope (encoder order), NOT from metrics (alphabetical)
+                    # Save with scaler, class names, and label map for decoding
                     save_class_names = class_names
+                    save_label_map = run_result.get('label_inverse_map', {})
                     with open(perm_model_path, 'wb') as f:
                         pickle.dump({
                             'model': model_obj,
@@ -435,6 +437,7 @@ class CustomModelRunner:
                             'feature_session_id': feature_session_id,
                             'feature_names': _feature_sessions.get(feature_session_id, {}).get('feature_names', []),
                             'class_names': save_class_names,
+                            'label_inverse_map': save_label_map,
                         }, f)
 
                     _model_sessions[training_session_id] = {
