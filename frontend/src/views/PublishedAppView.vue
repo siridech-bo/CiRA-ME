@@ -249,27 +249,6 @@
             </table>
           </div>
         </div>
-              <div class="result-stat-label">Anomalies</div>
-              <div class="result-stat-value" style="color: #f87171">
-                {{ (result.predictions || []).filter(p => (p.label || p) === 'Anomaly' || p === -1).length }}
-              </div>
-            </div>
-          </div>
-          <div class="result-table-wrap">
-            <table class="result-table">
-              <thead><tr><th>#</th><th>Label</th><th>Score</th></tr></thead>
-              <tbody>
-                <tr v-for="(val, i) in (result.predictions || []).slice(0, 50)" :key="i">
-                  <td>{{ i + 1 }}</td>
-                  <td :style="{ color: (val.label || val) === 'Anomaly' || val === -1 ? '#f87171' : '#34d399' }">
-                    {{ val.label || (val === -1 ? 'Anomaly' : 'Normal') }}
-                  </td>
-                  <td>{{ val.score ? val.score.toFixed(3) : '-' }}</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
 
         <!-- Raw JSON fallback -->
         <div v-else class="app-results">
