@@ -203,6 +203,7 @@ def get_app_by_slug(slug):
         nodes = json_mod.loads(nodes)
     mode = None
     algorithm = None
+    sensor_columns = []
     for node in nodes:
         if node.get('type', '').startswith('model.endpoint.'):
             endpoint_id = node['type'].split('.')[-1]
@@ -210,10 +211,18 @@ def get_app_by_slug(slug):
             if endpoint:
                 mode = endpoint.get('mode')
                 algorithm = endpoint.get('algorithm')
+                # Get sensor columns from model's pipeline_config
+                saved = SavedModel.get_by_id(endpoint.get('saved_model_id'))
+                if saved:
+                    pc = saved.get('pipeline_config', {})
+                    if isinstance(pc, str):
+                        pc = json_mod.loads(pc) if pc else {}
+                    sensor_columns = pc.get('normalization', {}).get('sensor_columns', [])
             break
     result = dict(app)
     result['mode'] = mode
     result['algorithm'] = algorithm
+    result['sensor_columns'] = sensor_columns
     return jsonify(result)
 
 

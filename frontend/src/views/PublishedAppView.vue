@@ -47,12 +47,34 @@
         </div>
       </div>
 
+      <!-- Pipeline info -->
+      <div v-if="pipelineInfo" class="app-section" style="padding: 10px 16px;">
+        <div class="d-flex flex-wrap align-center" style="gap: 6px;">
+          <v-chip size="x-small" color="info" variant="tonal">Window: {{ pipelineInfo.window_size }}</v-chip>
+          <v-chip size="x-small" color="info" variant="tonal">Stride: {{ pipelineInfo.stride }}</v-chip>
+          <v-chip size="x-small" color="info" variant="tonal">Features: {{ pipelineInfo.n_features }}</v-chip>
+          <v-chip size="x-small" color="purple" variant="tonal">{{ pipelineInfo.algorithm }}</v-chip>
+        </div>
+      </div>
+
       <!-- Input section -->
       <div class="app-section">
         <div class="app-section-title">
           <v-icon size="16" color="blue">mdi-upload</v-icon>
           Upload Data
         </div>
+
+        <!-- Expected CSV format -->
+        <div v-if="expectedColumns.length > 0" class="expected-format">
+          <div class="text-caption text-medium-emphasis mb-1">
+            <v-icon size="12" class="mr-1">mdi-information-outline</v-icon>
+            Expected CSV columns:
+          </div>
+          <div class="d-flex flex-wrap" style="gap: 3px;">
+            <span v-for="col in expectedColumns" :key="col" class="expected-col">{{ col }}</span>
+          </div>
+        </div>
+
         <div class="app-upload-area">
           <input type="file" ref="fileInput" accept=".csv" @change="onFileSelect" style="display:none" />
           <div v-if="!selectedFile" class="app-dropzone" @click="$refs.fileInput.click()">
@@ -62,7 +84,7 @@
           <div v-else class="app-file-selected">
             <v-icon size="16" color="success">mdi-file-check</v-icon>
             <span>{{ selectedFile.name }} ({{ (selectedFile.size / 1024).toFixed(1) }} KB)</span>
-            <v-btn icon size="x-small" variant="text" @click="selectedFile = null">
+            <v-btn icon size="x-small" variant="text" @click="clearFile">
               <v-icon size="14">mdi-close</v-icon>
             </v-btn>
           </div>
@@ -228,6 +250,14 @@
       <v-alert v-if="runError" type="error" variant="tonal" class="mt-4" closable @click:close="runError = null">
         {{ runError }}
       </v-alert>
+
+      <!-- Upload new file button after results -->
+      <div v-if="result" class="text-center mt-4">
+        <v-btn variant="outlined" color="purple" @click="clearFile">
+          <v-icon start size="small">mdi-upload</v-icon>
+          Upload New File
+        </v-btn>
+      </div>
     </div>
   </div>
 </template>
@@ -344,6 +374,30 @@ const appAlgorithm = computed(() => {
   return appData.value.algorithm || ''
 })
 
+// Pipeline info from nodes
+const pipelineInfo = computed(() => {
+  const nodes = appData.value.nodes || []
+  const windowNode = nodes.find(n => n.type === 'transform.window')
+  const featNode = nodes.find(n => n.type === 'transform.feature_extract')
+  const modelNode = nodes.find(n => n.type?.startsWith('model.endpoint.'))
+  if (!windowNode) return null
+  return {
+    window_size: windowNode.config?.window_size || '?',
+    stride: windowNode.config?.step || windowNode.config?.stride || '?',
+    n_features: featNode?.config?.features?.length || '?',
+    algorithm: appData.value.algorithm || 'model',
+  }
+})
+
+// Expected CSV columns from model's sensor_columns
+const expectedColumns = computed(() => {
+  const nodes = appData.value.nodes || []
+  const normNode = nodes.find(n => n.type === 'transform.normalize')
+  // The model endpoint's pipeline_config has sensor_columns
+  // These are returned by the by-slug API
+  return appData.value.sensor_columns || []
+})
+
 onMounted(async () => {
   try {
     const resp = await api.get(`/api/app-builder/apps/by-slug/${slug.value}`)
@@ -360,10 +414,22 @@ onMounted(async () => {
   loading.value = false
 })
 
+const fileInput = ref(null)
+
 function onFileSelect(e) {
   selectedFile.value = e.target.files[0] || null
   result.value = null
   runError.value = null
+}
+
+function clearFile() {
+  selectedFile.value = null
+  result.value = null
+  runError.value = null
+  // Reset file input so the same file can be re-selected
+  if (fileInput.value) {
+    fileInput.value.value = ''
+  }
 }
 
 async function runPipeline() {
@@ -637,5 +703,23 @@ async function runPipeline() {
 }
 .table-toggle:hover {
   color: #c9d1d9;
+}
+
+.expected-format {
+  background: #0d1117;
+  border: 1px solid #21262d;
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin-bottom: 12px;
+}
+
+.expected-col {
+  font-size: 10px;
+  font-family: monospace;
+  padding: 2px 6px;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 3px;
+  color: #a78bfa;
 }
 </style>
