@@ -224,6 +224,21 @@
 
             <!-- Model info block -->
             <div v-if="isModelNode(selectedNode.type)" class="config-model-block">
+              <!-- Endpoint switcher -->
+              <div class="mb-3">
+                <div class="config-model-key mb-1">Switch Endpoint</div>
+                <v-select
+                  :model-value="selectedCap?.endpoint_id"
+                  @update:model-value="switchEndpoint"
+                  :items="availableEndpoints"
+                  item-title="label"
+                  item-value="id"
+                  variant="outlined"
+                  density="compact"
+                  hide-details
+                  style="font-size: 11px"
+                />
+              </div>
               <div class="config-model-row">
                 <span class="config-model-key">Mode</span>
                 <span class="config-model-val font-weight-bold" :style="{ color: MODE_META[selectedCap.mode]?.color }">
@@ -233,10 +248,6 @@
               <div class="config-model-row">
                 <span class="config-model-key">Algorithm</span>
                 <span class="config-model-val">{{ selectedCap.algorithm }}</span>
-              </div>
-              <div class="config-model-row">
-                <span class="config-model-key">Endpoint ID</span>
-                <span class="config-model-val" style="font-size:9px; word-break: break-all;">{{ selectedCap.endpoint_id }}</span>
               </div>
               <div class="config-model-row">
                 <span class="config-model-key">Required Features</span>
@@ -921,6 +932,34 @@ function removeNode(id) {
 function updateConfig(nodeId, key, val) {
   const node = nodes.value.find(n => n.id === nodeId)
   if (node) node.config[key] = val
+}
+
+// Available endpoints for switching (same mode as current model node)
+const availableEndpoints = computed(() => {
+  return melabEndpoints.value
+    .filter(e => e.status === 'active')
+    .map(e => ({
+      id: e.id,
+      label: `${e.name} (${e.algorithm})`,
+      mode: e.mode,
+    }))
+})
+
+function switchEndpoint(newEndpointId) {
+  if (!selectedNode.value || !isModelNode(selectedNode.value.type)) return
+  const oldIdx = nodes.value.findIndex(n => n.id === selectedNode.value.id)
+  if (oldIdx < 0) return
+
+  const newType = `model.endpoint.${newEndpointId}`
+  const newCap = capabilities.value[newType]
+  if (!newCap) return
+
+  // Update the node's type and reset config
+  nodes.value[oldIdx] = {
+    ...nodes.value[oldIdx],
+    type: newType,
+    config: Object.fromEntries((newCap.configSchema || []).map(f => [f.key, f.default])),
+  }
 }
 
 function getMultiselectOptions(node, field) {
