@@ -320,12 +320,7 @@ def publish_app(app_id):
 @app_builder_bp.route('/run/<slug>', methods=['POST'])
 def run_app(slug):
     """Execute a published app pipeline."""
-    # Authenticate via session or API key
-    user_id = _auth_from_session_or_apikey()
-    if not user_id:
-        return jsonify({'error': 'Authentication required (session or X-API-Key)'}), 401
-
-    # Load app
+    # Load app first to check access policy
     app = AppBuilderApp.get_by_slug(slug)
     if not app:
         return jsonify({'error': 'App not found'}), 404
@@ -333,8 +328,21 @@ def run_app(slug):
     if app['status'] != 'published':
         return jsonify({'error': 'App is not published'}), 400
 
-    # Access check: private apps only accessible by owner
-    if app['access'] == 'private' and app['user_id'] != user_id:
+    # Authenticate based on access policy
+    access = app.get('access', 'private')
+    user_id = _auth_from_session_or_apikey()
+
+    if access == 'public':
+        # No auth needed — anyone can use
+        pass
+    elif access == 'team':
+        # Requires login (session auth)
+        if not user_id:
+            return jsonify({'error': 'Login required to use this app'}), 401
+    else:  # private
+        if not user_id:
+            return jsonify({'error': 'Authentication required (session or X-API-Key)'}), 401
+        if app['user_id'] != user_id:
         return jsonify({'error': 'Access denied'}), 403
 
     start_time = time.time()

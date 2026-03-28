@@ -28,6 +28,7 @@
             <th>Name</th>
             <th>Mode</th>
             <th>Status</th>
+            <th>Access</th>
             <th>Created</th>
             <th class="text-center">Calls</th>
             <th>Actions</th>
@@ -70,6 +71,26 @@
                   {{ app.slug }}
                 </a>
               </div>
+            </td>
+            <td>
+              <v-select
+                v-if="app.status === 'published'"
+                :model-value="app.access || 'private'"
+                @update:model-value="v => updateAccess(app, v)"
+                :items="accessOptions"
+                item-title="label"
+                item-value="value"
+                variant="outlined"
+                density="compact"
+                hide-details
+                style="max-width: 160px; font-size: 11px;"
+              >
+                <template #selection="{ item }">
+                  <v-icon size="12" :color="item.raw.color" class="mr-1">{{ item.raw.icon }}</v-icon>
+                  <span style="font-size: 11px;">{{ item.raw.label }}</span>
+                </template>
+              </v-select>
+              <span v-else class="text-caption text-medium-emphasis">—</span>
             </td>
             <td class="text-caption">{{ formatDate(app.created_at) }}</td>
             <td class="text-center">{{ app.calls_count ?? app.calls ?? 0 }}</td>
@@ -299,6 +320,23 @@ const TEMPLATES = [
     nodes: [],
   },
 ]
+
+// Access control options
+const accessOptions = [
+  { value: 'public', label: 'Public', icon: 'mdi-earth', color: 'success', hint: 'Anyone with the link' },
+  { value: 'team', label: 'Team', icon: 'mdi-account-group', color: 'info', hint: 'Logged-in users only' },
+  { value: 'private', label: 'Private', icon: 'mdi-lock', color: 'warning', hint: 'Owner only + API key' },
+]
+
+async function updateAccess(app: App, newAccess: string) {
+  try {
+    await api.put(`/api/app-builder/apps/${app.id}`, { access: newAccess })
+    app.access = newAccess
+    notificationStore.showSuccess(`Access updated to "${newAccess}"`)
+  } catch (e: any) {
+    notificationStore.showError(e.response?.data?.error || 'Failed to update access')
+  }
+}
 
 // Create dialog
 const showCreateDialog = ref(false)
