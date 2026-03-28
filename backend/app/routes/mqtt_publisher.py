@@ -230,9 +230,10 @@ def broker_info():
 @mqtt_bp.route('/topics', methods=['GET'])
 @login_required
 def list_topics():
-    """Subscribe to # for 2 seconds and return discovered topics."""
+    """Subscribe to # for several seconds and return discovered topics."""
     broker_host = os.environ.get('MQTT_BROKER_HOST', 'cirame-mosquitto')
     broker_port = int(os.environ.get('MQTT_BROKER_PORT', '1883'))
+    duration = min(int(request.args.get('duration', 5)), 15)  # max 15 seconds
 
     topics = {}
 
@@ -253,7 +254,7 @@ def list_topics():
         client.connect(broker_host, broker_port, keepalive=10)
         client.loop_start()
 
-        time.sleep(2)
+        time.sleep(duration)
 
         client.loop_stop()
         client.disconnect()
