@@ -677,8 +677,17 @@
                 hide-details
                 clearable
                 style="max-width: 250px; font-size: 12px;"
-                @update:model-value="loadSnippet"
               />
+              <v-btn
+                size="small"
+                variant="tonal"
+                color="info"
+                :disabled="!selectedSnippet"
+                @click="loadSnippet(selectedSnippet)"
+              >
+                <v-icon start size="small">mdi-download</v-icon>
+                Load
+              </v-btn>
               <v-btn
                 size="small"
                 variant="tonal"
