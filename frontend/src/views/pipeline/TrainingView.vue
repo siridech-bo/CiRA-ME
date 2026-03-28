@@ -641,7 +641,7 @@
       <template v-else-if="trainingApproach === 'custom'">
         <v-col cols="12">
           <v-card class="pa-4">
-            <div class="d-flex align-center mb-4">
+            <div class="d-flex align-center mb-2">
               <h3 class="text-subtitle-1 font-weight-bold">Custom Model Editor</h3>
               <v-spacer />
               <v-select
@@ -664,6 +664,64 @@
                 </template>
               </v-select>
             </div>
+            <!-- Save / Load user snippets -->
+            <div class="d-flex align-center mb-3" style="gap: 6px;">
+              <v-select
+                v-model="selectedSnippet"
+                :items="savedSnippets"
+                item-title="name"
+                item-value="name"
+                label="Saved Snippets"
+                density="compact"
+                variant="outlined"
+                hide-details
+                clearable
+                style="max-width: 250px; font-size: 12px;"
+                @update:model-value="loadSnippet"
+              />
+              <v-btn
+                size="small"
+                variant="tonal"
+                color="success"
+                :disabled="!customModelCode.trim()"
+                @click="showSaveSnippetDialog = true"
+              >
+                <v-icon start size="small">mdi-content-save</v-icon>
+                Save
+              </v-btn>
+              <v-btn
+                v-if="selectedSnippet"
+                size="small"
+                variant="tonal"
+                color="error"
+                @click="deleteSnippet"
+              >
+                <v-icon size="small">mdi-delete</v-icon>
+              </v-btn>
+            </div>
+
+            <!-- Save snippet dialog -->
+            <v-dialog v-model="showSaveSnippetDialog" max-width="400">
+              <v-card>
+                <v-card-title>Save Code Snippet</v-card-title>
+                <v-card-text>
+                  <v-text-field
+                    v-model="snippetSaveName"
+                    label="Snippet Name"
+                    variant="outlined"
+                    density="compact"
+                    placeholder="e.g. My XGBoost v2"
+                    autofocus
+                    @keydown.enter="saveSnippet"
+                  />
+                </v-card-text>
+                <v-card-actions>
+                  <v-spacer />
+                  <v-btn variant="text" @click="showSaveSnippetDialog = false">Cancel</v-btn>
+                  <v-btn color="success" variant="flat" :disabled="!snippetSaveName.trim()" @click="saveSnippet">Save</v-btn>
+                </v-card-actions>
+              </v-card>
+            </v-dialog>
 
             <CodeEditor
               v-model="customModelCode"
@@ -1940,6 +1998,49 @@ const tiComputeInfo = ref('')
 
 // Custom model state
 const customModelCode = ref('')
+const selectedSnippet = ref<string | null>(null)
+const showSaveSnippetDialog = ref(false)
+const snippetSaveName = ref('')
+const SNIPPETS_KEY = 'cira_custom_model_snippets'
+
+const savedSnippets = computed(() => {
+  try {
+    const data = localStorage.getItem(SNIPPETS_KEY)
+    return data ? JSON.parse(data) : []
+  } catch { return [] }
+})
+
+function saveSnippet() {
+  const name = snippetSaveName.value.trim()
+  if (!name || !customModelCode.value.trim()) return
+  const snippets = [...savedSnippets.value]
+  const existing = snippets.findIndex((s: any) => s.name === name)
+  const entry = { name, code: customModelCode.value, savedAt: new Date().toISOString() }
+  if (existing >= 0) {
+    snippets[existing] = entry
+  } else {
+    snippets.push(entry)
+  }
+  localStorage.setItem(SNIPPETS_KEY, JSON.stringify(snippets))
+  selectedSnippet.value = name
+  showSaveSnippetDialog.value = false
+  snippetSaveName.value = ''
+}
+
+function loadSnippet(name: string | null) {
+  if (!name) return
+  const snippet = savedSnippets.value.find((s: any) => s.name === name)
+  if (snippet) {
+    customModelCode.value = snippet.code
+  }
+}
+
+function deleteSnippet() {
+  if (!selectedSnippet.value) return
+  const snippets = savedSnippets.value.filter((s: any) => s.name !== selectedSnippet.value)
+  localStorage.setItem(SNIPPETS_KEY, JSON.stringify(snippets))
+  selectedSnippet.value = null
+}
 const customModelLogs = ref<string[]>([])
 const customTemplates = ref<any[]>([])
 const selectedTemplate = ref('')
