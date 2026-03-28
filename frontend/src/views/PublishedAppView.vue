@@ -619,8 +619,9 @@ function startLiveStream() {
       mqttMessageCount.value++
       rateCounter++
       try {
-        const data = JSON.parse(payload.toString())
-        pushSensorSample(data)
+        const raw = JSON.parse(payload.toString())
+        const sample = parseSensorPayload(raw)
+        if (sample) pushSensorSample(sample)
       } catch { /* ignore non-JSON */ }
     })
 
@@ -649,6 +650,49 @@ function stopLiveStream() {
   sensorBuffer = []
   sensorBufferLen.value = 0
   sensorBufferProgress.value = 0
+}
+
+function parseSensorPayload(raw) {
+  // Normalize different MQTT payload formats into { channel: value } object
+  const channels = liveChannels.value
+
+  // Format 1: { "values": [1.2, 3.4, 5.6] } (Android SensorSpot, array)
+  if (raw.values && Array.isArray(raw.values)) {
+    const sample = {}
+    raw.values.forEach((v, i) => {
+      const name = channels[i] || `ch${i}`
+      sample[name] = typeof v === 'number' ? v : parseFloat(v) || 0
+    })
+    return sample
+  }
+
+  // Format 2: { "values": { "v0": 1.2, "v1": 3.4 } } (SensorSpot named)
+  if (raw.values && typeof raw.values === 'object' && !Array.isArray(raw.values)) {
+    const sample = {}
+    const keys = Object.keys(raw.values)
+    keys.forEach((k, i) => {
+      const name = channels[i] || k
+      sample[name] = typeof raw.values[k] === 'number' ? raw.values[k] : parseFloat(raw.values[k]) || 0
+    })
+    return sample
+  }
+
+  // Format 3: { "accX": 1.2, "accY": 3.4, "accZ": 5.6 } (flat object with sensor keys)
+  if (typeof raw === 'object') {
+    // Filter out non-numeric and metadata keys
+    const skip = new Set(['type', 'timestamp', 'time', '_timestamp', '_index', 'name', 'id'])
+    const sample = {}
+    let hasNumeric = false
+    for (const [k, v] of Object.entries(raw)) {
+      if (!skip.has(k) && typeof v === 'number') {
+        sample[k] = v
+        hasNumeric = true
+      }
+    }
+    if (hasNumeric) return sample
+  }
+
+  return null
 }
 
 function pushSensorSample(sample) {
