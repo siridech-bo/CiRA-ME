@@ -25,10 +25,11 @@ pyod>=1.1.0
 xgboost>=2.0.0
 lightgbm>=4.0.0
 
-# Deep Learning - TimesNet (CPU-only for Docker deployment)
-# For GPU support, install torch with CUDA manually
-torch>=2.0.0
-# torch --index-url https://download.pytorch.org/whl/cpu  # Alternative: explicit CPU-only
+# Deep Learning - TimesNet
+# IMPORTANT: Pin torch to cu128 to match NVIDIA driver (CUDA 12.8/12.9)
+# Using torch>=2.0.0 without pin causes pip to install cu130 which needs newer driver
+# --extra-index-url https://download.pytorch.org/whl/cu128
+torch==2.10.0
 
 # Feature Extraction
 tsfresh>=0.20.0

@@ -37,6 +37,11 @@ COPY requirements.txt .
 # Install Python dependencies
 # Use --user to install in user directory for better security
 # BuildKit cache mount keeps downloaded wheels across rebuilds
+# Install PyTorch with CUDA 12.8 first (separate index)
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --user torch==2.10.0 --index-url https://download.pytorch.org/whl/cu128
+
+# Install remaining dependencies from PyPI
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --user -r requirements.txt
 
