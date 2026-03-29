@@ -25,6 +25,26 @@
 - **Disk**: 30 GB free space
 - **Ports**: 3030 (web), 5100 (API), 1883 (MQTT TCP), 9001 (MQTT WebSocket)
 
+Step 1: install.bat (or bash install.sh)
+  ├── [1/4] Stop old containers (if any running)
+  ├── [2/4] Remove old images (prevents version conflicts)
+  ├── [3/4] Load new images from .tar files
+  │         ├── cirame-backend.tar     (required)
+  │         ├── cirame-frontend.tar    (required)
+  │         ├── cirame-ti-modelmaker.tar (optional, skip if missing)
+  │         └── cirame-mosquitto.tar   (optional, skip if missing)
+  └── [4/4] Create folders + mosquitto config
+
+Step 2: start.bat (or bash start.sh)
+  └── docker compose up -d
+
+Customer data preserved:
+  ├── Docker volumes (database, models) survive image replacement
+  ├── shared/ folder (datasets) on host disk
+  └── mosquitto/ folder (broker config) on host disk
+
+
+
 ## Installation (Fresh Install or Upgrade)
 
 The install script handles both fresh installation and upgrades.
