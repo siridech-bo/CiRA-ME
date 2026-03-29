@@ -25,29 +25,76 @@
 - **Disk**: 30 GB free space
 - **Ports**: 3030 (web), 5100 (API), 1883 (MQTT TCP), 9001 (MQTT WebSocket)
 
-## Installation
+## Installation (Fresh Install or Upgrade)
+
+The install script handles both fresh installation and upgrades.
+It is safe to re-run — it stops the old version first, then loads the new images.
+
+**Your data (trained models, database, datasets) is preserved across upgrades.**
+
+### What the installer does:
+
+```
+Step 1: Stop old containers (if any previous version is running)
+         ├── docker compose down (both GPU and no-GPU variants)
+         ├── docker stop cirame-backend cirame-frontend ...
+         └── docker rm cirame-backend cirame-frontend ...
+
+Step 2: Remove old images (prevents version conflicts)
+         ├── docker rmi cirame-backend:latest
+         ├── docker rmi cirame-frontend:latest
+         └── docker rmi cirame-ti-modelmaker:latest
+
+Step 3: Load new images from .tar files
+         ├── cirame-backend.tar      (required — fails if missing)
+         ├── cirame-frontend.tar     (required — fails if missing)
+         ├── cirame-ti-modelmaker.tar (optional — skips if missing)
+         └── cirame-mosquitto.tar    (optional — skips if missing)
+
+Step 4: Create folders and configuration
+         ├── shared/                 (dataset folder)
+         └── mosquitto/mosquitto.conf (MQTT broker config)
+```
 
 ### Windows
 
 ```
 1. Install Docker Desktop (https://docker.com)
-2. Double-click install.bat
-3. Double-click start.bat
+2. Double-click install.bat     ← runs steps 1-4 above
+3. Double-click start.bat       ← starts all services
 4. Open http://localhost:3030
 ```
 
 ### Linux
 
 ```bash
-# Install Docker
+# Install Docker (if not already installed)
 curl -fsSL https://get.docker.com | sh
 
-# Install and start CiRA ME
+# Install CiRA ME
 cd deployment
-bash install.sh
-bash start.sh
+bash install.sh       # runs steps 1-4 above
+bash start.sh         # starts all services
 
 # Access at http://localhost:3030
+```
+
+## Data Preservation
+
+Docker volumes store your data separately from images:
+
+| Data | Storage | Survives upgrade? |
+|---|---|---|
+| Database (users, models, endpoints) | `backend-data` volume | Yes |
+| Trained model files (.pkl, .onnx) | `backend-models` volume | Yes |
+| TI training projects | `ti-projects` volume | Yes |
+| MQTT broker data | `mosquitto-data` volume | Yes |
+| Datasets (CSV, CBOR files) | `shared/` folder on host | Yes |
+| MQTT config | `mosquitto/` folder on host | Yes |
+
+To **reset all data** (fresh start), remove volumes:
+```bash
+docker compose down -v    # WARNING: deletes all data
 ```
 
 ## Default Login
@@ -69,7 +116,7 @@ Password: admin123
 | View logs | `logs.bat` | `docker compose logs -f` |
 | Check status | `status.bat` | `docker compose ps` |
 | Uninstall | `uninstall.bat` | `bash uninstall.sh` |
-| Update images | `update.bat` | `bash update.sh` |
+| Update images | Place new .tar files, run `install.bat` again |
 
 ## Network Ports
 
@@ -81,7 +128,7 @@ Password: admin123
 | **1883** | Mosquitto | MQTT TCP (for sensors/devices) |
 | **9001** | Mosquitto | MQTT WebSocket (for browsers) |
 
-Ports in **bold** should be accessible from the local network.
+Ports in **bold** should be accessible from the local network for other machines to connect.
 
 ## Datasets
 
@@ -92,8 +139,9 @@ Place CSV or CBOR datasets in the `shared/` folder. They will appear in CiRA ME 
 If `cirame-mosquitto.tar` is installed:
 
 1. IoT devices/sensors connect to `mqtt://server-ip:1883`
-2. Published apps connect to `ws://server-ip:9001/mqtt`
+2. Published apps connect to `ws://server-ip:9001/mqtt` (auto-resolved in browser)
 3. Manage broker at the "MQTT Broker" page in CiRA ME
+4. Mobile sensor apps (e.g., SensorSpot) can stream data to the broker
 
 ## TI MCU Support
 
@@ -106,38 +154,54 @@ If `cirame-ti-modelmaker.tar` is installed:
 ## Troubleshooting
 
 ### Docker images not loading
-```
-# Check disk space
-df -h                          # Linux
-wmic logicaldisk get size,freespace  # Windows
+```bash
+# Check disk space (need ~30 GB free)
+df -h                                    # Linux
+wmic logicaldisk get size,freespace      # Windows
 
 # Check Docker is running
 docker info
 ```
 
 ### GPU not detected
-```
+```bash
 # Check NVIDIA driver
 nvidia-smi
 
 # Check nvidia-container-toolkit
 docker run --rm --gpus all nvidia/cuda:12.8.0-base-ubuntu22.04 nvidia-smi
+
+# If GPU not needed, use no-GPU variant:
+# Windows: start-no-gpu.bat
+# Linux:   bash start-no-gpu.sh
 ```
 
 ### Services won't start
-```
-# Check logs
+```bash
+# Check logs for errors
 docker compose logs backend
 docker compose logs frontend
 
-# Restart
+# Restart everything
 bash stop.sh
 bash start.sh
 ```
 
 ### Cannot access from other machines
-- Check firewall allows ports 3030, 1883, 9001
-- Use server IP instead of localhost: `http://192.168.x.x:3030`
+1. Check firewall allows ports **3030**, **1883**, **9001**
+2. Use server IP instead of localhost: `http://192.168.x.x:3030`
+3. On Windows: check Docker Desktop network settings
+
+### Old version still showing after upgrade
+```bash
+# Force remove old containers and restart
+docker compose down
+docker compose up -d --force-recreate
+```
+
+### Database or models lost after upgrade
+This should NOT happen — data is stored in Docker volumes.
+If it does, check that you did NOT run `docker compose down -v` (the `-v` flag deletes volumes).
 
 ## Support
 
