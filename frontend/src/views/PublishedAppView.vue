@@ -698,6 +698,8 @@ const sensorBufferLen = ref(0)
 const sensorBufferProgress = ref(0)
 const liveInferenceCount = ref(0)
 const livePrediction = ref(null)
+const livePredictionHistory = ref([])
+const MAX_LIVE_HISTORY = 200
 const liveLastUpdated = ref(null)
 let mqttClient = null
 let sensorBuffer = []
@@ -1008,11 +1010,23 @@ async function runLiveInference(windowData) {
 
     const preds = resp.data?.predictions || []
     if (preds.length > 0) {
-      livePrediction.value = preds[preds.length - 1]
+      const lastPred = preds[preds.length - 1]
+      livePrediction.value = lastPred
+      // Accumulate for live chart
+      if (typeof lastPred === 'number') {
+        livePredictionHistory.value.push(lastPred)
+        if (livePredictionHistory.value.length > MAX_LIVE_HISTORY) {
+          livePredictionHistory.value = livePredictionHistory.value.slice(-MAX_LIVE_HISTORY)
+        }
+      }
     }
 
-    // Also update result for the results section
-    result.value = resp.data
+    // Update result with accumulated predictions for chart
+    result.value = {
+      ...resp.data,
+      predictions: livePredictionHistory.value.length > 0 ? [...livePredictionHistory.value] : resp.data?.predictions,
+      count: livePredictionHistory.value.length || resp.data?.count,
+    }
   } catch (e) {
     console.error('Live inference error:', e)
   }
