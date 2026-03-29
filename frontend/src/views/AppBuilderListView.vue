@@ -443,6 +443,19 @@ const TEMPLATES = [
       { id: 'n6', type: 'output.table', config: { max_rows: 50, show_confidence: true } },
     ],
   },
+  // ── Recording Template ──
+  {
+    id: 'mqtt_recorder',
+    name: 'MQTT Signal Recorder',
+    description: 'MQTT → Record & Label sensor data → Download CSV for training',
+    icon: 'mdi-record-circle',
+    color: '#ef4444',
+    nodeLabels: ['MQTT', 'Recorder'],
+    nodes: [
+      { id: 'n1', type: 'input.live_stream', config: { broker_url: 'ws://localhost:9001/mqtt', topic: 'sensors/#', channels: '' } },
+      { id: 'n6', type: 'output.signal_recorder', config: { labels: 'idle, wave, snake, updown', target_sample_rate: 62.5, max_duration: 300, file_prefix: 'sensor_data' } },
+    ],
+  },
   // ── Blank ──
   {
     id: 'blank',

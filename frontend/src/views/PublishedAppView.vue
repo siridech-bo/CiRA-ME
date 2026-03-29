@@ -149,14 +149,121 @@
           class="mb-3"
         />
 
-        <!-- Live prediction -->
-        <div v-if="livePrediction !== null" class="live-prediction">
+        <!-- Live prediction (inference mode) -->
+        <div v-if="livePrediction !== null && !isRecorderMode" class="live-prediction">
           <div class="live-prediction-label">Latest Prediction</div>
           <div class="live-prediction-value" :style="{ color: modeColor }">
             {{ livePrediction }}
           </div>
           <div v-if="liveLastUpdated" class="live-prediction-time">
             {{ liveLastUpdatedText }}
+          </div>
+        </div>
+
+        <!-- Signal Recorder Mode -->
+        <div v-if="isRecorderMode && mqttConnected" class="recorder-section">
+          <!-- Label buttons -->
+          <div class="recorder-label-header">
+            <span class="text-caption font-weight-bold text-medium-emphasis">CURRENT LABEL</span>
+            <v-chip v-if="recorderState.recording" size="x-small" color="error" variant="flat" class="ml-2">
+              <v-icon start size="8">mdi-circle</v-icon> REC
+            </v-chip>
+          </div>
+          <div class="recorder-labels">
+            <button
+              v-for="lbl in recorderLabels"
+              :key="lbl"
+              class="recorder-label-btn"
+              :class="{ active: recorderState.currentLabel === lbl }"
+              @click="recorderState.currentLabel = lbl"
+            >{{ lbl }}</button>
+          </div>
+
+          <!-- Custom label input -->
+          <div class="d-flex align-center gap-2 mt-2 mb-3">
+            <v-text-field
+              v-model="recorderCustomLabel"
+              label="Add custom label"
+              variant="outlined"
+              density="compact"
+              hide-details
+              style="max-width: 200px; font-size: 11px;"
+              @keydown.enter="addCustomLabel"
+            />
+            <v-btn size="x-small" variant="tonal" @click="addCustomLabel" :disabled="!recorderCustomLabel.trim()">
+              <v-icon size="small">mdi-plus</v-icon>
+            </v-btn>
+          </div>
+
+          <!-- Recording controls -->
+          <div class="d-flex align-center gap-2 mb-3">
+            <v-btn
+              v-if="!recorderState.recording"
+              color="error"
+              variant="flat"
+              size="small"
+              :disabled="!recorderState.currentLabel"
+              @click="startRecording"
+            >
+              <v-icon start size="small">mdi-record</v-icon>
+              Start Recording
+            </v-btn>
+            <v-btn
+              v-else
+              color="warning"
+              variant="flat"
+              size="small"
+              @click="stopRecording"
+            >
+              <v-icon start size="small">mdi-stop</v-icon>
+              Stop Recording
+            </v-btn>
+            <v-btn
+              v-if="recorderState.samples.length > 0"
+              color="success"
+              variant="tonal"
+              size="small"
+              @click="downloadRecordedCSV"
+            >
+              <v-icon start size="small">mdi-download</v-icon>
+              Download CSV ({{ recorderState.samples.length }} samples)
+            </v-btn>
+            <v-btn
+              v-if="recorderState.samples.length > 0 && !recorderState.recording"
+              variant="text"
+              size="small"
+              color="error"
+              @click="clearRecording"
+            >
+              Clear
+            </v-btn>
+          </div>
+
+          <!-- Recording stats -->
+          <div class="d-flex flex-wrap gap-3 mb-2">
+            <div class="live-stat">
+              <div class="live-stat-label">Samples</div>
+              <div class="live-stat-value">{{ recorderState.samples.length }}</div>
+            </div>
+            <div class="live-stat">
+              <div class="live-stat-label">Duration</div>
+              <div class="live-stat-value">{{ recorderDuration }}</div>
+            </div>
+            <div class="live-stat">
+              <div class="live-stat-label">Labels</div>
+              <div class="live-stat-value">{{ recorderLabelCounts }}</div>
+            </div>
+          </div>
+
+          <!-- Label timeline -->
+          <div v-if="recorderState.samples.length > 0" class="recorder-timeline">
+            <div
+              v-for="(seg, i) in recorderSegments"
+              :key="i"
+              class="recorder-segment"
+              :style="{ flex: seg.count, background: seg.color }"
+              :title="`${seg.label}: ${seg.count} samples`"
+            />
           </div>
         </div>
       </div>
@@ -628,7 +735,26 @@ function startLiveStream() {
       try {
         const raw = JSON.parse(payload.toString())
         const sample = parseSensorPayload(raw)
-        if (sample) pushSensorSample(sample)
+        if (sample) {
+          // Record if in recorder mode and recording
+          if (isRecorderMode.value && recorderState.value.recording && recorderState.value.currentLabel) {
+            const maxDur = (recorderConfig.value.max_duration || 300) * 1000
+            const elapsed = recorderState.value.startTime ? Date.now() - recorderState.value.startTime : 0
+            if (elapsed < maxDur) {
+              recorderState.value.samples.push({
+                ...sample,
+                label: recorderState.value.currentLabel,
+                _ts: Date.now(),
+              })
+            } else {
+              recorderState.value.recording = false
+            }
+          }
+          // Buffer for inference (non-recorder mode)
+          if (!isRecorderMode.value) {
+            pushSensorSample(sample)
+          }
+        }
       } catch { /* ignore non-JSON */ }
     })
 
@@ -657,6 +783,119 @@ function stopLiveStream() {
   sensorBuffer = []
   sensorBufferLen.value = 0
   sensorBufferProgress.value = 0
+}
+
+// ── Signal Recorder ─────────────────────────────────
+const isRecorderMode = computed(() => {
+  return parsedNodes.value.some(n => n.type === 'output.signal_recorder')
+})
+
+const recorderConfig = computed(() => {
+  const node = parsedNodes.value.find(n => n.type === 'output.signal_recorder')
+  return node?.config || {}
+})
+
+const recorderLabels = ref([])
+const recorderCustomLabel = ref('')
+const recorderState = ref({
+  recording: false,
+  currentLabel: '',
+  samples: [],
+  startTime: null,
+})
+
+// Initialize labels from config
+watch(() => recorderConfig.value, (cfg) => {
+  if (cfg.labels) {
+    recorderLabels.value = cfg.labels.split(',').map(l => l.trim()).filter(Boolean)
+    if (recorderLabels.value.length > 0 && !recorderState.value.currentLabel) {
+      recorderState.value.currentLabel = recorderLabels.value[0]
+    }
+  }
+}, { immediate: true })
+
+function addCustomLabel() {
+  const lbl = recorderCustomLabel.value.trim()
+  if (lbl && !recorderLabels.value.includes(lbl)) {
+    recorderLabels.value.push(lbl)
+  }
+  recorderCustomLabel.value = ''
+}
+
+function startRecording() {
+  recorderState.value.recording = true
+  recorderState.value.startTime = Date.now()
+}
+
+function stopRecording() {
+  recorderState.value.recording = false
+}
+
+function clearRecording() {
+  recorderState.value.samples = []
+  recorderState.value.startTime = null
+}
+
+const recorderDuration = computed(() => {
+  const samples = recorderState.value.samples
+  if (samples.length === 0) return '0s'
+  const first = samples[0]._ts || 0
+  const last = samples[samples.length - 1]._ts || 0
+  const sec = Math.round((last - first) / 1000)
+  return sec < 60 ? `${sec}s` : `${Math.floor(sec/60)}m ${sec%60}s`
+})
+
+const recorderLabelCounts = computed(() => {
+  const counts = {}
+  for (const s of recorderState.value.samples) {
+    counts[s.label] = (counts[s.label] || 0) + 1
+  }
+  return Object.entries(counts).map(([k,v]) => `${k}:${v}`).join(' ')
+})
+
+const LABEL_COLORS = ['#60a5fa','#34d399','#f87171','#fbbf24','#a78bfa','#f472b6','#22d3ee','#fb923c']
+
+const recorderSegments = computed(() => {
+  const samples = recorderState.value.samples
+  if (samples.length === 0) return []
+  const segments = []
+  let cur = { label: samples[0].label, count: 0, color: '' }
+  const labelIdx = {}
+  for (const s of samples) {
+    if (s.label !== cur.label) {
+      segments.push({...cur})
+      cur = { label: s.label, count: 0, color: '' }
+    }
+    cur.count++
+    if (!(s.label in labelIdx)) labelIdx[s.label] = Object.keys(labelIdx).length
+    cur.color = LABEL_COLORS[labelIdx[s.label] % LABEL_COLORS.length]
+  }
+  if (cur.count > 0) segments.push({...cur})
+  return segments
+})
+
+function downloadRecordedCSV() {
+  const samples = recorderState.value.samples
+  if (samples.length === 0) return
+  const channels = liveChannels.value
+  const prefix = recorderConfig.value.file_prefix || 'sensor_data'
+
+  // Build CSV
+  const header = ['timestamp', ...channels, 'label'].join(',')
+  const rows = samples.map((s, i) => {
+    const vals = channels.map(ch => s[ch] ?? 0)
+    return [i * (1.0 / (recorderConfig.value.target_sample_rate || 62.5)), ...vals, s.label].join(',')
+  })
+  const csv = [header, ...rows].join('\n')
+
+  // Download
+  const blob = new Blob([csv], { type: 'text/csv' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `${prefix}_${new Date().toISOString().slice(0,10)}.csv`
+  a.click()
+  URL.revokeObjectURL(url)
 }
 
 function parseSensorPayload(raw) {
@@ -1080,6 +1319,52 @@ async function runPipeline() {
   font-size: 10px;
   color: #484f58;
   margin-top: 4px;
+}
+
+.recorder-section {
+  margin-top: 12px;
+}
+.recorder-label-header {
+  display: flex;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.recorder-labels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.recorder-label-btn {
+  padding: 6px 16px;
+  border-radius: 6px;
+  border: 2px solid #30363d;
+  background: #0d1117;
+  color: #8b949e;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.recorder-label-btn:hover {
+  border-color: #555;
+  color: #c9d1d9;
+}
+.recorder-label-btn.active {
+  border-color: #34d399;
+  background: rgba(52, 211, 153, 0.1);
+  color: #34d399;
+}
+.recorder-timeline {
+  display: flex;
+  height: 8px;
+  border-radius: 4px;
+  overflow: hidden;
+  gap: 1px;
+}
+.recorder-segment {
+  min-width: 2px;
+  border-radius: 2px;
+  opacity: 0.7;
 }
 
 .expected-format {
