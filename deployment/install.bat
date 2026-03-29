@@ -1,6 +1,7 @@
 @echo off
 REM CiRA ME - Installation Script for Windows
 REM Loads Docker images from .tar files and sets up the application
+REM Safe to re-run — stops old version, removes old images, loads new ones
 
 echo ============================================
 echo   CiRA ME - Installation Script
@@ -20,8 +21,25 @@ if %errorlevel% neq 0 (
 echo Docker is running.
 echo.
 
-REM Load required images
-echo [1/2] Loading required images...
+REM Stop previous version if running
+echo [1/4] Stopping previous version (if running)...
+docker compose -f docker-compose.yml down 2>nul
+docker compose -f docker-compose-no-gpu.yml down 2>nul
+docker stop cirame-backend cirame-frontend cirame-ti-modelmaker cirame-mosquitto 2>nul
+docker rm cirame-backend cirame-frontend cirame-ti-modelmaker cirame-mosquitto 2>nul
+echo   Previous containers stopped and removed.
+echo.
+
+REM Remove old images to avoid conflicts
+echo [2/4] Removing old images...
+docker rmi cirame-backend:latest 2>nul
+docker rmi cirame-frontend:latest 2>nul
+docker rmi cirame-ti-modelmaker:latest 2>nul
+echo   Old images removed.
+echo.
+
+REM Load new images
+echo [3/4] Loading new images...
 
 if exist "cirame-backend.tar" (
     echo   Loading backend image (this may take several minutes)...
@@ -52,17 +70,14 @@ if exist "cirame-frontend.tar" (
     pause
     exit /b 1
 )
-echo.
 
-REM Load optional images
-echo [2/2] Loading optional images...
-
+REM Optional images
 if exist "cirame-ti-modelmaker.tar" (
     echo   Loading TI ModelMaker image (this may take several minutes)...
     docker load -i cirame-ti-modelmaker.tar
     echo   TI ModelMaker loaded.
 ) else (
-    echo   Skipped: cirame-ti-modelmaker.tar not found (TI MCU features disabled)
+    echo   Skipped: TI ModelMaker (cirame-ti-modelmaker.tar not found)
 )
 
 if exist "cirame-mosquitto.tar" (
@@ -70,15 +85,15 @@ if exist "cirame-mosquitto.tar" (
     docker load -i cirame-mosquitto.tar
     echo   Mosquitto loaded.
 ) else (
-    echo   Skipped: cirame-mosquitto.tar not found (MQTT live streaming disabled)
+    echo   Skipped: Mosquitto MQTT (cirame-mosquitto.tar not found)
 )
 echo.
 
-REM Create folders
+REM Create folders and config
+echo [4/4] Setting up folders and configuration...
 if not exist "shared" mkdir shared
 if not exist "mosquitto" mkdir mosquitto
 
-REM Create mosquitto config if not exists
 if not exist "mosquitto\mosquitto.conf" (
     (
         echo listener 1883
@@ -92,10 +107,12 @@ if not exist "mosquitto\mosquitto.conf" (
         echo log_type warning
         echo log_type error
     ) > mosquitto\mosquitto.conf
-    echo Created mosquitto\mosquitto.conf
+    echo   Created mosquitto\mosquitto.conf
 )
 
+echo   Folders ready.
 echo.
+
 echo ============================================
 echo   Installation Complete!
 echo ============================================
@@ -108,7 +125,7 @@ echo   1. Run 'start.bat' to start the application
 echo   2. Access at http://localhost:3030
 echo   3. Login: admin / admin123
 echo.
-echo NOTE: If your server has NVIDIA GPU, the application will use it automatically.
-echo       If no GPU is available, use 'start-no-gpu.bat' instead.
+echo NOTE: Your data (models, database, datasets) is preserved
+echo       in Docker volumes across updates.
 echo.
 pause
