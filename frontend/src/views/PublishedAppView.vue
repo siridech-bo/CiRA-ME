@@ -676,10 +676,16 @@ const liveStride = computed(() => {
   return wNode?.config?.step || wNode?.config?.stride || 64
 })
 
+const autoDetectedChannels = ref([])
+
 const liveChannels = computed(() => {
   const channels = liveStreamConfig.value.channels || ''
   if (channels) return channels.split(',').map((c) => c.trim()).filter(Boolean)
-  return appData.value.sensor_columns || []
+  if (appData.value.sensor_columns && appData.value.sensor_columns.length > 0) {
+    return appData.value.sensor_columns
+  }
+  // Use auto-detected channels from first MQTT message
+  return autoDetectedChannels.value
 })
 
 const mqttBrokerUrl = ref('')
@@ -913,9 +919,14 @@ function parseSensorPayload(raw) {
 
   // Format 1: { "values": [1.2, 3.4, 5.6] } (Android SensorSpot, array)
   if (raw.values && Array.isArray(raw.values)) {
+    // Auto-detect channel names if not configured
+    if (channels.length === 0 && autoDetectedChannels.value.length === 0) {
+      autoDetectedChannels.value = raw.values.map((_, i) => `ch${i}`)
+    }
+    const ch = channels.length > 0 ? channels : autoDetectedChannels.value
     const sample = {}
     raw.values.forEach((v, i) => {
-      const name = channels[i] || `ch${i}`
+      const name = ch[i] || `ch${i}`
       sample[name] = typeof v === 'number' ? v : parseFloat(v) || 0
     })
     return sample
@@ -923,10 +934,14 @@ function parseSensorPayload(raw) {
 
   // Format 2: { "values": { "v0": 1.2, "v1": 3.4 } } (SensorSpot named)
   if (raw.values && typeof raw.values === 'object' && !Array.isArray(raw.values)) {
-    const sample = {}
     const keys = Object.keys(raw.values)
+    if (channels.length === 0 && autoDetectedChannels.value.length === 0) {
+      autoDetectedChannels.value = keys
+    }
+    const ch = channels.length > 0 ? channels : autoDetectedChannels.value
+    const sample = {}
     keys.forEach((k, i) => {
-      const name = channels[i] || k
+      const name = ch[i] || k
       sample[name] = typeof raw.values[k] === 'number' ? raw.values[k] : parseFloat(raw.values[k]) || 0
     })
     return sample
@@ -934,17 +949,23 @@ function parseSensorPayload(raw) {
 
   // Format 3: { "accX": 1.2, "accY": 3.4, "accZ": 5.6 } (flat object with sensor keys)
   if (typeof raw === 'object') {
-    // Filter out non-numeric and metadata keys
     const skip = new Set(['type', 'timestamp', 'time', '_timestamp', '_index', 'name', 'id'])
     const sample = {}
     let hasNumeric = false
+    const detectedKeys = []
     for (const [k, v] of Object.entries(raw)) {
       if (!skip.has(k) && typeof v === 'number') {
         sample[k] = v
         hasNumeric = true
+        detectedKeys.push(k)
       }
     }
-    if (hasNumeric) return sample
+    if (hasNumeric) {
+      if (channels.length === 0 && autoDetectedChannels.value.length === 0) {
+        autoDetectedChannels.value = detectedKeys
+      }
+      return sample
+    }
   }
 
   return null
