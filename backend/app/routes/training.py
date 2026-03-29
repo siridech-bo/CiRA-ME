@@ -1280,32 +1280,52 @@ class MyNeuralNet(CiraModel):
     {
         'id': 'xgboost_model',
         'name': 'XGBoost',
-        'description': 'XGBoost gradient boosting (classification or regression)',
-        'task': 'classification',
+        'description': 'XGBoost gradient boosting (auto-detects classification or regression)',
+        'task': 'auto',
         'code': '''from cira_base import CiraModel
-from xgboost import XGBClassifier
-from sklearn.metrics import accuracy_score, f1_score
 import numpy as np
 
 class MyXGBoost(CiraModel):
     def build(self, config):
-        self.model = XGBClassifier(
-            n_estimators=config.get('n_estimators', 300),
-            max_depth=config.get('max_depth', 6),
-            learning_rate=config.get('learning_rate', 0.1),
-            subsample=0.8,
-            colsample_bytree=0.8,
-            random_state=42,
-            verbosity=0,
-        )
+        # Auto-detect: if task is regression, use XGBRegressor
+        if self.task == "regression":
+            from xgboost import XGBRegressor
+            self.model = XGBRegressor(
+                n_estimators=config.get('n_estimators', 300),
+                max_depth=config.get('max_depth', 6),
+                learning_rate=config.get('learning_rate', 0.1),
+                subsample=0.8,
+                colsample_bytree=0.8,
+                random_state=42,
+                verbosity=0,
+            )
+        else:
+            from xgboost import XGBClassifier
+            self.model = XGBClassifier(
+                n_estimators=config.get('n_estimators', 300),
+                max_depth=config.get('max_depth', 6),
+                learning_rate=config.get('learning_rate', 0.1),
+                subsample=0.8,
+                colsample_bytree=0.8,
+                random_state=42,
+                verbosity=0,
+            )
 
     def train(self, X_train, y_train, X_val, y_val):
         self.model.fit(X_train, y_train)
         y_pred = self.model.predict(X_val)
-        return {
-            "accuracy": accuracy_score(y_val, y_pred),
-            "f1": f1_score(y_val, y_pred, average="weighted", zero_division=0),
-        }
+        if self.task == "regression":
+            from sklearn.metrics import r2_score, mean_squared_error
+            return {
+                "r2": r2_score(y_val, y_pred),
+                "rmse": float(np.sqrt(mean_squared_error(y_val, y_pred))),
+            }
+        else:
+            from sklearn.metrics import accuracy_score, f1_score
+            return {
+                "accuracy": accuracy_score(y_val, y_pred),
+                "f1": f1_score(y_val, y_pred, average="weighted", zero_division=0),
+            }
 
     def predict(self, X):
         return self.model.predict(X)
@@ -1317,32 +1337,48 @@ class MyXGBoost(CiraModel):
     {
         'id': 'ensemble_model',
         'name': 'Voting Ensemble',
-        'description': 'Combine multiple models via voting/averaging',
-        'task': 'classification',
+        'description': 'Combine multiple models via voting/averaging (auto-detects mode)',
+        'task': 'auto',
         'code': '''from cira_base import CiraModel
-from sklearn.ensemble import VotingClassifier, RandomForestClassifier, GradientBoostingClassifier
-from sklearn.svm import SVC
-from sklearn.metrics import accuracy_score, f1_score
 import numpy as np
 
 class MyEnsemble(CiraModel):
     def build(self, config):
-        self.model = VotingClassifier(
-            estimators=[
-                ('rf', RandomForestClassifier(n_estimators=100, random_state=42)),
-                ('gb', GradientBoostingClassifier(n_estimators=100, random_state=42)),
-                ('svm', SVC(probability=True, random_state=42)),
-            ],
-            voting='soft'
-        )
+        if self.task == "regression":
+            from sklearn.ensemble import VotingRegressor, RandomForestRegressor, GradientBoostingRegressor
+            self.model = VotingRegressor(
+                estimators=[
+                    ('rf', RandomForestRegressor(n_estimators=100, random_state=42)),
+                    ('gb', GradientBoostingRegressor(n_estimators=100, random_state=42)),
+                ],
+            )
+        else:
+            from sklearn.ensemble import VotingClassifier, RandomForestClassifier, GradientBoostingClassifier
+            from sklearn.svm import SVC
+            self.model = VotingClassifier(
+                estimators=[
+                    ('rf', RandomForestClassifier(n_estimators=100, random_state=42)),
+                    ('gb', GradientBoostingClassifier(n_estimators=100, random_state=42)),
+                    ('svm', SVC(probability=True, random_state=42)),
+                ],
+                voting='soft'
+            )
 
     def train(self, X_train, y_train, X_val, y_val):
         self.model.fit(X_train, y_train)
         y_pred = self.model.predict(X_val)
-        return {
-            "accuracy": accuracy_score(y_val, y_pred),
-            "f1": f1_score(y_val, y_pred, average="weighted", zero_division=0),
-        }
+        if self.task == "regression":
+            from sklearn.metrics import r2_score, mean_squared_error
+            return {
+                "r2": r2_score(y_val, y_pred),
+                "rmse": float(np.sqrt(mean_squared_error(y_val, y_pred))),
+            }
+        else:
+            from sklearn.metrics import accuracy_score, f1_score
+            return {
+                "accuracy": accuracy_score(y_val, y_pred),
+                "f1": f1_score(y_val, y_pred, average="weighted", zero_division=0),
+            }
 
     def predict(self, X):
         return self.model.predict(X)
