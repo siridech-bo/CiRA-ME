@@ -1,14 +1,14 @@
 @echo off
-REM CiRA ME - Build and Export Script (Windows)
-REM Builds Docker images and saves as .tar files for customer deployment
+REM CiRA ME - Export Script (Windows)
+REM Saves currently running Docker images as .tar files for customer deployment
+REM Does NOT rebuild — exports exactly what is running now
 
 echo ============================================
-echo   CiRA ME - Build and Export Images
+echo   CiRA ME - Export Docker Images
 echo ============================================
 echo.
 
 set DEPLOY_DIR=%~dp0
-set PROJECT_ROOT=%~dp0..
 
 REM Check Docker
 docker info >nul 2>&1
@@ -18,50 +18,47 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-if not exist "%PROJECT_ROOT%\backend" (
-    echo ERROR: Cannot locate project root.
+echo Saving to: %DEPLOY_DIR%
+echo.
+
+REM Save required images
+echo [1/4] Saving backend image (this may take a few minutes)...
+docker save cirame-backend:latest -o "%DEPLOY_DIR%cirame-backend.tar"
+if %errorlevel% neq 0 (
+    echo ERROR: Backend image not found. Is CiRA ME running?
     pause
     exit /b 1
 )
-
-echo Building from: %PROJECT_ROOT%
-echo Saving to:     %DEPLOY_DIR%
-echo.
-
-REM Build images
-echo [1/6] Building backend image...
-docker compose -f "%PROJECT_ROOT%\docker-compose.yml" build backend
-if %errorlevel% neq 0 ( echo ERROR: Backend build failed. & pause & exit /b 1 )
-echo.
-
-echo [2/6] Building frontend image...
-docker compose -f "%PROJECT_ROOT%\docker-compose.yml" build frontend
-if %errorlevel% neq 0 ( echo ERROR: Frontend build failed. & pause & exit /b 1 )
-echo.
-
-echo [3/6] Building TI ModelMaker image...
-docker compose -f "%PROJECT_ROOT%\docker-compose.yml" build ti-modelmaker
-if %errorlevel% neq 0 ( echo WARNING: TI ModelMaker build failed, skipping. )
-echo.
-
-REM Save images
-echo [4/6] Saving backend image (this may take a few minutes)...
-docker save cirame-backend:latest -o "%DEPLOY_DIR%cirame-backend.tar"
 echo   Saved: cirame-backend.tar
 echo.
 
-echo [5/6] Saving frontend image...
+echo [2/4] Saving frontend image...
 docker save cirame-frontend:latest -o "%DEPLOY_DIR%cirame-frontend.tar"
+if %errorlevel% neq 0 (
+    echo ERROR: Frontend image not found.
+    pause
+    exit /b 1
+)
 echo   Saved: cirame-frontend.tar
 echo.
 
-echo [6/6] Saving optional images...
+REM Save optional images
+echo [3/4] Saving TI ModelMaker image...
 docker save cirame-ti-modelmaker:latest -o "%DEPLOY_DIR%cirame-ti-modelmaker.tar" 2>nul
-if %errorlevel% equ 0 ( echo   Saved: cirame-ti-modelmaker.tar ) else ( echo   Skipped: ti-modelmaker )
+if %errorlevel% equ 0 (
+    echo   Saved: cirame-ti-modelmaker.tar
+) else (
+    echo   Skipped: cirame-ti-modelmaker not available
+)
+echo.
 
-docker pull eclipse-mosquitto:2 >nul 2>&1
+echo [4/4] Saving Mosquitto MQTT broker...
 docker save eclipse-mosquitto:2 -o "%DEPLOY_DIR%cirame-mosquitto.tar" 2>nul
-if %errorlevel% equ 0 ( echo   Saved: cirame-mosquitto.tar ) else ( echo   Skipped: mosquitto )
+if %errorlevel% equ 0 (
+    echo   Saved: cirame-mosquitto.tar
+) else (
+    echo   Skipped: mosquitto not available
+)
 echo.
 
 echo ============================================
