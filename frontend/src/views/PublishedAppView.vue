@@ -485,10 +485,11 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import api from '@/services/api'
-import mqtt from 'mqtt'
+// mqtt loaded dynamically only when needed (live stream mode)
+let mqtt = null
 
 const route = useRoute()
 const slug = computed(() => route.params.slug)
@@ -707,9 +708,14 @@ const liveLastUpdatedText = computed(() => {
 const liveUpdateTicker = ref(0)
 let tickerInterval = null
 
-function startLiveStream() {
+async function startLiveStream() {
   mqttError.value = null
   try {
+    // Dynamic import — only load mqtt when needed
+    if (!mqtt) {
+      const mod = await import('mqtt')
+      mqtt = mod.default || mod
+    }
     mqttClient = mqtt.connect(mqttBrokerUrl.value, {
       clientId: `cira-live-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
       clean: true,
