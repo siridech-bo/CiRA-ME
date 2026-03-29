@@ -10,17 +10,14 @@ services:
     restart: unless-stopped
 
     environment:
-      # Flask configuration
       - FLASK_APP=run.py
       - FLASK_HOST=0.0.0.0
       - FLASK_DEBUG=False
-
-      # Database configuration
       - DATABASE_PATH=/app/data/cirame.db
-
-      # Python optimizations
       - PYTHONUNBUFFERED=1
       - PYTHONOPTIMIZE=1
+      - MQTT_BROKER_HOST=cirame-mosquitto
+      - MQTT_BROKER_PORT=1883
 
     volumes:
       # Persistent data volumes

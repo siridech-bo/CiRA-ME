@@ -3,34 +3,29 @@
 # Use this file if the server does not have NVIDIA GPU
 
 services:
-  # Backend - Flask Python API
+  # Backend - Flask Python API (CPU only)
   backend:
     image: cirame-backend:latest
     container_name: cirame-backend
     restart: unless-stopped
 
     environment:
-      # Flask configuration
       - FLASK_APP=run.py
       - FLASK_HOST=0.0.0.0
       - FLASK_DEBUG=False
-
-      # Database configuration
       - DATABASE_PATH=/app/data/cirame.db
-
-      # Python optimizations
       - PYTHONUNBUFFERED=1
       - PYTHONOPTIMIZE=1
+      - CUDA_VISIBLE_DEVICES=""
+      - MQTT_BROKER_HOST=cirame-mosquitto
+      - MQTT_BROKER_PORT=1883
 
     volumes:
-      # Persistent data volumes
       - backend-data:/app/data
       - backend-models:/app/models
-      # Shared folder - put datasets here for customers to access
       - ./shared:/app/datasets/shared
 
     ports:
-      # Expose backend port (optional - frontend proxies through nginx)
       - "5100:5100"
 
     networks:
@@ -43,7 +38,6 @@ services:
       retries: 3
       start_period: 60s
 
-    # Resource limits (adjust based on your server capacity)
     deploy:
       resources:
         limits:
@@ -60,7 +54,6 @@ services:
     restart: unless-stopped
 
     ports:
-      # Main application port - access at http://localhost:3030
       - "3030:80"
 
     networks:
@@ -77,22 +70,61 @@ services:
       retries: 3
       start_period: 10s
 
-    # Resource limits
     deploy:
       resources:
         limits:
           cpus: '1.0'
           memory: 512M
-        reservations:
-          cpus: '0.5'
-          memory: 256M
 
-# Named volumes for persistent data
+  # TI TinyML ModelMaker (optional)
+  ti-modelmaker:
+    image: cirame-ti-modelmaker:latest
+    container_name: cirame-ti-modelmaker
+    restart: unless-stopped
+    volumes:
+      - ./shared:/app/data/datasets/shared
+      - ti-projects:/app/data/projects
+    ports:
+      - "5200:5200"
+    networks:
+      - cirame-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5200/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 8G
+
+  # MQTT Broker (optional)
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: cirame-mosquitto
+    restart: unless-stopped
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf
+      - mosquitto-data:/mosquitto/data
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+    networks:
+      - cirame-network
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 128M
+
 volumes:
   backend-data:
   backend-models:
+  ti-projects:
+  mosquitto-data:
 
-# Network for service communication
 networks:
   cirame-network:
     driver: bridge

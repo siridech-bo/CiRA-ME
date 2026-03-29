@@ -1,214 +1,144 @@
-# CiRA ME - Deployment Guide
+# CiRA ME — Deployment Package
 
-Machine Intelligence for Edge Computing
-
----
-
-## Overview
-
-CiRA ME is distributed as pre-built Docker images. No build tools or internet
-access are required on the customer server — just Docker.
-
-**Workflow:**
-```
-[Vendor] export.bat / export.sh  →  cirame-backend.tar + cirame-frontend.tar
-            ↓  transfer deployment/ folder
-[Customer] install.bat / install.sh  →  start.bat / start.sh
-```
+## Machine Intelligence for Edge Computing
 
 ---
 
-## For Vendors: Building and Exporting Images
+## Package Contents
 
-Run from the **project root** (where `docker-compose.yml` lives):
+| File | Size | Required |
+|---|---|---|
+| `cirame-backend.tar` | ~14 GB | Yes |
+| `cirame-frontend.tar` | ~93 MB | Yes |
+| `cirame-ti-modelmaker.tar` | ~11.5 GB | Optional (TI MCU) |
+| `cirame-mosquitto.tar` | ~36 MB | Optional (MQTT) |
+| `docker-compose.yml` | — | GPU servers |
+| `docker-compose-no-gpu.yml` | — | CPU-only servers |
+| `shared/` | — | Customer datasets |
+| `mosquitto/` | — | MQTT broker config |
 
-**Windows:**
-```cmd
-deployment\export.bat
+## Requirements
+
+- **Docker** 24.0+ with Docker Compose v2
+- **NVIDIA GPU** (optional) with nvidia-container-toolkit for GPU acceleration
+- **RAM**: 8 GB minimum, 16 GB recommended
+- **Disk**: 30 GB free space
+- **Ports**: 3030 (web), 5100 (API), 1883 (MQTT TCP), 9001 (MQTT WebSocket)
+
+## Installation
+
+### Windows
+
+```
+1. Install Docker Desktop (https://docker.com)
+2. Double-click install.bat
+3. Double-click start.bat
+4. Open http://localhost:3030
 ```
 
-**Linux / macOS:**
+### Linux
+
 ```bash
-bash deployment/export.sh
-```
+# Install Docker
+curl -fsSL https://get.docker.com | sh
 
-This builds both images and saves them as:
-- `deployment/cirame-backend.tar` (~600 MB)
-- `deployment/cirame-frontend.tar` (~50 MB)
-
-Then transfer the entire `deployment/` folder to the customer server.
-
----
-
-## For Customers: Installation
-
-### Prerequisites
-
-- Docker installed and running
-  - Windows: [Docker Desktop](https://www.docker.com/products/docker-desktop/)
-  - Linux: `curl -fsSL https://get.docker.com | sh`
-- Minimum 8 GB RAM, 20 GB free disk space
-
-### Step 1: Install Images
-
-Copy the `deployment` folder to the server, then run:
-
-**Windows:**
-```cmd
-cd C:\path\to\deployment
-install.bat
-```
-
-**Linux:**
-```bash
-cd /path/to/deployment
+# Install and start CiRA ME
+cd deployment
 bash install.sh
+bash start.sh
+
+# Access at http://localhost:3030
 ```
 
-### Step 2: Start the Application
+## Default Login
 
-| Scenario | Windows | Linux |
-|----------|---------|-------|
-| With NVIDIA GPU | `start.bat` | `bash start.sh` |
-| CPU only (no GPU) | `start-no-gpu.bat` | `bash start-no-gpu.sh` |
-
-### Step 3: Access
-
-Open a browser and go to:
 ```
-http://localhost:3030
+Username: admin
+Password: admin123
 ```
 
-**Default login:** `admin` / `admin123`
-> Change the admin password after first login!
+**Change the password after first login!**
 
----
+## Management Commands
 
-## Management Scripts
-
-| Task | Windows | Linux |
-|------|---------|-------|
-| Install images | `install.bat` | `bash install.sh` |
-| **Update to new version** | **`update.bat`** | **`bash update.sh`** |
+| Action | Windows | Linux |
+|---|---|---|
 | Start (GPU) | `start.bat` | `bash start.sh` |
-| Start (no GPU) | `start-no-gpu.bat` | `bash start-no-gpu.sh` |
+| Start (CPU) | `start-no-gpu.bat` | `bash start-no-gpu.sh` |
 | Stop | `stop.bat` | `bash stop.sh` |
 | View logs | `logs.bat` | `docker compose logs -f` |
 | Check status | `status.bat` | `docker compose ps` |
 | Uninstall | `uninstall.bat` | `bash uninstall.sh` |
+| Update images | `update.bat` | `bash update.sh` |
 
-## Updating an Existing Installation
+## Network Ports
 
-When shipping a new version to a customer who already has CiRA ME installed:
+| Port | Service | Purpose |
+|---|---|---|
+| **3030** | Frontend (nginx) | Web application |
+| 5100 | Backend (Flask) | REST API |
+| 5200 | TI ModelMaker | TI MCU training (optional) |
+| **1883** | Mosquitto | MQTT TCP (for sensors/devices) |
+| **9001** | Mosquitto | MQTT WebSocket (for browsers) |
 
-1. Copy the **new** `cirame-backend.tar` and `cirame-frontend.tar` into the customer's `deployment/` folder (replacing the old ones)
-2. Run the update script:
-   - Windows: `update.bat`
-   - Linux: `bash update.sh`
-3. Then restart: `start.bat` / `bash start.sh`
+Ports in **bold** should be accessible from the local network.
 
-**What is preserved:** All customer data (database, accounts, trained models, datasets) lives in Docker named volumes — they survive the update untouched.
+## Datasets
 
-**What is replaced:** The application code (backend + frontend images). Old image layers are pruned automatically to free disk space.
+Place CSV or CBOR datasets in the `shared/` folder. They will appear in CiRA ME under "Browse Files > shared".
 
----
+## MQTT Live Streaming
 
-## Configuration
+If `cirame-mosquitto.tar` is installed:
 
-### Change Port
+1. IoT devices/sensors connect to `mqtt://server-ip:1883`
+2. Published apps connect to `ws://server-ip:9001/mqtt`
+3. Manage broker at the "MQTT Broker" page in CiRA ME
 
-Edit `docker-compose.yml` (or `docker-compose-no-gpu.yml`):
-```yaml
-ports:
-  - "3030:80"   # change 3030 to your desired port
-```
-Then restart the application.
+## TI MCU Support
 
-### Add Datasets
+If `cirame-ti-modelmaker.tar` is installed:
 
-Place CSV files in the `shared/` folder. They will appear in the application
-for all users automatically.
-
-### Adjust Resource Limits
-
-Edit the compose files:
-```yaml
-deploy:
-  resources:
-    limits:
-      cpus: '4.0'   # max CPU cores
-      memory: 8G    # max RAM
-```
-
----
+1. Train TI model zoo models (Conv1D, MLP) in the Training page
+2. Export C code packages for Code Composer Studio
+3. Deploy to TMS320 F28379D, F280049C, F28P55x
 
 ## Troubleshooting
 
-| Error | Solution |
-|-------|----------|
-| `Docker is not running` | Start Docker Desktop (Windows) or `sudo systemctl start docker` (Linux) |
-| `Images not found` | Run `install.bat` / `install.sh` first |
-| `GPU-related error on start` | Use `start-no-gpu.bat` / `bash start-no-gpu.sh` |
-| `Port 3030 already in use` | Change port in compose file or stop the conflicting service |
-| Backend health check failing | Wait 60 s for backend to fully start, then check `status.bat` |
+### Docker images not loading
+```
+# Check disk space
+df -h                          # Linux
+wmic logicaldisk get size,freespace  # Windows
 
-### View Logs
-```cmd
-docker compose logs -f backend
-docker compose logs -f frontend
+# Check Docker is running
+docker info
 ```
 
----
+### GPU not detected
+```
+# Check NVIDIA driver
+nvidia-smi
 
-## Data Persistence
-
-Application data is stored in Docker named volumes:
-
-| Volume | Contents |
-|--------|----------|
-| `deployment_backend-data` | Database, user accounts, training sessions |
-| `deployment_backend-models` | Saved ML/DL models |
-
-Volumes persist across restarts. Only removed when running `uninstall`.
-
-### Backup
-```bash
-# Backup database
-docker run --rm -v deployment_backend-data:/data -v $(pwd):/backup \
-  alpine tar czf /backup/data-backup.tar.gz /data
-
-# Backup models
-docker run --rm -v deployment_backend-models:/models -v $(pwd):/backup \
-  alpine tar czf /backup/models-backup.tar.gz /models
+# Check nvidia-container-toolkit
+docker run --rm --gpus all nvidia/cuda:12.8.0-base-ubuntu22.04 nvidia-smi
 ```
 
----
-
-## Deployment Package Contents
-
+### Services won't start
 ```
-deployment/
-├── cirame-backend.tar       # Backend Docker image  (~600 MB)
-├── cirame-frontend.tar      # Frontend Docker image (~50 MB)
-├── docker-compose.yml       # Compose config (with GPU)
-├── docker-compose-no-gpu.yml# Compose config (CPU only)
-├── export.bat               # [Vendor] Build & export on Windows
-├── export.sh                # [Vendor] Build & export on Linux/macOS
-├── install.bat              # [Customer] Install on Windows
-├── install.sh               # [Customer] Install on Linux
-├── start.bat                # Start with GPU (Windows)
-├── start.sh                 # Start with GPU (Linux)
-├── start-no-gpu.bat         # Start CPU only (Windows)
-├── start-no-gpu.sh          # Start CPU only (Linux)
-├── stop.bat / stop.sh       # Stop application
-├── update.bat / update.sh   # Update to new version (preserves data)
-├── uninstall.bat / uninstall.sh  # Remove everything
-├── logs.bat                 # View logs (Windows)
-├── status.bat               # Check status (Windows)
-├── shared/                  # Datasets folder (editable by customer)
-└── README.md                # This file
+# Check logs
+docker compose logs backend
+docker compose logs frontend
+
+# Restart
+bash stop.sh
+bash start.sh
 ```
 
----
+### Cannot access from other machines
+- Check firewall allows ports 3030, 1883, 9001
+- Use server IP instead of localhost: `http://192.168.x.x:3030`
 
-CiRA ME — Machine Intelligence for Edge Computing
+## Support
+
+CiRA — Center of Innovative Robotics and Automation

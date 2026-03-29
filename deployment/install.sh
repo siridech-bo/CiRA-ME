@@ -1,5 +1,5 @@
 #!/bin/bash
-# CiRA ME - Installation Script (Linux)
+# CiRA ME - Installation Script (Linux/macOS)
 # Loads Docker images from .tar files and sets up the application
 
 set -e
@@ -17,45 +17,81 @@ if ! docker info >/dev/null 2>&1; then
     exit 1
 fi
 
-echo "[1/4] Docker is running..."
+echo "Docker is running."
 echo
 
-# Load backend image
-echo "[2/4] Loading backend image (this may take a few minutes)..."
+# Load required images
+echo "[1/2] Loading required images..."
+
 if [ -f "cirame-backend.tar" ]; then
+    echo "  Loading backend image (this may take several minutes)..."
     docker load -i cirame-backend.tar
-    echo "Backend image loaded successfully."
+    echo "  Backend loaded."
 else
     echo "ERROR: cirame-backend.tar not found!"
-    echo "Please ensure the file is in the same directory as this script."
     exit 1
 fi
-echo
 
-# Load frontend image
-echo "[3/4] Loading frontend image..."
 if [ -f "cirame-frontend.tar" ]; then
+    echo "  Loading frontend image..."
     docker load -i cirame-frontend.tar
-    echo "Frontend image loaded successfully."
+    echo "  Frontend loaded."
 else
     echo "ERROR: cirame-frontend.tar not found!"
-    echo "Please ensure the file is in the same directory as this script."
     exit 1
 fi
+
 echo
 
-# Create shared folder
-echo "[4/4] Creating shared folder for datasets..."
+# Load optional images
+echo "[2/2] Loading optional images..."
+
+if [ -f "cirame-ti-modelmaker.tar" ]; then
+    echo "  Loading TI ModelMaker image (this may take several minutes)..."
+    docker load -i cirame-ti-modelmaker.tar
+    echo "  TI ModelMaker loaded."
+else
+    echo "  Skipped: cirame-ti-modelmaker.tar not found (TI MCU features disabled)"
+fi
+
+if [ -f "cirame-mosquitto.tar" ]; then
+    echo "  Loading Mosquitto MQTT broker..."
+    docker load -i cirame-mosquitto.tar
+    echo "  Mosquitto loaded."
+else
+    echo "  Skipped: cirame-mosquitto.tar not found (MQTT live streaming disabled)"
+fi
+
+echo
+
+# Create folders
 mkdir -p shared
-echo "Shared folder ready."
-echo
+mkdir -p mosquitto
 
+# Copy mosquitto config if not exists
+if [ ! -f "mosquitto/mosquitto.conf" ]; then
+    cat > mosquitto/mosquitto.conf << 'MQTTCONF'
+listener 1883
+protocol mqtt
+listener 9001
+protocol websockets
+allow_anonymous true
+persistence true
+persistence_location /mosquitto/data/
+log_dest stdout
+log_type warning
+log_type error
+MQTTCONF
+    echo "Created mosquitto/mosquitto.conf"
+fi
+
+echo
 echo "============================================"
 echo "  Installation Complete!"
 echo "============================================"
 echo
 echo "Installed images:"
-docker images | grep cirame
+docker images | grep -E "cirame|mosquitto" | head -10
 echo
 echo "Next steps:"
 echo "  With GPU    : bash start.sh"
