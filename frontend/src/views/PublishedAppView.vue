@@ -530,7 +530,14 @@ onMounted(async () => {
   // Initialize MQTT config from pipeline nodes
   if (isLiveStream.value) {
     const cfg = liveStreamConfig.value
-    mqttBrokerUrl.value = cfg.broker_url || 'ws://localhost:9001/mqtt'
+    // Auto-resolve broker URL: replace 'localhost' with actual server hostname
+    // so the app works when opened from other machines on the LAN
+    let brokerUrl = cfg.broker_url || 'ws://localhost:9001/mqtt'
+    if (brokerUrl.includes('localhost') || brokerUrl.includes('127.0.0.1')) {
+      brokerUrl = brokerUrl.replace('localhost', window.location.hostname)
+                           .replace('127.0.0.1', window.location.hostname)
+    }
+    mqttBrokerUrl.value = brokerUrl
     mqttTopic.value = cfg.topic || 'sensors/#'
   }
   loading.value = false
