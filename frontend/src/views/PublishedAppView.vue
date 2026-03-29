@@ -23,7 +23,10 @@
           <div>
             <div class="app-title">{{ appData.name }}</div>
             <div class="app-subtitle">
-              <span class="app-mode-badge" :style="{ color: modeColor, background: modeColor + '18' }">
+              <span v-if="isRecorderMode" class="app-mode-badge" style="color: #ef4444; background: rgba(239,68,68,0.1)">
+                SIGNAL RECORDER
+              </span>
+              <span v-else-if="appMode" class="app-mode-badge" :style="{ color: modeColor, background: modeColor + '18' }">
                 {{ appMode?.toUpperCase() }}
               </span>
               <span class="app-algo">{{ appAlgorithm }}</span>
