@@ -655,7 +655,7 @@ async function createApp() {
     const nodes = tpl ? JSON.parse(JSON.stringify(tpl.nodes)) : []
 
     // Auto-insert first active ME-LAB endpoint as model node (between feature_extract and output)
-    if (tpl && tpl.id !== 'blank') {
+    if (tpl && tpl.id !== 'blank' && tpl.id !== 'mqtt_recorder') {
       try {
         const epResp = await api.get('/api/melab/endpoints')
         const endpoints = (epResp.data || []).filter((e: any) => e.status === 'active')
