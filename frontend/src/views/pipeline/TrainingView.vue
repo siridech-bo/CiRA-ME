@@ -513,10 +513,22 @@
                         <template v-if="model.min_epochs"> | min {{ model.min_epochs }} epochs</template>
                       </div>
                     </div>
+                    <v-chip
+                      v-if="model.npu_only || (typeof key === 'string' && key.toUpperCase().includes('NPU'))"
+                      size="x-small" color="warning" variant="flat" class="ml-1"
+                      title="Runs on NPU hardware accelerator — requires TI NN Compiler in CCS"
+                    >
+                      <v-icon start size="10">mdi-lightning-bolt</v-icon>NPU
+                    </v-chip>
+                    <v-chip
+                      v-else
+                      size="x-small" color="grey" variant="tonal" class="ml-1"
+                      title="Runs on C28x CPU core"
+                    >CPU</v-chip>
                     <v-chip v-if="model.source === 'traditional_ml'" size="x-small" color="orange" variant="tonal" class="ml-1"
-                      title="Uses CiRA ME's extracted features → emlearn C export">CiRA Features</v-chip>
+                      title="Uses CiRA ME's extracted features → emlearn C export">emlearn</v-chip>
                     <v-chip v-else-if="model.source === 'ti_zoo'" size="x-small" color="info" variant="tonal" class="ml-1"
-                      title="Uses TI's own pipeline with raw windowed data">TI Pipeline</v-chip>
+                      title="Uses TI's own pipeline with raw windowed data">TI NN</v-chip>
                   </div>
                 </template>
               </v-checkbox>
