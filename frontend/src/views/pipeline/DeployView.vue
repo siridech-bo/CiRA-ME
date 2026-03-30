@@ -1649,7 +1649,8 @@ function downloadEvalCsv() {
   rows.push('--- Summary ---')
   rows.push(`model,${modelName}`)
   rows.push(`mode,${mode}`)
-  rows.push(`num_windows,${preds.length}`)
+  rows.push(`num_windows,${evalResult.value.num_windows || ''}`)
+  rows.push(`num_datapoints,${dpPreds.length}`)
 
   if (evalResult.value.new_metrics) {
     rows.push('')
