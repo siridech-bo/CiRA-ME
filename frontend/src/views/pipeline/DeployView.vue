@@ -1615,9 +1615,9 @@ function downloadEvalCsv() {
 
   // Header row
   if (mode === 'regression') {
-    rows.push(hasActuals ? 'window_index,actual,prediction,residual' : 'window_index,prediction')
+    rows.push(hasActuals ? 'datapoint,actual,prediction,residual' : 'datapoint,prediction')
   } else {
-    rows.push(hasActuals ? 'window_index,actual,prediction,correct,confidence' : 'window_index,prediction,confidence')
+    rows.push(hasActuals ? 'datapoint,actual,prediction,correct,confidence' : 'datapoint,prediction,confidence')
   }
 
   // Data rows — one row per window
