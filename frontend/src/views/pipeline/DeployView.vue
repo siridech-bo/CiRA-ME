@@ -207,6 +207,175 @@
             </v-card-actions>
           </v-card>
         </v-dialog>
+
+        <!-- TI MCU Package Info Dialog -->
+        <v-dialog v-model="showTiMcuInfo" max-width="700" scrollable>
+          <v-card>
+            <v-card-title class="d-flex align-center">
+              <v-icon start color="pink">mdi-chip</v-icon>
+              TI MCU Deployment Package
+              <v-spacer />
+              <v-btn icon size="small" variant="text" @click="showTiMcuInfo = false">
+                <v-icon>mdi-close</v-icon>
+              </v-btn>
+            </v-card-title>
+
+            <v-card-text>
+              <!-- Workflow Diagram -->
+              <div class="ti-workflow mb-4">
+                <div class="text-subtitle-2 font-weight-bold mb-2">Deployment Workflow</div>
+                <div class="ti-flow-diagram">
+                  <div class="ti-flow-step">
+                    <div class="ti-flow-icon" style="background: #a78bfa20; border-color: #a78bfa;">
+                      <v-icon size="20" color="purple">mdi-brain</v-icon>
+                    </div>
+                    <div class="ti-flow-label">Train Model</div>
+                    <div class="ti-flow-sub">CiRA ME</div>
+                  </div>
+                  <div class="ti-flow-arrow">
+                    <v-icon size="16" color="grey">mdi-arrow-right</v-icon>
+                  </div>
+                  <div class="ti-flow-step">
+                    <div class="ti-flow-icon" style="background: #60a5fa20; border-color: #60a5fa;">
+                      <v-icon size="20" color="blue">mdi-download</v-icon>
+                    </div>
+                    <div class="ti-flow-label">Download Package</div>
+                    <div class="ti-flow-sub">.zip file</div>
+                  </div>
+                  <div class="ti-flow-arrow">
+                    <v-icon size="16" color="grey">mdi-arrow-right</v-icon>
+                  </div>
+                  <div class="ti-flow-step">
+                    <div class="ti-flow-icon" style="background: #fbbf2420; border-color: #fbbf24;">
+                      <v-icon size="20" color="amber">mdi-application-braces</v-icon>
+                    </div>
+                    <div class="ti-flow-label">Open in CCS</div>
+                    <div class="ti-flow-sub">Code Composer Studio</div>
+                  </div>
+                  <div class="ti-flow-arrow">
+                    <v-icon size="16" color="grey">mdi-arrow-right</v-icon>
+                  </div>
+                  <div class="ti-flow-step">
+                    <div class="ti-flow-icon" style="background: #34d39920; border-color: #34d399;">
+                      <v-icon size="20" color="success">mdi-flash</v-icon>
+                    </div>
+                    <div class="ti-flow-label">Build & Flash</div>
+                    <div class="ti-flow-sub">TMS320 MCU</div>
+                  </div>
+                </div>
+              </div>
+
+              <v-divider class="mb-4" />
+
+              <!-- Package Contents -->
+              <div class="text-subtitle-2 font-weight-bold mb-2">Package Contents</div>
+              <v-table density="compact" class="mb-4">
+                <thead>
+                  <tr>
+                    <th>File</th>
+                    <th>Description</th>
+                    <th>Model Type</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td class="font-weight-medium" style="font-family: monospace; font-size: 12px; color: #a78bfa;">model_weights.h</td>
+                    <td class="text-caption">Neural network weights as C arrays</td>
+                    <td><v-chip size="x-small" color="orange" variant="tonal">TI NN</v-chip></td>
+                  </tr>
+                  <tr>
+                    <td class="font-weight-medium" style="font-family: monospace; font-size: 12px; color: #a78bfa;">model_config.h</td>
+                    <td class="text-caption">Input/output shape definitions</td>
+                    <td><v-chip size="x-small" color="orange" variant="tonal">TI NN</v-chip></td>
+                  </tr>
+                  <tr>
+                    <td class="font-weight-medium" style="font-family: monospace; font-size: 12px; color: #a78bfa;">model.onnx</td>
+                    <td class="text-caption">Trained model for TI NN Compiler (NPU devices)</td>
+                    <td><v-chip size="x-small" color="orange" variant="tonal">TI NN</v-chip></td>
+                  </tr>
+                  <tr>
+                    <td class="font-weight-medium" style="font-family: monospace; font-size: 12px; color: #60a5fa;">model.h</td>
+                    <td class="text-caption">Complete model as C if/else tree (emlearn)</td>
+                    <td><v-chip size="x-small" color="blue" variant="tonal">ML</v-chip></td>
+                  </tr>
+                  <tr>
+                    <td class="font-weight-medium" style="font-family: monospace; font-size: 12px; color: #94a3b8;">cira_main.c</td>
+                    <td class="text-caption">Firmware template with SCI UART + inference loop</td>
+                    <td><v-chip size="x-small" variant="tonal">All</v-chip></td>
+                  </tr>
+                  <tr>
+                    <td class="font-weight-medium" style="font-family: monospace; font-size: 12px; color: #94a3b8;">cira_serial_test.py</td>
+                    <td class="text-caption">Python tool for testing via serial port</td>
+                    <td><v-chip size="x-small" variant="tonal">All</v-chip></td>
+                  </tr>
+                  <tr>
+                    <td class="font-weight-medium" style="font-family: monospace; font-size: 12px; color: #94a3b8;">README.txt</td>
+                    <td class="text-caption">Step-by-step CCS integration guide</td>
+                    <td><v-chip size="x-small" variant="tonal">All</v-chip></td>
+                  </tr>
+                </tbody>
+              </v-table>
+
+              <v-divider class="mb-4" />
+
+              <!-- Step by step -->
+              <div class="text-subtitle-2 font-weight-bold mb-2">CCS Integration Steps</div>
+              <div class="ti-steps">
+                <div class="ti-step">
+                  <div class="ti-step-num">1</div>
+                  <div>
+                    <div class="font-weight-medium">Create CCS Project</div>
+                    <div class="text-caption text-medium-emphasis">File > New > CCS Project > Select your TMS320 device</div>
+                  </div>
+                </div>
+                <div class="ti-step">
+                  <div class="ti-step-num">2</div>
+                  <div>
+                    <div class="font-weight-medium">Add Model Files</div>
+                    <div class="text-caption text-medium-emphasis">Copy model/ folder contents into your CCS project</div>
+                  </div>
+                </div>
+                <div class="ti-step">
+                  <div class="ti-step-num">3</div>
+                  <div>
+                    <div class="font-weight-medium">Add Firmware Template</div>
+                    <div class="text-caption text-medium-emphasis">Add src/cira_main.c or write your own main()</div>
+                  </div>
+                </div>
+                <div class="ti-step">
+                  <div class="ti-step-num">4</div>
+                  <div>
+                    <div class="font-weight-medium">Build & Flash</div>
+                    <div class="text-caption text-medium-emphasis">Click Debug button > program flashes to MCU > Run</div>
+                  </div>
+                </div>
+                <div class="ti-step">
+                  <div class="ti-step-num">5</div>
+                  <div>
+                    <div class="font-weight-medium">Test via Serial</div>
+                    <div class="text-caption text-medium-emphasis">python cira_serial_test.py --port COM5 --interactive</div>
+                  </div>
+                </div>
+              </div>
+
+              <v-divider class="my-4" />
+
+              <!-- NPU note -->
+              <v-alert variant="tonal" color="warning" density="compact" class="mb-2">
+                <div class="text-caption">
+                  <strong>NPU Models:</strong> For devices with NPU (F28P55x, MSPM0+), use TI NN Compiler in CCS
+                  to compile the .onnx file for NPU execution. Command: <code>ti_nn_compiler --model model.onnx --target F28P55</code>
+                </div>
+              </v-alert>
+              <v-alert variant="tonal" color="info" density="compact">
+                <div class="text-caption">
+                  <strong>CPU Models:</strong> For devices without NPU (F28379D, F280049C), the model_weights.h
+                  contains all parameters. Implement the forward pass in C or use the emlearn model.h directly.
+                </div>
+              </v-alert>
+            </v-card-text>
+          </v-card>
+        </v-dialog>
       </div>
 
       <!-- Selected Model Metrics Summary Card -->
@@ -388,11 +557,24 @@
             </v-radio>
             <v-radio value="ti_mcu">
               <template #label>
-                <div>
-                  <div class="font-weight-medium" style="color: #E91E63;">TI MCU Package</div>
-                  <div class="text-caption text-medium-emphasis">
-                    C header + inference code for TMS320 (via emlearn/TI NN Compiler)
+                <div class="d-flex align-center">
+                  <div>
+                    <div class="font-weight-medium" style="color: #E91E63;">TI MCU Package</div>
+                    <div class="text-caption text-medium-emphasis">
+                      CCS-ready project files for TMS320 deployment
+                    </div>
                   </div>
+                  <v-btn
+                    icon
+                    size="x-small"
+                    variant="text"
+                    color="info"
+                    class="ml-2"
+                    @click.stop="showTiMcuInfo = true"
+                    title="View package contents & instructions"
+                  >
+                    <v-icon size="small">mdi-information-outline</v-icon>
+                  </v-btn>
                 </div>
               </template>
             </v-radio>
@@ -1159,6 +1341,7 @@ const selectedSavedModelId = ref<number | null>(null)
 const loadingSavedModels = ref(false)
 const modelTableTab = ref('regression')
 const showDeleteModelDialog = ref(false)
+const showTiMcuInfo = ref(false)
 const deleteTargetModel = ref<any>(null)
 const deletingModel = ref(false)
 
@@ -1817,6 +2000,64 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
+/* TI MCU Info Dialog */
+.ti-flow-diagram {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 16px 0;
+}
+.ti-flow-step {
+  text-align: center;
+  min-width: 90px;
+}
+.ti-flow-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  border: 2px solid;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto 6px;
+}
+.ti-flow-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #e6edf3;
+}
+.ti-flow-sub {
+  font-size: 9px;
+  color: #8b949e;
+}
+.ti-flow-arrow {
+  padding-top: 0;
+}
+.ti-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.ti-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+.ti-step-num {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: #a78bfa20;
+  color: #a78bfa;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
 .rename-input {
   background: transparent;
   border: none;
