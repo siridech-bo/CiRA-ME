@@ -1995,11 +1995,13 @@ const tiSelectedModels = ref<string[]>([])
 
 // Filter out NPU models (require TI NN Compiler which is not integrated)
 const tiModelsFiltered = computed(() => {
+  const device = tiDevices.value[tiSelectedDevice.value]
+  const deviceHasNpu = device?.npu === true
   const result: Record<string, any> = {}
   for (const [key, model] of Object.entries(tiModels.value)) {
-    if (!model.npu_only) {
-      result[key] = model
-    }
+    // Show NPU models only when device has NPU
+    if (model.npu_only && !deviceHasNpu) continue
+    result[key] = model
   }
   return result
 })
