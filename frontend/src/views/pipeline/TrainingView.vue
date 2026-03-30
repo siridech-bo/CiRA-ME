@@ -402,8 +402,8 @@
                 :color="tiComputeInfo.startsWith('GPU') ? 'success' : 'info'"
                 variant="tonal"
               >
-                <v-icon start size="small">{{ tiComputeInfo.startsWith('GPU') ? 'mdi-chip' : 'mdi-cpu-64-bit' }}</v-icon>
-                TI Training: {{ tiComputeInfo }}
+                <v-icon start size="small">{{ tiComputeInfo.startsWith('GPU') ? 'mdi-chip' : 'mdi-server' }}</v-icon>
+                Server Training: {{ tiComputeInfo }}
               </v-chip>
             </div>
 
