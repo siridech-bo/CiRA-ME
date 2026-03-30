@@ -35,7 +35,7 @@ echo
 echo "[2/4] Removing old images..."
 docker rmi cirame-backend:latest 2>/dev/null || true
 docker rmi cirame-frontend:latest 2>/dev/null || true
-docker rmi cirame-ti-modelmaker:latest 2>/dev/null || true
+
 echo "  Old images removed."
 echo
 

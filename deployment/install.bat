@@ -34,7 +34,7 @@ REM Remove old images to avoid conflicts
 echo [2/4] Removing old images...
 docker rmi cirame-backend:latest 2>nul
 docker rmi cirame-frontend:latest 2>nul
-docker rmi cirame-ti-modelmaker:latest 2>nul
+
 echo   Old images removed.
 echo.
 
