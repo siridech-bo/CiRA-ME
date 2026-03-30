@@ -547,41 +547,71 @@
           <v-card class="pa-4">
             <h3 class="text-subtitle-1 font-weight-bold mb-4">Hyperparameters</h3>
 
-            <v-text-field
-              v-model.number="tiConfig.epochs"
-              label="Epochs (for Neural Net models)"
-              type="number"
-              :min="10"
-              :max="500"
-              :hint="tiConfig.epochs < tiSuggestedEpochs
-                ? `Suggested minimum: ${tiSuggestedEpochs} epochs for selected model(s)`
-                : 'Ignored for Traditional ML models'"
-              :persistent-hint="tiConfig.epochs < tiSuggestedEpochs"
-              :color="tiConfig.epochs < tiSuggestedEpochs ? 'warning' : undefined"
-            />
+            <!-- Neural Net hyperparameters -->
+            <div v-if="tiHasNnModels" class="mb-2">
+              <div class="text-caption font-weight-bold text-info mb-1">NEURAL NETWORK</div>
+              <v-text-field
+                v-model.number="tiConfig.epochs"
+                label="Epochs"
+                type="number"
+                :min="10"
+                :max="500"
+                :hint="tiConfig.epochs < tiSuggestedEpochs
+                  ? `Suggested minimum: ${tiSuggestedEpochs} epochs`
+                  : ''"
+                :persistent-hint="tiConfig.epochs < tiSuggestedEpochs"
+                :color="tiConfig.epochs < tiSuggestedEpochs ? 'warning' : undefined"
+              />
+              <v-text-field
+                v-model.number="tiConfig.batch_size"
+                label="Batch Size"
+                type="number"
+                :min="8"
+                :max="256"
+              />
+              <v-text-field
+                v-model.number="tiConfig.learning_rate"
+                label="Learning Rate"
+                type="number"
+                :min="0.0001"
+                :max="0.1"
+                :step="0.0001"
+              />
+              <v-select
+                v-model="tiConfig.quantization"
+                :items="[
+                  { title: '8-bit (default)', value: '8bit' },
+                  { title: '4-bit weights', value: '4bit' },
+                  { title: '2-bit weights', value: '2bit' },
+                ]"
+                label="Quantization"
+                variant="outlined"
+                density="compact"
+                class="mb-2"
+              />
+            </div>
 
-            <v-text-field
-              v-model.number="tiConfig.max_depth"
-              label="Max Depth"
-              type="number"
-              :min="1"
-              :max="50"
-              hint="For tree-based models"
-              clearable
-            />
-
-            <v-select
-              v-model="tiConfig.quantization"
-              :items="[
-                { title: '8-bit (default)', value: '8bit' },
-                { title: '4-bit weights', value: '4bit' },
-                { title: '2-bit weights', value: '2bit' },
-              ]"
-              label="Quantization (for Neural Net models)"
-              variant="outlined"
-              density="compact"
-              class="mb-2"
-            />
+            <!-- Traditional ML hyperparameters -->
+            <div v-if="tiHasMlModels" class="mb-2">
+              <div class="text-caption font-weight-bold text-orange mb-1">TRADITIONAL ML</div>
+              <v-text-field
+                v-model.number="tiConfig.n_estimators"
+                label="Number of Estimators"
+                type="number"
+                :min="10"
+                :max="500"
+                hint="For RF, XGBoost, LightGBM"
+              />
+              <v-text-field
+                v-model.number="tiConfig.max_depth"
+                label="Max Depth"
+                type="number"
+                :min="1"
+                :max="50"
+                hint="For tree-based models"
+                clearable
+              />
+            </div>
 
             <div class="mb-4">
               <div class="d-flex justify-space-between mb-2">
@@ -2008,11 +2038,26 @@ const tiModelsFiltered = computed(() => {
 const tiComparisonResult = ref<any>(null)
 const tiConfig = reactive({
   epochs: 100,
-  batch_size: 32,
-  learning_rate: 0.001,
+  batch_size: 64,
+  learning_rate: 0.002,
   quantization: '8bit',
   max_depth: 10 as number | null,
+  n_estimators: 100,
   test_size: 0.2,
+})
+
+// Context-aware: detect if selected models include NN or ML
+const tiHasNnModels = computed(() => {
+  return tiSelectedModels.value.some(m => {
+    const model = tiModels.value[m]
+    return model && model.source !== 'traditional_ml'
+  })
+})
+const tiHasMlModels = computed(() => {
+  return tiSelectedModels.value.some(m => {
+    const model = tiModels.value[m]
+    return model && model.source === 'traditional_ml'
+  })
 })
 const tiLogs = ref<string[]>([])
 const tiRunId = ref('')

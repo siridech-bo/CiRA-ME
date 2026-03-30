@@ -927,8 +927,8 @@ def _build_config(task_type, model_name, target_device, dataset_path,
             'model_name': model_name,
             'training_epochs': overrides.get('epochs', 50),
             'num_gpus': 0,  # Force CPU — TI models are tiny
-            # Don't override batch_size/learning_rate — let TI use per-model defaults
-            # (each model in TI's zoo has tuned hyperparameters)
+            'batch_size': overrides.get('batch_size', 64),
+            'learning_rate': overrides.get('learning_rate', 0.002),
         },
         'compilation': {
             'enable': overrides.get('compile', True),
