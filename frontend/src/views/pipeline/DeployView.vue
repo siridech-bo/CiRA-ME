@@ -1608,22 +1608,37 @@ function downloadEvalCsv() {
   const mode = evalModel.value?.mode || 'classification'
   const modelName = evalModel.value?.name || 'model'
 
+  const preds = evalResult.value.predictions || []
+  const actuals = evalResult.value.actuals || []
+  const probs = evalResult.value.probabilities || []
+  const hasActuals = actuals.length === preds.length
+
   // Header row
   if (mode === 'regression') {
-    rows.push('window_index,prediction')
+    rows.push(hasActuals ? 'window_index,actual,prediction,residual' : 'window_index,prediction')
   } else {
-    rows.push('window_index,prediction,probability')
+    rows.push(hasActuals ? 'window_index,actual,prediction,correct,confidence' : 'window_index,prediction,confidence')
   }
 
-  // Data rows
-  const preds = evalResult.value.predictions || []
-  const probs = evalResult.value.probabilities || []
+  // Data rows — one row per window
   for (let i = 0; i < preds.length; i++) {
     if (mode === 'regression') {
-      rows.push(`${i},${preds[i]}`)
+      if (hasActuals) {
+        const actual = parseFloat(actuals[i])
+        const pred = parseFloat(preds[i] as any)
+        const residual = (actual - pred).toFixed(6)
+        rows.push(`${i},${actual},${pred},${residual}`)
+      } else {
+        rows.push(`${i},${preds[i]}`)
+      }
     } else {
-      const prob = probs[i] ? Math.max(...probs[i]).toFixed(4) : ''
-      rows.push(`${i},${preds[i]},${prob}`)
+      const conf = probs[i] ? Math.max(...probs[i]).toFixed(4) : ''
+      if (hasActuals) {
+        const correct = String(actuals[i]).toLowerCase() === String(preds[i]).toLowerCase() ? 'YES' : 'NO'
+        rows.push(`${i},${actuals[i]},${preds[i]},${correct},${conf}`)
+      } else {
+        rows.push(`${i},${preds[i]},${conf}`)
+      }
     }
   }
 

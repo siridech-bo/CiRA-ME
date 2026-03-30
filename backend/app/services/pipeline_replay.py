@@ -342,6 +342,7 @@ def replay_ml_pipeline(csv_path: str, pipeline_config: dict,
 
     result: Dict[str, Any] = {
         'predictions': y_pred_display.tolist(),
+        'actuals': [str(l) for l in window_labels] if window_labels else None,
         'num_windows': len(y_pred_display),
         'pipeline_steps': ['load_csv', 'windowing', 'normalize',
                            'feature_extract', 'scale', 'predict'],
