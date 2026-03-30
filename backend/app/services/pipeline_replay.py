@@ -340,10 +340,38 @@ def replay_ml_pipeline(csv_path: str, pipeline_config: dict,
     else:
         y_pred_display = y_pred
 
+    # Expand window predictions to per-datapoint
+    # Each data point gets the prediction of the window it belongs to
+    n_rows = len(df)
+    per_datapoint_preds = [None] * n_rows
+    per_datapoint_actuals = [None] * n_rows
+
+    for i, pred in enumerate(y_pred_display.tolist() if hasattr(y_pred_display, 'tolist') else list(y_pred_display)):
+        start = i * stride
+        end = min(start + window_size, n_rows)
+        for j in range(start, end):
+            per_datapoint_preds[j] = pred  # Last window wins for overlapping points
+
+    if window_labels:
+        for i, actual in enumerate(window_labels):
+            start = i * stride
+            end = min(start + window_size, n_rows)
+            for j in range(start, end):
+                per_datapoint_actuals[j] = str(actual)
+
+    # Fill any remaining None (samples not covered by any window)
+    per_datapoint_preds = [p if p is not None else '' for p in per_datapoint_preds]
+    per_datapoint_actuals = [a if a is not None else '' for a in per_datapoint_actuals]
+
     result: Dict[str, Any] = {
         'predictions': y_pred_display.tolist(),
         'actuals': [str(l) for l in window_labels] if window_labels else None,
+        'datapoints': per_datapoint_preds,
+        'datapoint_actuals': per_datapoint_actuals if window_labels else None,
         'num_windows': len(y_pred_display),
+        'num_datapoints': n_rows,
+        'window_size': window_size,
+        'stride': stride,
         'pipeline_steps': ['load_csv', 'windowing', 'normalize',
                            'feature_extract', 'scale', 'predict'],
     }

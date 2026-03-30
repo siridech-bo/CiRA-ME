@@ -1608,36 +1608,38 @@ function downloadEvalCsv() {
   const mode = evalModel.value?.mode || 'classification'
   const modelName = evalModel.value?.name || 'model'
 
-  const preds = evalResult.value.predictions || []
-  const actuals = evalResult.value.actuals || []
-  const probs = evalResult.value.probabilities || []
-  const hasActuals = actuals.length === preds.length
+  // Use per-datapoint data (expanded from windows)
+  const dpPreds = evalResult.value.datapoints || evalResult.value.predictions || []
+  const dpActuals = evalResult.value.datapoint_actuals || evalResult.value.actuals || []
+  const hasActuals = dpActuals.length === dpPreds.length && dpActuals.some((a: any) => a)
 
   // Header row
   if (mode === 'regression') {
     rows.push(hasActuals ? 'datapoint,actual,prediction,residual' : 'datapoint,prediction')
   } else {
-    rows.push(hasActuals ? 'datapoint,actual,prediction,correct,confidence' : 'datapoint,prediction,confidence')
+    rows.push(hasActuals ? 'datapoint,actual,prediction,correct' : 'datapoint,prediction')
   }
 
-  // Data rows — one row per window
-  for (let i = 0; i < preds.length; i++) {
+  // Data rows — one row per original data sample
+  for (let i = 0; i < dpPreds.length; i++) {
+    const pred = dpPreds[i]
+    if (pred === '' || pred == null) continue // Skip uncovered points
+
     if (mode === 'regression') {
-      if (hasActuals) {
-        const actual = parseFloat(actuals[i])
-        const pred = parseFloat(preds[i] as any)
-        const residual = (actual - pred).toFixed(6)
-        rows.push(`${i},${actual},${pred},${residual}`)
+      if (hasActuals && dpActuals[i]) {
+        const actual = parseFloat(dpActuals[i])
+        const predVal = parseFloat(pred as any)
+        const residual = (actual - predVal).toFixed(6)
+        rows.push(`${i},${actual},${predVal},${residual}`)
       } else {
-        rows.push(`${i},${preds[i]}`)
+        rows.push(`${i},${pred}`)
       }
     } else {
-      const conf = probs[i] ? Math.max(...probs[i]).toFixed(4) : ''
-      if (hasActuals) {
-        const correct = String(actuals[i]).toLowerCase() === String(preds[i]).toLowerCase() ? 'YES' : 'NO'
-        rows.push(`${i},${actuals[i]},${preds[i]},${correct},${conf}`)
+      if (hasActuals && dpActuals[i]) {
+        const correct = String(dpActuals[i]).toLowerCase() === String(pred).toLowerCase() ? 'YES' : 'NO'
+        rows.push(`${i},${dpActuals[i]},${pred},${correct}`)
       } else {
-        rows.push(`${i},${preds[i]},${conf}`)
+        rows.push(`${i},${pred}`)
       }
     }
   }
