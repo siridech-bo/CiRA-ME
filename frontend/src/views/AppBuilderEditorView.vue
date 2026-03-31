@@ -411,6 +411,20 @@
                 <div class="multiselect-count">
                   {{ (getConfigVal(selectedNode, field) || []).length }} selected
                 </div>
+
+                <!-- Auto-configure button for multi-model endpoint selection -->
+                <v-btn
+                  v-if="selectedNode?.type === 'output.multi_model_compare' && field.key === 'endpoint_ids' && (getConfigVal(selectedNode, field) || []).length > 0"
+                  block
+                  size="x-small"
+                  variant="outlined"
+                  color="purple"
+                  class="mt-2"
+                  @click="autoConfigureFromMultiModel"
+                >
+                  <v-icon start size="12">mdi-auto-fix</v-icon>
+                  Auto-configure Feature Extract
+                </v-btn>
               </div>
             </div>
           </div>
@@ -1088,6 +1102,29 @@ function autoConfigureFeatures() {
       n.config.features = [...names]
     }
   })
+}
+
+function autoConfigureFromMultiModel() {
+  // Get feature names from the first selected endpoint
+  const multiNode = nodes.value.find(n => n.type === 'output.multi_model_compare')
+  if (!multiNode) return
+  const endpointIds = multiNode.config?.endpoint_ids || []
+  if (endpointIds.length === 0) return
+
+  // Find the first endpoint with feature_names
+  for (const eidStr of endpointIds) {
+    const eid = eidStr.split(':')[0]
+    // Look in capabilities for model.endpoint.{eid}
+    const cap = capabilities.value[`model.endpoint.${eid}`]
+    if (cap?.feature_names?.length > 0) {
+      nodes.value.forEach(n => {
+        if (n.type === 'transform.feature_extract') {
+          n.config.features = [...cap.feature_names]
+        }
+      })
+      return
+    }
+  }
 }
 
 // ── Clipboard ────────────────────────────────────────────────────
