@@ -456,6 +456,52 @@ const TEMPLATES = [
       { id: 'n6', type: 'output.signal_recorder', config: { labels: 'idle, wave, snake, updown', target_sample_rate: 62.5, max_duration: 300, file_prefix: 'sensor_data' } },
     ],
   },
+  // ── Multi-Model Comparison Templates ──
+  {
+    id: 'multi_regression',
+    name: 'Multi-Model Regression',
+    description: 'CSV → Compare up to 5 regression models side-by-side',
+    icon: 'mdi-compare-horizontal',
+    color: '#f59e0b',
+    nodeLabels: ['CSV', 'Normalize', 'Window', 'Features', 'Multi-Compare'],
+    nodes: [
+      { id: 'n1', type: 'input.csv_upload', config: { timestamp_col: 'timestamp', value_cols: 'value' } },
+      { id: 'n2', type: 'transform.normalize', config: { method: 'minmax' } },
+      { id: 'n3', type: 'transform.window', config: { window_size: 32, step: 16 } },
+      { id: 'n4', type: 'transform.feature_extract', config: { features: [] } },
+      { id: 'n6', type: 'output.multi_model_compare', config: { endpoint_ids: [], target_column: '', show_chart: true, show_metrics: true } },
+    ],
+  },
+  {
+    id: 'multi_classification',
+    name: 'Multi-Model Classification',
+    description: 'CSV → Compare up to 5 classification models side-by-side',
+    icon: 'mdi-compare-horizontal',
+    color: '#f59e0b',
+    nodeLabels: ['CSV', 'Normalize', 'Window', 'Features', 'Multi-Compare'],
+    nodes: [
+      { id: 'n1', type: 'input.csv_upload', config: { timestamp_col: 'timestamp', value_cols: 'value' } },
+      { id: 'n2', type: 'transform.normalize', config: { method: 'minmax' } },
+      { id: 'n3', type: 'transform.window', config: { window_size: 128, step: 64 } },
+      { id: 'n4', type: 'transform.feature_extract', config: { features: [] } },
+      { id: 'n6', type: 'output.multi_model_compare', config: { endpoint_ids: [], target_column: '', show_chart: true, show_metrics: true } },
+    ],
+  },
+  {
+    id: 'live_multi_model',
+    name: 'Live Multi-Model',
+    description: 'MQTT → Compare up to 5 models in real-time',
+    icon: 'mdi-compare-horizontal',
+    color: '#f59e0b',
+    nodeLabels: ['MQTT', 'Normalize', 'Window', 'Features', 'Multi-Compare'],
+    nodes: [
+      { id: 'n1', type: 'input.live_stream', config: { broker_url: 'ws://localhost:9001/mqtt', topic: 'sensors/#', channels: '' } },
+      { id: 'n2', type: 'transform.normalize', config: { method: 'minmax' } },
+      { id: 'n3', type: 'transform.window', config: { window_size: 32, step: 16 } },
+      { id: 'n4', type: 'transform.feature_extract', config: { features: [] } },
+      { id: 'n6', type: 'output.multi_model_compare', config: { endpoint_ids: [], target_column: '', show_chart: true, show_metrics: true } },
+    ],
+  },
   // ── Blank ──
   {
     id: 'blank',
@@ -655,7 +701,8 @@ async function createApp() {
     const nodes = tpl ? JSON.parse(JSON.stringify(tpl.nodes)) : []
 
     // Auto-insert first active ME-LAB endpoint as model node (between feature_extract and output)
-    if (tpl && tpl.id !== 'blank' && tpl.id !== 'mqtt_recorder') {
+    const skipModelInsert = ['blank', 'mqtt_recorder', 'multi_regression', 'multi_classification', 'live_multi_model']
+    if (tpl && !skipModelInsert.includes(tpl.id)) {
       try {
         const epResp = await api.get('/api/melab/endpoints')
         const endpoints = (epResp.data || []).filter((e: any) => e.status === 'active')

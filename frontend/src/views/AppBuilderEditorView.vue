@@ -721,6 +721,7 @@ const STATIC_CAPS = {
   'output.alert_badge':        { label: 'Alert Badge',     icon: 'mdi-shield-alert',          color: '#94a3b8', category: 'Output',    inputs: ['anomaly_result'], configSchema: [{ key: 'label_normal', label: 'Normal Label', type: 'text', default: 'Normal' }, { key: 'label_anomaly', label: 'Anomaly Label', type: 'text', default: 'Anomaly Detected' }, { key: 'webhook_url', label: 'Webhook URL', type: 'text', default: '' }] },
   'output.table':              { label: 'Table View',      icon: 'mdi-table',                 color: '#94a3b8', category: 'Output',    inputs: ['classification_result','regression_result'], configSchema: [{ key: 'max_rows', label: 'Max Rows', type: 'number', default: 50 }, { key: 'show_confidence', label: 'Show Confidence', type: 'toggle', default: true }] },
   'output.signal_recorder':    { label: 'Signal Recorder', icon: 'mdi-record-circle',         color: '#ef4444', category: 'Output',    inputs: ['timeseries'], configSchema: [{ key: 'labels', label: 'Label Names (comma-separated)', type: 'text', default: 'idle, wave, snake, updown' }, { key: 'target_sample_rate', label: 'Target Sample Rate (Hz)', type: 'number', default: 62.5 }, { key: 'max_duration', label: 'Max Duration (seconds)', type: 'number', default: 300 }, { key: 'file_prefix', label: 'File Name Prefix', type: 'text', default: 'sensor_data' }] },
+  'output.multi_model_compare': { label: 'Multi-Model Compare', icon: 'mdi-compare-horizontal', color: '#f59e0b', category: 'Output', inputs: ['features'], configSchema: [{ key: 'endpoint_ids', label: 'Model Endpoints (select up to 5)', type: 'multiselect', options: [], default: [] }, { key: 'target_column', label: 'Target Column (ground truth)', type: 'text', default: '' }, { key: 'show_chart', label: 'Show Comparison Chart', type: 'toggle', default: true }, { key: 'show_metrics', label: 'Show Metrics Table', type: 'toggle', default: true }] },
 }
 
 const PALETTE_ORDER = ['Input', 'Transform', 'Model', 'Output']
@@ -1005,6 +1006,12 @@ async function discoverTopics() {
 }
 
 function getMultiselectOptions(node, field) {
+  // For multi_model_compare endpoint selection
+  if (node?.type === 'output.multi_model_compare' && field.key === 'endpoint_ids') {
+    return melabEndpoints.value
+      .filter(e => e.status === 'active')
+      .map(e => e.id + ':' + e.name)
+  }
   // For feature_extract nodes, merge generic features with model-required features
   if (node?.type === 'transform.feature_extract' && field.key === 'features') {
     const baseOptions = new Set(field.options || [])

@@ -474,6 +474,35 @@ def run_app(slug):
                 current_data = _run_model_inference(endpoint_id, current_data)
                 logger.info(f"[AppBuilder] After model inference: {len(current_data)} predictions")
 
+            elif ntype == 'output.multi_model_compare':
+                # Run multiple models on the same feature data
+                endpoint_ids_raw = params.get('endpoint_ids', [])
+                # Parse "id:name" format
+                endpoint_ids = [eid.split(':')[0] for eid in endpoint_ids_raw if eid]
+                if endpoint_ids and isinstance(current_data, np.ndarray):
+                    multi_results = {}
+                    for eid in endpoint_ids[:5]:  # Max 5
+                        try:
+                            ep = MeLabEndpoint.get_by_id(eid)
+                            if not ep or ep['status'] != 'active':
+                                continue
+                            model_mode = model_mode or ep.get('mode')
+                            preds = _run_model_inference(eid, current_data.copy())
+                            multi_results[eid] = {
+                                'name': ep.get('name', eid),
+                                'algorithm': ep.get('algorithm', ''),
+                                'mode': ep.get('mode', ''),
+                                'predictions': preds,
+                            }
+                        except Exception as me:
+                            multi_results[eid] = {
+                                'name': eid,
+                                'error': str(me),
+                            }
+                    # Store multi results — will be used in response building
+                    current_data = multi_results
+                continue
+
             elif ntype.startswith('output.'):
                 continue
 
@@ -487,14 +516,70 @@ def run_app(slug):
 
     latency_ms = (time.time() - start_time) * 1000
 
-    # Format response based on model predictions
+    # Check if this is a multi-model comparison result
+    is_multi = isinstance(current_data, dict) and all(
+        isinstance(v, dict) and 'predictions' in v or 'error' in v
+        for v in current_data.values()
+    ) if isinstance(current_data, dict) else False
+
+    if is_multi:
+        # Multi-model response
+        AppBuilderApp.increment_calls(app['id'])
+        multi_response = {
+            'app': app['name'],
+            'slug': slug,
+            'mode': model_mode,
+            'multi_model': True,
+            'actual': actual_values if actual_values else None,
+            'models': {},
+            'latency_ms': round(latency_ms, 1),
+        }
+
+        for eid, mresult in current_data.items():
+            if 'error' in mresult:
+                multi_response['models'][eid] = {'name': mresult.get('name', eid), 'error': mresult['error']}
+                continue
+
+            preds = mresult['predictions']
+            pred_vals = []
+            for p in preds:
+                if isinstance(p, dict):
+                    pred_vals.append(p.get('value', p.get('label', p)))
+                else:
+                    pred_vals.append(p)
+
+            model_entry = {
+                'name': mresult.get('name', eid),
+                'algorithm': mresult.get('algorithm', ''),
+                'mode': mresult.get('mode', model_mode),
+                'predictions': pred_vals,
+                'count': len(pred_vals),
+            }
+
+            # Compute metrics if actual values available
+            if model_mode == 'regression' and actual_values and len(actual_values) == len(pred_vals):
+                vals = [v for v in pred_vals if isinstance(v, (int, float))]
+                acts = actual_values[:len(vals)]
+                if vals:
+                    acts_arr = np.array(acts)
+                    preds_arr = np.array(vals)
+                    ss_res = np.sum((acts_arr - preds_arr) ** 2)
+                    ss_tot = np.sum((acts_arr - np.mean(acts_arr)) ** 2)
+                    model_entry['r2'] = float(1 - ss_res / ss_tot) if ss_tot > 0 else 0
+                    model_entry['rmse'] = float(np.sqrt(np.mean((acts_arr - preds_arr) ** 2)))
+                    model_entry['mae'] = float(np.mean(np.abs(acts_arr - preds_arr)))
+
+            multi_response['models'][eid] = model_entry
+
+        return jsonify(multi_response)
+
+    # Format response based on model predictions (single model)
     predictions = []
     if isinstance(current_data, list):
-        predictions = current_data  # List[Dict] from ModelManager.predict()
+        predictions = current_data
     elif isinstance(current_data, np.ndarray):
         predictions = current_data.tolist()
 
-    # Extract prediction values for the frontend
     pred_values = []
     if predictions and isinstance(predictions[0], dict):
         for p in predictions:
@@ -507,10 +592,9 @@ def run_app(slug):
     else:
         pred_values = predictions
 
-    # Build full predictions with metadata for anomaly/classification
     predictions_full = []
     if predictions and isinstance(predictions[0], dict):
-        predictions_full = predictions  # Keep full dicts with label, score, confidence
+        predictions_full = predictions
 
     response = {
         'app': app['name'],

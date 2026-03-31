@@ -316,8 +316,89 @@
         </div>
       </div>
 
-      <!-- Results section -->
-      <div v-if="result" class="app-section">
+      <!-- Multi-Model Comparison Results -->
+      <div v-if="result && result.multi_model" class="app-section">
+        <div class="app-section-title">
+          <v-icon size="16" color="amber">mdi-compare-horizontal</v-icon>
+          Multi-Model Comparison
+          <v-chip size="x-small" color="amber" variant="tonal" class="ml-2">
+            {{ Object.keys(result.models || {}).length }} models
+          </v-chip>
+        </div>
+
+        <!-- Metrics comparison table -->
+        <v-table density="compact" class="mb-4">
+          <thead>
+            <tr>
+              <th>Model</th>
+              <th>Algorithm</th>
+              <template v-if="result.mode === 'regression'">
+                <th class="text-center">R²</th>
+                <th class="text-center">RMSE</th>
+                <th class="text-center">MAE</th>
+              </template>
+              <template v-else>
+                <th class="text-center">Predictions</th>
+              </template>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="(m, eid) in result.models" :key="eid" :class="{ 'bg-amber-darken-4': m.r2 === bestR2 }">
+              <td class="font-weight-medium">
+                {{ m.name }}
+                <v-icon v-if="m.r2 === bestR2 && result.mode === 'regression'" size="14" color="amber" class="ml-1">mdi-trophy</v-icon>
+              </td>
+              <td class="text-caption">{{ m.algorithm }}</td>
+              <template v-if="result.mode === 'regression'">
+                <td class="text-center" :style="{ color: m.r2 > 0.8 ? '#34d399' : m.r2 > 0.5 ? '#fbbf24' : '#f87171' }">
+                  {{ m.r2 != null ? m.r2.toFixed(4) : '-' }}
+                </td>
+                <td class="text-center">{{ m.rmse != null ? m.rmse.toFixed(4) : '-' }}</td>
+                <td class="text-center">{{ m.mae != null ? m.mae.toFixed(4) : '-' }}</td>
+              </template>
+              <template v-else>
+                <td class="text-center">{{ m.count || 0 }}</td>
+              </template>
+            </tr>
+          </tbody>
+        </v-table>
+
+        <!-- Multi-model chart (regression) -->
+        <div v-if="result.mode === 'regression' && multiChartData.length > 0" class="chart-container">
+          <div class="chart-header">
+            <span class="chart-title-text">Model Predictions Comparison</span>
+          </div>
+          <svg :viewBox="`0 0 ${chartWidth} ${chartHeight + 20}`" class="prediction-chart">
+            <line v-for="i in 4" :key="'g'+i"
+              :x1="chartPadding" :y1="chartPadding + (i-1) * (chartInnerH / 3)"
+              :x2="chartWidth - chartPadding" :y2="chartPadding + (i-1) * (chartInnerH / 3)"
+              stroke="#21262d" stroke-width="0.5" />
+            <!-- Actual line -->
+            <path v-if="multiActualPath" :d="multiActualPath" fill="none" stroke="#22d3ee" stroke-width="2" />
+            <!-- Model lines -->
+            <path v-for="(mp, idx) in multiModelPaths" :key="'mp'+idx"
+              :d="mp.path" fill="none" :stroke="mp.color" stroke-width="1.5"
+              :stroke-dasharray="idx > 0 ? '4,2' : 'none'" />
+          </svg>
+          <div class="chart-legend-items" style="margin-top:4px; flex-wrap: wrap;">
+            <span v-if="result.actual" class="chart-legend-dot" style="background: #22d3ee"></span>
+            <span v-if="result.actual" class="chart-legend-label">Actual</span>
+            <template v-for="(mp, idx) in multiModelPaths" :key="'leg'+idx">
+              <span class="chart-legend-dot" :style="{ background: mp.color }"></span>
+              <span class="chart-legend-label">{{ mp.name }}</span>
+            </template>
+          </div>
+        </div>
+
+        <!-- Download CSV -->
+        <v-btn color="success" variant="tonal" size="small" class="mt-3" @click="downloadMultiModelCsv">
+          <v-icon start size="small">mdi-download</v-icon>
+          Download Comparison CSV
+        </v-btn>
+      </div>
+
+      <!-- Single Model Results section -->
+      <div v-else-if="result" class="app-section">
         <div class="app-section-title">
           <v-icon size="16" color="success">mdi-chart-line</v-icon>
           Results
@@ -653,6 +734,98 @@ onMounted(async () => {
   }
   loading.value = false
 })
+
+// Multi-model comparison
+const MULTI_COLORS = ['#a78bfa', '#f59e0b', '#34d399', '#f87171', '#60a5fa']
+
+const bestR2 = computed(() => {
+  if (!result.value?.multi_model || !result.value?.models) return null
+  let best = -Infinity
+  for (const m of Object.values(result.value.models)) {
+    if (m.r2 != null && m.r2 > best) best = m.r2
+  }
+  return best > -Infinity ? best : null
+})
+
+const multiChartData = computed(() => {
+  if (!result.value?.multi_model || !result.value?.models) return []
+  return Object.entries(result.value.models)
+    .filter(([, m]) => m.predictions && m.predictions.length > 0)
+    .map(([eid, m], idx) => ({
+      eid, name: m.name,
+      predictions: m.predictions.filter(v => typeof v === 'number'),
+      color: MULTI_COLORS[idx % MULTI_COLORS.length],
+    }))
+})
+
+const multiAllValues = computed(() => {
+  const all = []
+  for (const mc of multiChartData.value) all.push(...mc.predictions)
+  if (result.value?.actual) all.push(...result.value.actual)
+  return all.filter(v => typeof v === 'number')
+})
+
+const multiMinY = computed(() => multiAllValues.value.length ? Math.min(...multiAllValues.value) * 0.98 : 0)
+const multiMaxY = computed(() => multiAllValues.value.length ? Math.max(...multiAllValues.value) * 1.02 : 1)
+const multiRangeY = computed(() => multiMaxY.value - multiMinY.value || 1)
+
+function multiChartX(i, total) {
+  return chartPadding + (i / (total - 1 || 1)) * chartInnerW
+}
+function multiChartY(v) {
+  return chartPadding + chartInnerH - ((v - multiMinY.value) / multiRangeY.value) * chartInnerH
+}
+
+const multiActualPath = computed(() => {
+  const actuals = result.value?.actual
+  if (!actuals || actuals.length === 0) return ''
+  const ds = actuals.length <= 200 ? actuals : Array.from({length:200}, (_,i) => actuals[Math.floor(i*actuals.length/200)])
+  return ds.map((v,i) => `${i===0?'M':'L'}${multiChartX(i,ds.length).toFixed(1)},${multiChartY(v).toFixed(1)}`).join(' ')
+})
+
+const multiModelPaths = computed(() => {
+  return multiChartData.value.map(mc => {
+    const ds = mc.predictions.length <= 200 ? mc.predictions : Array.from({length:200}, (_,i) => mc.predictions[Math.floor(i*mc.predictions.length/200)])
+    const path = ds.map((v,i) => `${i===0?'M':'L'}${multiChartX(i,ds.length).toFixed(1)},${multiChartY(v).toFixed(1)}`).join(' ')
+    return { name: mc.name, color: mc.color, path }
+  })
+})
+
+function downloadMultiModelCsv() {
+  if (!result.value?.multi_model || !result.value?.models) return
+  const models = Object.values(result.value.models).filter(m => m.predictions)
+  const actuals = result.value.actual || []
+  const maxLen = Math.max(...models.map(m => m.predictions?.length || 0), actuals.length)
+
+  const header = ['datapoint']
+  if (actuals.length > 0) header.push('actual')
+  for (const m of models) header.push(m.name || 'model')
+
+  const rows = [header.join(',')]
+  for (let i = 0; i < maxLen; i++) {
+    const row = [i]
+    if (actuals.length > 0) row.push(actuals[i] != null ? actuals[i] : '')
+    for (const m of models) row.push(m.predictions?.[i] != null ? m.predictions[i] : '')
+    rows.push(row.join(','))
+  }
+
+  // Summary
+  rows.push('')
+  rows.push('--- Metrics ---')
+  rows.push('model,r2,rmse,mae')
+  for (const m of models) {
+    rows.push(`${m.name},${m.r2 ?? ''},${m.rmse ?? ''},${m.mae ?? ''}`)
+  }
+
+  const csv = rows.join('\n')
+  const blob = new Blob([csv], { type: 'text/csv' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `multi_model_comparison_${new Date().toISOString().slice(0,10)}.csv`
+  a.click()
+  URL.revokeObjectURL(url)
+}
 
 const fileInput = ref(null)
 
