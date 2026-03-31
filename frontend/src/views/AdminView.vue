@@ -209,6 +209,51 @@
             label="Active"
             color="success"
           />
+
+          <!-- User Quotas -->
+          <v-divider class="my-3" />
+          <div class="text-subtitle-2 font-weight-bold mb-2">Quotas</div>
+          <v-row dense>
+            <v-col cols="4">
+              <v-text-field
+                v-model.number="userForm.max_folder_mb"
+                label="Folder Size (MB)"
+                type="number"
+                :min="50"
+                :max="10000"
+                density="compact"
+                variant="outlined"
+                hint="Max private folder size"
+                persistent-hint
+              />
+            </v-col>
+            <v-col cols="4">
+              <v-text-field
+                v-model.number="userForm.max_endpoints"
+                label="Max Endpoints"
+                type="number"
+                :min="1"
+                :max="100"
+                density="compact"
+                variant="outlined"
+                hint="ME-LAB endpoints"
+                persistent-hint
+              />
+            </v-col>
+            <v-col cols="4">
+              <v-text-field
+                v-model.number="userForm.max_apps"
+                label="Max Apps"
+                type="number"
+                :min="1"
+                :max="100"
+                density="compact"
+                variant="outlined"
+                hint="Published web apps"
+                persistent-hint
+              />
+            </v-col>
+          </v-row>
         </v-card-text>
         <v-card-actions>
           <v-spacer />
@@ -346,7 +391,10 @@ const userForm = reactive({
   display_name: '',
   role: 'annotator',
   private_folder: '',
-  is_active: true
+  is_active: true,
+  max_folder_mb: 500,
+  max_endpoints: 5,
+  max_apps: 10,
 })
 
 const userHeaders = [
@@ -354,6 +402,9 @@ const userHeaders = [
   { title: 'Display Name', key: 'display_name' },
   { title: 'Role', key: 'role' },
   { title: 'Private Folder', key: 'private_folder' },
+  { title: 'Folder MB', key: 'max_folder_mb' },
+  { title: 'Endpoints', key: 'max_endpoints' },
+  { title: 'Apps', key: 'max_apps' },
   { title: 'Active', key: 'is_active' },
   { title: 'Actions', key: 'actions', sortable: false }
 ]
@@ -408,7 +459,10 @@ function openEditDialog(user: User) {
     display_name: user.display_name,
     role: user.role,
     private_folder: user.private_folder || '',
-    is_active: user.is_active
+    is_active: user.is_active,
+    max_folder_mb: user.max_folder_mb || 500,
+    max_endpoints: user.max_endpoints || 5,
+    max_apps: user.max_apps || 10,
   })
   userDialog.value = true
 }
