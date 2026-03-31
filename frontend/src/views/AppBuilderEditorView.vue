@@ -1117,11 +1117,14 @@ function autoConfigureFeatures() {
     if (n.type === 'transform.feature_extract') {
       n.config.features = [...names]
     }
+    // Auto-fill target column on Line Chart
+    if (n.type === 'output.line_chart' && selectedCap.value.target_column && !n.config.target_column) {
+      n.config.target_column = selectedCap.value.target_column
+    }
   })
 }
 
 function autoConfigureFromMultiModel() {
-  // Get feature names from the first selected endpoint
   const multiNode = nodes.value.find(n => n.type === 'output.multi_model_compare')
   if (!multiNode) return
   const endpointIds = multiNode.config?.endpoint_ids || []
@@ -1129,24 +1132,27 @@ function autoConfigureFromMultiModel() {
 
   for (const eidStr of endpointIds) {
     const eid = eidStr.split(':')[0]
-    // Check capabilities first (if model node exists)
     const cap = capabilities.value[`model.endpoint.${eid}`]
-    if (cap?.feature_names?.length > 0) {
-      nodes.value.forEach(n => {
-        if (n.type === 'transform.feature_extract') {
-          n.config.features = [...cap.feature_names]
-        }
-      })
-      return
-    }
-    // Check melabEndpoints directly
     const ep = melabEndpoints.value.find(e => e.id === eid)
-    if (ep?.feature_names?.length > 0) {
+    const featureNames = cap?.feature_names || ep?.feature_names || []
+    const targetCol = cap?.target_column || ep?.target_column || null
+
+    if (featureNames.length > 0) {
+      // Auto-fill Feature Extract
       nodes.value.forEach(n => {
         if (n.type === 'transform.feature_extract') {
-          n.config.features = [...ep.feature_names]
+          n.config.features = [...featureNames]
         }
       })
+      // Auto-fill target column
+      if (targetCol && !multiNode.config.target_column) {
+        multiNode.config.target_column = targetCol
+      }
+      // For classification without target_column, set 'label' as default
+      const mode = cap?.mode || ep?.mode
+      if (mode === 'classification' && !multiNode.config.target_column) {
+        multiNode.config.target_column = 'label'
+      }
       return
     }
   }
