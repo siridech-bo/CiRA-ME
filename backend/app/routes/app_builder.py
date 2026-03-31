@@ -164,6 +164,16 @@ def create_app():
     edges = data.get('edges', [])
     access = data.get('access', 'private')
 
+    # Check app quota
+    user = request.current_user
+    max_apps = user.get('max_apps') or 10
+    current_apps = len(AppBuilderApp.get_all(user['id']))
+    if current_apps >= max_apps:
+        return jsonify({
+            'error': f'App limit reached ({current_apps}/{max_apps}). '
+                     f'Delete unused apps or contact admin to increase limit.'
+        }), 403
+
     app_id = AppBuilderApp.create(
         user_id=request.current_user['id'],
         name=name,

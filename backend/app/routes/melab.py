@@ -79,10 +79,10 @@ def create_endpoint():
     if not saved_model_id:
         return jsonify({'error': 'saved_model_id required'}), 400
 
-    # Check quota
+    # Check quota (per-user setting > role default)
     user = request.current_user
     role = user.get('role', 'annotator')
-    limit = ENDPOINT_LIMITS.get(role, 3)
+    limit = user.get('max_endpoints') or ENDPOINT_LIMITS.get(role, 3)
     current_count = MeLabEndpoint.count_active(user['id'])
     if current_count >= limit:
         return jsonify({

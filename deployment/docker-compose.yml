@@ -20,9 +20,9 @@ services:
       - MQTT_BROKER_PORT=1883
 
     volumes:
-      # Persistent data volumes
-      - backend-data:/app/data
-      - backend-models:/app/models
+      # Persistent data on local disk (survives container updates, easy to backup)
+      - ./data/database:/app/data
+      - ./data/models:/app/models
       # Shared folder - put datasets here for customers to access
       - ./shared:/app/datasets/shared
 
@@ -98,7 +98,7 @@ services:
     restart: unless-stopped
     volumes:
       - ./shared:/app/data/datasets/shared
-      - ti-projects:/app/data/projects
+      - ./data/ti-projects:/app/data/projects
     ports:
       - "5200:5200"
     networks:
@@ -123,7 +123,7 @@ services:
     restart: unless-stopped
     volumes:
       - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf
-      - mosquitto-data:/mosquitto/data
+      - ./data/mosquitto:/mosquitto/data
     ports:
       - "1883:1883"
       - "9001:9001"
@@ -135,12 +135,15 @@ services:
           cpus: '0.5'
           memory: 128M
 
-# Named volumes for persistent data
-volumes:
-  backend-data:
-  backend-models:
-  ti-projects:
-  mosquitto-data:
+# All data is stored in ./data/ folder on the host disk:
+#   data/database/  — SQLite database (users, models, endpoints, apps)
+#   data/models/    — Trained model files (.pkl, .onnx)
+#   data/ti-projects/ — TI ModelMaker training projects
+#   data/mosquitto/ — MQTT broker persistent data
+#   shared/         — Datasets uploaded by users
+#
+# To backup: copy the entire data/ and shared/ folders
+# To restore: copy them back before starting
 
 # Network for service communication
 networks:

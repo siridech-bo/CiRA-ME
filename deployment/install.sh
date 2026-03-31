@@ -82,6 +82,10 @@ echo
 # Create folders and config
 echo "[4/4] Setting up folders and configuration..."
 mkdir -p shared
+mkdir -p data/database
+mkdir -p data/models
+mkdir -p data/ti-projects
+mkdir -p data/mosquitto
 mkdir -p mosquitto
 
 if [ ! -f "mosquitto/mosquitto.conf" ]; then

@@ -21,8 +21,8 @@ services:
       - MQTT_BROKER_PORT=1883
 
     volumes:
-      - backend-data:/app/data
-      - backend-models:/app/models
+      - ./data/database:/app/data
+      - ./data/models:/app/models
       - ./shared:/app/datasets/shared
 
     ports:
@@ -83,7 +83,7 @@ services:
     restart: unless-stopped
     volumes:
       - ./shared:/app/data/datasets/shared
-      - ti-projects:/app/data/projects
+      - ./data/ti-projects:/app/data/projects
     ports:
       - "5200:5200"
     networks:
@@ -107,7 +107,7 @@ services:
     restart: unless-stopped
     volumes:
       - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf
-      - mosquitto-data:/mosquitto/data
+      - ./data/mosquitto:/mosquitto/data
     ports:
       - "1883:1883"
       - "9001:9001"
@@ -118,12 +118,6 @@ services:
         limits:
           cpus: '0.5'
           memory: 128M
-
-volumes:
-  backend-data:
-  backend-models:
-  ti-projects:
-  mosquitto-data:
 
 networks:
   cirame-network:

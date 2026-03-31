@@ -92,6 +92,10 @@ echo.
 REM Create folders and config
 echo [4/4] Setting up folders and configuration...
 if not exist "shared" mkdir shared
+if not exist "data\database" mkdir data\database
+if not exist "data\models" mkdir data\models
+if not exist "data\ti-projects" mkdir data\ti-projects
+if not exist "data\mosquitto" mkdir data\mosquitto
 if not exist "mosquitto" mkdir mosquitto
 
 if not exist "mosquitto\mosquitto.conf" (

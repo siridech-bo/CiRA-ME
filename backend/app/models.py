@@ -156,6 +156,20 @@ def init_db(db_path: str):
             )
         ''')
 
+        # Add quota columns to users table (migration-safe)
+        try:
+            cursor.execute('ALTER TABLE users ADD COLUMN max_folder_mb INTEGER DEFAULT 500')
+        except Exception:
+            pass  # Column already exists
+        try:
+            cursor.execute('ALTER TABLE users ADD COLUMN max_endpoints INTEGER DEFAULT 5')
+        except Exception:
+            pass
+        try:
+            cursor.execute('ALTER TABLE users ADD COLUMN max_apps INTEGER DEFAULT 10')
+        except Exception:
+            pass
+
         # Create default admin user if not exists
         cursor.execute('SELECT id FROM users WHERE username = ?', ('admin',))
         if not cursor.fetchone():
@@ -246,7 +260,8 @@ class User:
     def update(user_id: int, **kwargs):
         with get_db() as conn:
             cursor = conn.cursor()
-            allowed_fields = ['display_name', 'role', 'is_active', 'private_folder']
+            allowed_fields = ['display_name', 'role', 'is_active', 'private_folder',
+                              'max_folder_mb', 'max_endpoints', 'max_apps']
             updates = {k: v for k, v in kwargs.items() if k in allowed_fields}
 
             if updates:
