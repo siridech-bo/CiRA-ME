@@ -407,7 +407,7 @@
                   class="multiselect-chip"
                   :class="{ active: (getConfigVal(selectedNode, field) || []).includes(opt) }"
                   @click="toggleMultiselect(selectedNode.id, field.key, opt, getConfigVal(selectedNode, field))"
-                >{{ opt }}</button>
+                >{{ opt.includes(':') ? opt.split(':').slice(1).join(':') : opt }}</button>
                 <div class="multiselect-count">
                   {{ (getConfigVal(selectedNode, field) || []).length }} selected
                 </div>
@@ -896,15 +896,38 @@ const chartAreaD = `${chartPathD} L${chartSx(39)},${chartH} L${chartSx(0)},${cha
 
 // Target column: auto-detect from model's pipeline_config
 const modelTargetColumn = computed(() => {
+  // Check single model node
   const modelNode = nodes.value.find(n => n.type.startsWith('model.endpoint.'))
-  if (!modelNode) return null
-  const cap = capabilities.value[modelNode.type]
-  return cap?.target_column || null
+  if (modelNode) {
+    const cap = capabilities.value[modelNode.type]
+    return cap?.target_column || null
+  }
+  // Check multi-model compare endpoints
+  const multiNode = nodes.value.find(n => n.type === 'output.multi_model_compare')
+  if (multiNode) {
+    const endpointIds = (multiNode.config?.endpoint_ids || [])
+    for (const eidStr of endpointIds) {
+      const eid = eidStr.split(':')[0]
+      const ep = melabEndpoints.value.find(e => e.id === eid)
+      if (ep?.target_column) return ep.target_column
+    }
+  }
+  return null
 })
 
 const targetColumnHint = computed(() => {
   if (modelTargetColumn.value) {
     return `Target column from model: ${modelTargetColumn.value}`
+  }
+  // For classification, suggest label column name
+  const multiNode = nodes.value.find(n => n.type === 'output.multi_model_compare')
+  if (multiNode) {
+    const endpointIds = (multiNode.config?.endpoint_ids || [])
+    for (const eidStr of endpointIds) {
+      const eid = eidStr.split(':')[0]
+      const ep = melabEndpoints.value.find(e => e.id === eid)
+      if (ep?.mode === 'classification') return 'For classification: enter the label column name (e.g., "label")'
+    }
   }
   const modelNode = nodes.value.find(n => n.type.startsWith('model.endpoint.'))
   if (!modelNode) return ''
@@ -1718,13 +1741,13 @@ onMounted(async () => {
 }
 
 .multiselect-chip {
-  padding: 2px 8px;
-  border-radius: 4px;
-  font-size: 10px;
+  padding: 4px 10px;
+  border-radius: 5px;
+  font-size: 12px;
   font-family: monospace;
   border: 1px solid #30363d;
   background: #0d1117;
-  color: #484f58;
+  color: #8b949e;
   cursor: pointer;
   transition: all 0.12s;
 }
