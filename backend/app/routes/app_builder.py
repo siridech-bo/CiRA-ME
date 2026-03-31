@@ -534,17 +534,29 @@ def run_app(slug):
             }
 
             # Compute metrics if actual values available
-            if model_mode == 'regression' and actual_values and len(actual_values) == len(pred_vals):
-                vals = [v for v in pred_vals if isinstance(v, (int, float))]
-                acts = actual_values[:len(vals)]
-                if vals:
-                    acts_arr = np.array(acts)
-                    preds_arr = np.array(vals)
-                    ss_res = np.sum((acts_arr - preds_arr) ** 2)
-                    ss_tot = np.sum((acts_arr - np.mean(acts_arr)) ** 2)
-                    model_entry['r2'] = float(1 - ss_res / ss_tot) if ss_tot > 0 else 0
-                    model_entry['rmse'] = float(np.sqrt(np.mean((acts_arr - preds_arr) ** 2)))
-                    model_entry['mae'] = float(np.mean(np.abs(acts_arr - preds_arr)))
+            if actual_values and len(actual_values) == len(pred_vals):
+                if model_mode == 'regression':
+                    vals = [v for v in pred_vals if isinstance(v, (int, float))]
+                    acts = actual_values[:len(vals)]
+                    if vals:
+                        acts_arr = np.array(acts, dtype=np.float64)
+                        preds_arr = np.array(vals, dtype=np.float64)
+                        ss_res = np.sum((acts_arr - preds_arr) ** 2)
+                        ss_tot = np.sum((acts_arr - np.mean(acts_arr)) ** 2)
+                        model_entry['r2'] = float(1 - ss_res / ss_tot) if ss_tot > 0 else 0
+                        model_entry['rmse'] = float(np.sqrt(np.mean((acts_arr - preds_arr) ** 2)))
+                        model_entry['mae'] = float(np.mean(np.abs(acts_arr - preds_arr)))
+                elif model_mode == 'classification':
+                    from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+                    y_true = [str(a).strip().lower() for a in actual_values]
+                    y_pred = [str(p).strip().lower() for p in pred_vals]
+                    try:
+                        model_entry['accuracy'] = float(accuracy_score(y_true, y_pred))
+                        model_entry['precision'] = float(precision_score(y_true, y_pred, average='weighted', zero_division=0))
+                        model_entry['recall'] = float(recall_score(y_true, y_pred, average='weighted', zero_division=0))
+                        model_entry['f1'] = float(f1_score(y_true, y_pred, average='weighted', zero_division=0))
+                    except Exception:
+                        pass
 
             multi_response['models'][eid] = model_entry
 

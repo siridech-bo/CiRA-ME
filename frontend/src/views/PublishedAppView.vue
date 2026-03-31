@@ -153,7 +153,7 @@
         />
 
         <!-- Live prediction (inference mode) -->
-        <div v-if="livePrediction !== null && !isRecorderMode" class="live-prediction">
+        <div v-if="livePrediction !== null && !isRecorderMode && !isMultiModelApp" class="live-prediction">
           <div class="live-prediction-label">Latest Prediction</div>
           <div class="live-prediction-value" :style="{ color: modeColor }">
             {{ livePrediction }}
@@ -337,16 +337,25 @@
                 <th class="text-center">RMSE</th>
                 <th class="text-center">MAE</th>
               </template>
+              <template v-else-if="result.mode === 'classification'">
+                <th class="text-center">Accuracy</th>
+                <th class="text-center">Precision</th>
+                <th class="text-center">F1</th>
+              </template>
               <template v-else>
                 <th class="text-center">Predictions</th>
               </template>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="(m, eid) in result.models" :key="eid" :class="{ 'bg-amber-darken-4': m.r2 === bestR2 }">
+            <tr v-for="(m, eid) in result.models" :key="eid"
+                :class="{
+                  'bg-amber-darken-4': result.mode === 'regression' ? m.r2 === bestR2 : m.accuracy === bestAccuracy
+                }">
               <td class="font-weight-medium">
                 {{ m.name }}
-                <v-icon v-if="m.r2 === bestR2 && result.mode === 'regression'" size="14" color="amber" class="ml-1">mdi-trophy</v-icon>
+                <v-icon v-if="(result.mode === 'regression' && m.r2 === bestR2) || (result.mode === 'classification' && m.accuracy === bestAccuracy)"
+                        size="14" color="amber" class="ml-1">mdi-trophy</v-icon>
               </td>
               <td class="text-caption">{{ m.algorithm }}</td>
               <template v-if="result.mode === 'regression'">
@@ -355,6 +364,13 @@
                 </td>
                 <td class="text-center">{{ m.rmse != null ? m.rmse.toFixed(4) : '-' }}</td>
                 <td class="text-center">{{ m.mae != null ? m.mae.toFixed(4) : '-' }}</td>
+              </template>
+              <template v-else-if="result.mode === 'classification'">
+                <td class="text-center" :style="{ color: m.accuracy > 0.9 ? '#34d399' : m.accuracy > 0.7 ? '#fbbf24' : '#f87171' }">
+                  {{ m.accuracy != null ? (m.accuracy * 100).toFixed(1) + '%' : '-' }}
+                </td>
+                <td class="text-center">{{ m.precision != null ? (m.precision * 100).toFixed(1) + '%' : '-' }}</td>
+                <td class="text-center">{{ m.f1 != null ? (m.f1 * 100).toFixed(1) + '%' : '-' }}</td>
               </template>
               <template v-else>
                 <td class="text-center">{{ m.count || 0 }}</td>
@@ -747,6 +763,15 @@ const bestR2 = computed(() => {
   return best > -Infinity ? best : null
 })
 
+const bestAccuracy = computed(() => {
+  if (!result.value?.multi_model || !result.value?.models) return null
+  let best = -1
+  for (const m of Object.values(result.value.models)) {
+    if (m.accuracy != null && m.accuracy > best) best = m.accuracy
+  }
+  return best >= 0 ? best : null
+})
+
 const multiChartData = computed(() => {
   if (!result.value?.multi_model || !result.value?.models) return []
   return Object.entries(result.value.models)
@@ -812,9 +837,16 @@ function downloadMultiModelCsv() {
   // Summary
   rows.push('')
   rows.push('--- Metrics ---')
-  rows.push('model,r2,rmse,mae')
-  for (const m of models) {
-    rows.push(`${m.name},${m.r2 ?? ''},${m.rmse ?? ''},${m.mae ?? ''}`)
+  if (result.value?.mode === 'regression') {
+    rows.push('model,r2,rmse,mae')
+    for (const m of models) {
+      rows.push(`${m.name},${m.r2 ?? ''},${m.rmse ?? ''},${m.mae ?? ''}`)
+    }
+  } else {
+    rows.push('model,accuracy,precision,recall,f1')
+    for (const m of models) {
+      rows.push(`${m.name},${m.accuracy ?? ''},${m.precision ?? ''},${m.recall ?? ''},${m.f1 ?? ''}`)
+    }
   }
 
   const csv = rows.join('\n')
@@ -976,6 +1008,10 @@ function stopLiveStream() {
 }
 
 // ── Signal Recorder ─────────────────────────────────
+const isMultiModelApp = computed(() => {
+  return parsedNodes.value.some(n => n.type === 'output.multi_model_compare')
+})
+
 const isRecorderMode = computed(() => {
   return parsedNodes.value.some(n => n.type === 'output.signal_recorder')
 })
@@ -1181,24 +1217,30 @@ async function runLiveInference(windowData) {
     liveInferenceCount.value++
     liveLastUpdated.value = Date.now()
 
-    const preds = resp.data?.predictions || []
-    if (preds.length > 0) {
-      const lastPred = preds[preds.length - 1]
-      livePrediction.value = lastPred
-      // Accumulate for live chart
-      if (typeof lastPred === 'number') {
-        livePredictionHistory.value.push(lastPred)
-        if (livePredictionHistory.value.length > MAX_LIVE_HISTORY) {
-          livePredictionHistory.value = livePredictionHistory.value.slice(-MAX_LIVE_HISTORY)
+    if (resp.data?.multi_model) {
+      // Multi-model response — show comparison results directly
+      const models = resp.data.models || {}
+      const names = Object.values(models).map(m => m.name).join(', ')
+      livePrediction.value = `${Object.keys(models).length} models compared`
+      result.value = resp.data
+    } else {
+      // Single model response
+      const preds = resp.data?.predictions || []
+      if (preds.length > 0) {
+        const lastPred = preds[preds.length - 1]
+        livePrediction.value = lastPred
+        if (typeof lastPred === 'number') {
+          livePredictionHistory.value.push(lastPred)
+          if (livePredictionHistory.value.length > MAX_LIVE_HISTORY) {
+            livePredictionHistory.value = livePredictionHistory.value.slice(-MAX_LIVE_HISTORY)
+          }
         }
       }
-    }
-
-    // Update result with accumulated predictions for chart
-    result.value = {
-      ...resp.data,
-      predictions: livePredictionHistory.value.length > 0 ? [...livePredictionHistory.value] : resp.data?.predictions,
-      count: livePredictionHistory.value.length || resp.data?.count,
+      result.value = {
+        ...resp.data,
+        predictions: livePredictionHistory.value.length > 0 ? [...livePredictionHistory.value] : resp.data?.predictions,
+        count: livePredictionHistory.value.length || resp.data?.count,
+      }
     }
   } catch (e) {
     console.error('Live inference error:', e)
