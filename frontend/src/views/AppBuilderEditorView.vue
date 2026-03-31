@@ -470,12 +470,59 @@
       <!-- Output preview -->
       <main class="preview-main">
         <div class="output-preview-wrap">
-          <div v-if="!previewOutputNode || !previewModelNode" class="output-preview-empty">
+          <div v-if="!previewOutputNode && !previewMultiCompareNode" class="output-preview-empty">
             <v-icon size="32" color="grey">mdi-eye-off-outline</v-icon>
-            <div class="text-caption text-medium-emphasis mt-2">Add a Model endpoint + Output node to preview</div>
+            <div class="text-caption text-medium-emphasis mt-2">Add an Output node to preview</div>
           </div>
 
-          <div v-else>
+          <!-- Multi-model compare preview -->
+          <div v-else-if="previewMultiCompareNode">
+            <div class="browser-bar">
+              <div class="browser-dots">
+                <div class="browser-dot" /><div class="browser-dot" /><div class="browser-dot" />
+              </div>
+              <span class="browser-url">localhost:3030/apps/{{ previewSlug }}</span>
+              <span class="browser-mode-badge" style="color: #f59e0b; background: #f59e0b18;">
+                MULTI-MODEL
+              </span>
+            </div>
+            <div class="browser-body">
+              <div class="browser-app-title mb-3">{{ appName }}</div>
+              <div class="text-caption text-medium-emphasis mb-2">Model Comparison</div>
+              <table style="width:100%; font-size:11px; border-collapse:collapse;">
+                <thead>
+                  <tr style="border-bottom:1px solid #21262d;">
+                    <th style="text-align:left; padding:4px; color:#8b949e;">Model</th>
+                    <th style="text-align:center; padding:4px; color:#8b949e;">R² / Acc</th>
+                    <th style="text-align:center; padding:4px; color:#8b949e;">RMSE / F1</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(eidStr, idx) in (previewMultiCompareNode.config?.endpoint_ids || []).slice(0, 5)" :key="idx"
+                      style="border-bottom:1px solid #161b22;">
+                    <td style="padding:4px; color:#e6edf3;">{{ eidStr.includes(':') ? eidStr.split(':').slice(1).join(':') : eidStr }}</td>
+                    <td style="text-align:center; padding:4px; color:#34d399;">{{ (0.95 - idx * 0.02).toFixed(3) }}</td>
+                    <td style="text-align:center; padding:4px; color:#94a3b8;">{{ (0.5 + idx * 0.1).toFixed(3) }}</td>
+                  </tr>
+                </tbody>
+              </table>
+              <div style="margin-top:12px;">
+                <svg width="100%" height="60" viewBox="0 0 300 60">
+                  <path d="M0,30 Q75,10 150,35 T300,25" fill="none" stroke="#22d3ee" stroke-width="1.5" />
+                  <path d="M0,32 Q75,15 150,33 T300,28" fill="none" stroke="#a78bfa" stroke-width="1" stroke-dasharray="4,2" />
+                  <path d="M0,28 Q75,20 150,38 T300,22" fill="none" stroke="#f59e0b" stroke-width="1" stroke-dasharray="4,2" />
+                </svg>
+                <div class="d-flex gap-2" style="font-size:9px; color:#8b949e;">
+                  <span><span style="color:#22d3ee;">—</span> actual</span>
+                  <span><span style="color:#a78bfa;">- -</span> model 1</span>
+                  <span><span style="color:#f59e0b;">- -</span> model 2</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Single model preview -->
+          <div v-else-if="previewOutputNode && previewModelNode">
             <!-- Browser chrome -->
             <div class="browser-bar">
               <div class="browser-dots">
@@ -891,8 +938,9 @@ function getConfigVal(node, field) {
 
 // ── Preview computeds ─────────────────────────────────────────────
 const previewInputNode  = computed(() => nodes.value.find(n => n.type.startsWith('input.')))
-const previewOutputNode = computed(() => nodes.value.find(n => n.type.startsWith('output.')))
+const previewOutputNode = computed(() => nodes.value.find(n => n.type.startsWith('output.') && n.type !== 'output.multi_model_compare'))
 const previewModelNode  = computed(() => nodes.value.find(n => n.type.startsWith('model.endpoint.')))
+const previewMultiCompareNode = computed(() => nodes.value.find(n => n.type === 'output.multi_model_compare'))
 const previewModelCap   = computed(() => previewModelNode.value ? capabilities.value[previewModelNode.value.type] : null)
 const previewMeta       = computed(() => previewModelCap.value ? MODE_META[previewModelCap.value.mode] : null)
 const previewSlug       = computed(() => (appName.value || '').toLowerCase().replace(/\s+/g, '-'))
