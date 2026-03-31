@@ -1,8 +1,9 @@
 #!/bin/bash
 # CiRA ME - Start Script without GPU (Linux)
+# Starts available services — skips optional ones if image not installed
 
 echo "============================================"
-echo "  CiRA ME - Starting Application (No GPU)"
+echo "  CiRA ME - Starting Application (CPU Only)"
 echo "============================================"
 echo
 
@@ -16,17 +17,28 @@ if ! docker images | grep -q cirame-backend; then
     exit 1
 fi
 
-echo "Starting CiRA ME services (CPU only)..."
-docker compose -f docker-compose-no-gpu.yml up -d
+echo "Starting core services (CPU mode)..."
+docker compose -f docker-compose-no-gpu.yml up -d backend frontend
+
+if docker images | grep -q cirame-ti-modelmaker; then
+    echo "Starting TI ModelMaker..."
+    docker compose -f docker-compose-no-gpu.yml up -d ti-modelmaker
+else
+    echo "Skipped: TI ModelMaker (image not installed)"
+fi
+
+if docker images | grep -q mosquitto; then
+    echo "Starting MQTT Broker..."
+    docker compose -f docker-compose-no-gpu.yml up -d mosquitto
+else
+    echo "Skipped: MQTT Broker (image not installed)"
+fi
 
 echo
 echo "============================================"
-echo "  Application Started!"
+echo "  Application Started (CPU Only)!"
 echo "============================================"
 echo
 echo "  Access at : http://localhost:3030"
 echo "  Login     : admin / admin123"
-echo
-echo "  Logs   : docker compose -f docker-compose-no-gpu.yml logs -f"
-echo "  Stop   : bash stop.sh"
 echo
