@@ -488,9 +488,9 @@ const TEMPLATES = [
     ],
   },
   {
-    id: 'live_multi_model',
-    name: 'Live Multi-Model',
-    description: 'MQTT → Compare up to 5 models in real-time',
+    id: 'live_multi_regression',
+    name: 'Live Multi-Model Regression',
+    description: 'MQTT → Compare up to 5 regression models in real-time',
     icon: 'mdi-compare-horizontal',
     color: '#f59e0b',
     nodeLabels: ['MQTT', 'Normalize', 'Window', 'Features', 'Multi-Compare'],
@@ -498,6 +498,21 @@ const TEMPLATES = [
       { id: 'n1', type: 'input.live_stream', config: { broker_url: 'ws://localhost:9001/mqtt', topic: 'sensors/#', channels: '' } },
       { id: 'n2', type: 'transform.normalize', config: { method: 'minmax' } },
       { id: 'n3', type: 'transform.window', config: { window_size: 32, step: 16 } },
+      { id: 'n4', type: 'transform.feature_extract', config: { features: [] } },
+      { id: 'n6', type: 'output.multi_model_compare', config: { endpoint_ids: [], target_column: '', show_chart: true, show_metrics: true } },
+    ],
+  },
+  {
+    id: 'live_multi_classification',
+    name: 'Live Multi-Model Classification',
+    description: 'MQTT → Compare up to 5 classification models in real-time',
+    icon: 'mdi-compare-horizontal',
+    color: '#f59e0b',
+    nodeLabels: ['MQTT', 'Normalize', 'Window', 'Features', 'Multi-Compare'],
+    nodes: [
+      { id: 'n1', type: 'input.live_stream', config: { broker_url: 'ws://localhost:9001/mqtt', topic: 'sensors/#', channels: '' } },
+      { id: 'n2', type: 'transform.normalize', config: { method: 'minmax' } },
+      { id: 'n3', type: 'transform.window', config: { window_size: 128, step: 64 } },
       { id: 'n4', type: 'transform.feature_extract', config: { features: [] } },
       { id: 'n6', type: 'output.multi_model_compare', config: { endpoint_ids: [], target_column: '', show_chart: true, show_metrics: true } },
     ],
@@ -701,7 +716,7 @@ async function createApp() {
     const nodes = tpl ? JSON.parse(JSON.stringify(tpl.nodes)) : []
 
     // Auto-insert first active ME-LAB endpoint as model node (between feature_extract and output)
-    const skipModelInsert = ['blank', 'mqtt_recorder', 'multi_regression', 'multi_classification', 'live_multi_model']
+    const skipModelInsert = ['blank', 'mqtt_recorder', 'multi_regression', 'multi_classification', 'live_multi_regression', 'live_multi_classification']
     if (tpl && !skipModelInsert.includes(tpl.id)) {
       try {
         const epResp = await api.get('/api/melab/endpoints')
