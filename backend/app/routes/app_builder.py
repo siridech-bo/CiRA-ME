@@ -125,17 +125,8 @@ def list_apps():
     apps = AppBuilderApp.get_all(request.current_user['id'])
     result = []
     for app in apps:
-        # Derive mode from nodes
-        mode = None
-        nodes = app.get('nodes', [])
-        for node in nodes:
-            ntype = node.get('type', '') if isinstance(node, dict) else ''
-            if ntype.startswith('model.endpoint.'):
-                endpoint_id = ntype.replace('model.endpoint.', '')
-                ep = MeLabEndpoint.get_by_id(endpoint_id)
-                if ep:
-                    mode = ep.get('mode')
-                break
+        # Derive mode from nodes (single model or multi-model)
+        mode = _derive_app_mode(app.get('nodes', []))
 
         result.append({
             'id': app['id'],
@@ -206,33 +197,19 @@ def get_app_by_slug(slug):
         return jsonify({'error': 'App not found'}), 404
     if app['status'] != 'published':
         return jsonify({'error': 'App is not published'}), 404
-    # Derive mode from model nodes
     import json as json_mod
     nodes = app.get('nodes', [])
     if isinstance(nodes, str):
         nodes = json_mod.loads(nodes)
-    mode = None
-    algorithm = None
-    sensor_columns = []
-    for node in nodes:
-        if node.get('type', '').startswith('model.endpoint.'):
-            endpoint_id = node['type'].split('.')[-1]
-            endpoint = MeLabEndpoint.get_by_id(endpoint_id)
-            if endpoint:
-                mode = endpoint.get('mode')
-                algorithm = endpoint.get('algorithm')
-                # Get sensor columns from model's pipeline_config
-                saved = SavedModel.get_by_id(endpoint.get('saved_model_id'))
-                if saved:
-                    pc = saved.get('pipeline_config', {})
-                    if isinstance(pc, str):
-                        pc = json_mod.loads(pc) if pc else {}
-                    sensor_columns = pc.get('normalization', {}).get('sensor_columns', [])
-            break
+
+    mode, algorithm, sensor_columns = _derive_app_details(nodes)
+    is_multi = any(n.get('type') == 'output.multi_model_compare' for n in nodes)
+
     result = dict(app)
     result['mode'] = mode
-    result['algorithm'] = algorithm
+    result['algorithm'] = 'multi-model' if is_multi else algorithm
     result['sensor_columns'] = sensor_columns
+    result['multi_model'] = is_multi
     return jsonify(result)
 
 
@@ -796,6 +773,77 @@ def _apply_windowing(data, params):
         windows.append(data[start:start + window_size])
 
     return np.array(windows)
+
+
+def _derive_app_mode(nodes):
+    """Derive the mode from pipeline nodes (single or multi-model)."""
+    if isinstance(nodes, str):
+        nodes = json.loads(nodes)
+
+    # Check single model node
+    for node in nodes:
+        ntype = node.get('type', '') if isinstance(node, dict) else ''
+        if ntype.startswith('model.endpoint.'):
+            eid = ntype.replace('model.endpoint.', '')
+            ep = MeLabEndpoint.get_by_id(eid)
+            if ep:
+                return ep.get('mode')
+
+    # Check multi-model compare endpoints
+    for node in nodes:
+        if isinstance(node, dict) and node.get('type') == 'output.multi_model_compare':
+            endpoint_ids = node.get('config', {}).get('endpoint_ids', [])
+            for eidStr in endpoint_ids:
+                eid = eidStr.split(':')[0]
+                ep = MeLabEndpoint.get_by_id(eid)
+                if ep:
+                    return ep.get('mode')
+
+    # Check for signal recorder
+    for node in nodes:
+        if isinstance(node, dict) and node.get('type') == 'output.signal_recorder':
+            return 'recorder'
+
+    return None
+
+
+def _derive_app_details(nodes):
+    """Derive mode, algorithm, and sensor_columns from pipeline nodes."""
+    mode = None
+    algorithm = None
+    sensor_columns = []
+
+    # Collect endpoint IDs from all sources
+    endpoint_ids = []
+    for node in nodes:
+        ntype = node.get('type', '') if isinstance(node, dict) else ''
+        if ntype.startswith('model.endpoint.'):
+            endpoint_ids.append(ntype.replace('model.endpoint.', ''))
+        if ntype == 'output.multi_model_compare':
+            for eidStr in node.get('config', {}).get('endpoint_ids', []):
+                endpoint_ids.append(eidStr.split(':')[0])
+
+    # Get details from first valid endpoint
+    for eid in endpoint_ids:
+        ep = MeLabEndpoint.get_by_id(eid)
+        if ep:
+            mode = ep.get('mode')
+            algorithm = ep.get('algorithm')
+            saved = SavedModel.get_by_id(ep.get('saved_model_id'))
+            if saved:
+                pc = saved.get('pipeline_config', {})
+                if isinstance(pc, str):
+                    pc = json.loads(pc) if pc else {}
+                sensor_columns = pc.get('normalization', {}).get('sensor_columns', [])
+            break
+
+    # Check signal recorder
+    if not mode:
+        for node in nodes:
+            if isinstance(node, dict) and node.get('type') == 'output.signal_recorder':
+                mode = 'recorder'
+
+    return mode, algorithm, sensor_columns
 
 
 def _extract_sensor_data(df, ordered_nodes):
