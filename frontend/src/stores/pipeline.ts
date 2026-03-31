@@ -92,7 +92,7 @@ interface TrainingSession {
 
 export const usePipelineStore = defineStore('pipeline', () => {
   // Mode
-  const mode = ref<PipelineMode>('anomaly')
+  const mode = ref<PipelineMode>('classification')
 
   // Training approach: 'ml' (feature-based) or 'dl' (TimesNet end-to-end)
   const trainingApproach = ref<TrainingApproach>('ml')
