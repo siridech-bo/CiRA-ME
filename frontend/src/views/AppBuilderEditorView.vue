@@ -1052,12 +1052,28 @@ function getMultiselectOptions(node, field) {
   // For feature_extract nodes, merge generic features with model-required features
   if (node?.type === 'transform.feature_extract' && field.key === 'features') {
     const baseOptions = new Set(field.options || [])
-    // Collect feature names from all model nodes in the pipeline
+    // Collect feature names from single model nodes
     for (const n of nodes.value) {
       if (n.type.startsWith('model.endpoint.')) {
         const cap = capabilities.value[n.type]
         if (cap?.feature_names) {
           cap.feature_names.forEach(f => baseOptions.add(f))
+        }
+      }
+      // Collect from multi-model compare endpoints
+      if (n.type === 'output.multi_model_compare') {
+        const endpointIds = n.config?.endpoint_ids || []
+        for (const eidStr of endpointIds) {
+          const eid = eidStr.split(':')[0]
+          const cap = capabilities.value[`model.endpoint.${eid}`]
+          if (cap?.feature_names) {
+            cap.feature_names.forEach(f => baseOptions.add(f))
+          }
+          // Also check melabEndpoints directly
+          const ep = melabEndpoints.value.find(e => e.id === eid)
+          if (ep?.feature_names) {
+            ep.feature_names.forEach(f => baseOptions.add(f))
+          }
         }
       }
     }
@@ -1111,15 +1127,24 @@ function autoConfigureFromMultiModel() {
   const endpointIds = multiNode.config?.endpoint_ids || []
   if (endpointIds.length === 0) return
 
-  // Find the first endpoint with feature_names
   for (const eidStr of endpointIds) {
     const eid = eidStr.split(':')[0]
-    // Look in capabilities for model.endpoint.{eid}
+    // Check capabilities first (if model node exists)
     const cap = capabilities.value[`model.endpoint.${eid}`]
     if (cap?.feature_names?.length > 0) {
       nodes.value.forEach(n => {
         if (n.type === 'transform.feature_extract') {
           n.config.features = [...cap.feature_names]
+        }
+      })
+      return
+    }
+    // Check melabEndpoints directly
+    const ep = melabEndpoints.value.find(e => e.id === eid)
+    if (ep?.feature_names?.length > 0) {
+      nodes.value.forEach(n => {
+        if (n.type === 'transform.feature_extract') {
+          n.config.features = [...ep.feature_names]
         }
       })
       return
