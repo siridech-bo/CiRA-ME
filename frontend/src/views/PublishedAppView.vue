@@ -406,6 +406,33 @@
           </div>
         </div>
 
+        <!-- Per-window predictions table -->
+        <div class="table-toggle mt-3" @click="showMultiTable = !showMultiTable">
+          <v-icon size="14">{{ showMultiTable ? 'mdi-chevron-down' : 'mdi-chevron-right' }}</v-icon>
+          <span>{{ showMultiTable ? 'Hide' : 'Show' }} per-window predictions ({{ result.num_windows || '?' }} windows)</span>
+        </div>
+        <div v-if="showMultiTable" class="result-table-wrap">
+          <table class="result-table">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th v-if="result.actual">Actual</th>
+                <th v-for="(m, eid) in result.models" :key="'th'+eid">{{ m.name }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="i in Math.min(result.num_windows || 0, 100)" :key="i">
+                <td>{{ i }}</td>
+                <td v-if="result.actual" style="color: #22d3ee;">{{ result.actual[i-1] ?? '-' }}</td>
+                <td v-for="(m, eid) in result.models" :key="'td'+eid+i"
+                    :style="{ color: result.actual && String(result.actual[i-1]).toLowerCase() === String(m.predictions?.[i-1] ?? '').toLowerCase() ? '#34d399' : result.actual ? '#f87171' : '#e6edf3' }">
+                  {{ m.predictions?.[i-1] ?? '-' }}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
         <!-- Download CSV -->
         <v-btn color="success" variant="tonal" size="small" class="mt-3" @click="downloadMultiModelCsv">
           <v-icon start size="small">mdi-download</v-icon>
@@ -752,6 +779,7 @@ onMounted(async () => {
 })
 
 // Multi-model comparison
+const showMultiTable = ref(false)
 const MULTI_COLORS = ['#a78bfa', '#f59e0b', '#34d399', '#f87171', '#60a5fa']
 
 const bestR2 = computed(() => {

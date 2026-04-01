@@ -366,23 +366,42 @@ def run_app(slug):
                     target_col = node.get('config', {}).get('target_column')
                     if target_col:
                         break
-            # Also check model's pipeline_config for target_column
+            # Check model's pipeline_config for target_column
+            # Collect from single model nodes AND multi-model compare endpoints
+            dataset_labels = None
             if not target_col:
+                all_endpoint_ids = []
                 for node in ordered_nodes:
-                    if node.get('type', '').startswith('model.endpoint.'):
-                        eid = node['type'].replace('model.endpoint.', '')
-                        ep = MeLabEndpoint.get_by_id(eid)
-                        if ep:
-                            saved = SavedModel.get_by_id(ep.get('saved_model_id'))
-                            if saved:
-                                pc = saved.get('pipeline_config', {})
-                                if isinstance(pc, str):
-                                    pc = json.loads(pc) if pc else {}
-                                target_col = pc.get('target_column')
+                    ntype = node.get('type', '')
+                    if ntype.startswith('model.endpoint.'):
+                        all_endpoint_ids.append(ntype.replace('model.endpoint.', ''))
+                    if ntype == 'output.multi_model_compare':
+                        for eidStr in node.get('config', {}).get('endpoint_ids', []):
+                            all_endpoint_ids.append(eidStr.split(':')[0])
+                for eid in all_endpoint_ids:
+                    ep = MeLabEndpoint.get_by_id(eid)
+                    if ep:
+                        saved = SavedModel.get_by_id(ep.get('saved_model_id'))
+                        if saved:
+                            pc = saved.get('pipeline_config', {})
+                            if isinstance(pc, str):
+                                pc = json.loads(pc) if pc else {}
+                            target_col = target_col or pc.get('target_column')
+                            # Get dataset labels for integer label decoding
+                            di = saved.get('dataset_info', {})
+                            if isinstance(di, str):
+                                di = json.loads(di) if di else {}
+                            if di.get('labels'):
+                                dataset_labels = sorted([str(l) for l in di['labels']])
                         break
 
             if target_col and target_col in current_data.columns:
                 raw_target = current_data[target_col].values
+                # Decode integer labels using dataset_labels
+                if dataset_labels and pd.api.types.is_numeric_dtype(current_data[target_col]):
+                    max_idx = int(current_data[target_col].max())
+                    if max_idx < len(dataset_labels):
+                        raw_target = np.array([dataset_labels[int(v)] for v in raw_target])
                 logger.info(f"[AppBuilder] Target column '{target_col}': {len(raw_target)} values")
             else:
                 raw_target = None
@@ -502,12 +521,20 @@ def run_app(slug):
     if is_multi:
         # Multi-model response
         AppBuilderApp.increment_calls(app['id'])
+        # Count windows from first model's predictions
+        first_model_count = 0
+        for mresult in current_data.values():
+            if 'predictions' in mresult:
+                first_model_count = len(mresult['predictions'])
+                break
+
         multi_response = {
             'app': app['name'],
             'slug': slug,
             'mode': model_mode,
             'multi_model': True,
             'actual': actual_values if actual_values else None,
+            'num_windows': first_model_count,
             'models': {},
             'latency_ms': round(latency_ms, 1),
         }
