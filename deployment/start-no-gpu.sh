@@ -18,7 +18,11 @@ if ! docker images | grep -q cirame-backend; then
 fi
 
 echo "Starting core services (CPU mode)..."
-docker compose -f docker-compose-no-gpu.yml up -d backend frontend
+if ! docker compose -f docker-compose-no-gpu.yml up -d backend frontend; then
+    echo "ERROR: Failed to start core services."
+    echo "Check logs: docker compose -f docker-compose-no-gpu.yml logs"
+    exit 1
+fi
 
 if docker images | grep -q cirame-ti-modelmaker; then
     echo "Starting TI ModelMaker..."
@@ -39,6 +43,12 @@ echo "============================================"
 echo "  Application Started (CPU Only)!"
 echo "============================================"
 echo
+echo "Services running:"
+docker compose -f docker-compose-no-gpu.yml ps 2>/dev/null
+echo
 echo "  Access at : http://localhost:3030"
 echo "  Login     : admin / admin123"
+echo
+echo "  Logs   : docker compose logs -f"
+echo "  Stop   : bash stop.sh"
 echo

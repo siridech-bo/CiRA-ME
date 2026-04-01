@@ -3,8 +3,6 @@
 # Saves currently running Docker images as .tar files for customer deployment
 # Does NOT rebuild — exports exactly what is running now
 
-set -e
-
 echo "============================================"
 echo "  CiRA ME - Export Docker Images"
 echo "============================================"
@@ -23,12 +21,18 @@ echo
 
 # Save required images
 echo "[1/4] Saving backend image (this may take a few minutes)..."
-docker save cirame-backend:latest -o "$DEPLOY_DIR/cirame-backend.tar"
+if ! docker save cirame-backend:latest -o "$DEPLOY_DIR/cirame-backend.tar"; then
+    echo "  ERROR: Failed to save backend image. Is it built?"
+    exit 1
+fi
 echo "  Saved: cirame-backend.tar  ($(du -sh "$DEPLOY_DIR/cirame-backend.tar" | cut -f1))"
 echo
 
 echo "[2/4] Saving frontend image..."
-docker save cirame-frontend:latest -o "$DEPLOY_DIR/cirame-frontend.tar"
+if ! docker save cirame-frontend:latest -o "$DEPLOY_DIR/cirame-frontend.tar"; then
+    echo "  ERROR: Failed to save frontend image. Is it built?"
+    exit 1
+fi
 echo "  Saved: cirame-frontend.tar  ($(du -sh "$DEPLOY_DIR/cirame-frontend.tar" | cut -f1))"
 echo
 

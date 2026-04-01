@@ -54,6 +54,24 @@ echo "[3/4] Loading new frontend image..."
 docker load -i cirame-frontend.tar
 echo
 
+# Load optional images if present
+if [ -f "cirame-ti-modelmaker.tar" ]; then
+    echo "Loading TI ModelMaker image..."
+    docker load -i cirame-ti-modelmaker.tar
+    echo
+else
+    echo "Skipped: cirame-ti-modelmaker.tar not found (optional)"
+fi
+
+if [ -f "cirame-mosquitto.tar" ]; then
+    echo "Loading Mosquitto MQTT broker..."
+    docker load -i cirame-mosquitto.tar
+    echo
+else
+    echo "Skipped: cirame-mosquitto.tar not found (optional)"
+fi
+echo
+
 echo "[4/4] Cleaning up old image layers..."
 docker image prune -f >/dev/null 2>&1
 echo "Done."

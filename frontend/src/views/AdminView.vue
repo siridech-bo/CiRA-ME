@@ -148,6 +148,74 @@
             </v-list-item-subtitle>
           </v-list-item>
         </v-card>
+
+        <!-- Storage Volumes -->
+        <v-card class="pa-4 mt-4">
+          <div class="d-flex align-center mb-4">
+            <h3 class="text-subtitle-1 font-weight-bold">Storage Volumes</h3>
+            <v-spacer />
+            <v-btn size="x-small" variant="text" icon="mdi-refresh" :loading="loadingVolumes" @click="loadStorageVolumes" />
+          </div>
+
+          <v-alert v-if="!storageVolumes.length && !loadingVolumes" type="info" variant="tonal" density="compact" class="mb-3">
+            Loading volume information...
+          </v-alert>
+
+          <div v-for="vol in storageVolumes" :key="vol.container_path" class="mb-4">
+            <div class="d-flex align-center mb-1">
+              <v-icon size="18" color="primary" class="mr-2">
+                {{ vol.name.includes('Model') ? 'mdi-cube-outline' : vol.name.includes('Dataset') ? 'mdi-folder-open' : 'mdi-database' }}
+              </v-icon>
+              <span class="font-weight-bold text-body-2">{{ vol.name }}</span>
+              <v-chip size="x-small" color="info" variant="tonal" class="ml-2">{{ vol.size_mb }} MB</v-chip>
+            </div>
+
+            <div class="text-caption text-medium-emphasis ml-7 mb-1">
+              <div>Container: <code>{{ vol.container_path }}</code></div>
+              <div>Host: <code>{{ vol.host_hint }}</code></div>
+              <div>Disk: {{ vol.disk_free_gb }} GB free / {{ vol.disk_total_gb }} GB total</div>
+            </div>
+
+            <!-- File tree -->
+            <div v-if="vol.contents && vol.contents.length > 0" class="ml-7 mt-1">
+              <div
+                class="volume-toggle text-caption"
+                @click="toggleVolume(vol.container_path)"
+                style="cursor: pointer; user-select: none;"
+              >
+                <v-icon size="12">{{ expandedVolumes[vol.container_path] ? 'mdi-chevron-down' : 'mdi-chevron-right' }}</v-icon>
+                <span class="text-medium-emphasis">{{ vol.contents.length }} items</span>
+              </div>
+              <div v-if="expandedVolumes[vol.container_path]" class="file-tree mt-1">
+                <template v-for="item in vol.contents" :key="item.name">
+                  <div class="file-tree-item">
+                    <v-icon size="14" :color="item.is_dir ? 'amber' : 'grey'" class="mr-1">
+                      {{ item.is_dir ? 'mdi-folder' : 'mdi-file-outline' }}
+                    </v-icon>
+                    <span class="text-caption">{{ item.name }}</span>
+                    <span v-if="item.size_mb != null" class="text-caption text-medium-emphasis ml-1">
+                      ({{ item.size_mb < 0.01 ? '<0.01' : item.size_mb }} MB)
+                    </span>
+                  </div>
+                  <!-- Children (depth 1) -->
+                  <template v-if="item.children && item.children.length > 0">
+                    <div v-for="child in item.children" :key="child.name" class="file-tree-item" style="padding-left: 20px;">
+                      <v-icon size="12" :color="child.is_dir ? 'amber' : 'grey'" class="mr-1">
+                        {{ child.is_dir ? 'mdi-folder' : 'mdi-file-outline' }}
+                      </v-icon>
+                      <span class="text-caption">{{ child.name }}</span>
+                      <span v-if="child.size_mb != null" class="text-caption text-medium-emphasis ml-1">
+                        ({{ child.size_mb < 0.01 ? '<0.01' : child.size_mb }} MB)
+                      </span>
+                    </div>
+                  </template>
+                </template>
+              </div>
+            </div>
+
+            <v-divider v-if="storageVolumes.indexOf(vol) < storageVolumes.length - 1" class="mt-3" />
+          </div>
+        </v-card>
       </v-col>
     </v-row>
 
@@ -355,6 +423,9 @@ const users = ref<User[]>([])
 const folders = ref<{ name: string; path: string; type: string }[]>([])
 const datasetsRoot = ref('')
 const loadingUsers = ref(false)
+const storageVolumes = ref<any[]>([])
+const loadingVolumes = ref(false)
+const expandedVolumes = reactive<Record<string, boolean>>({})
 const newFolderName = ref('')
 const creatingFolder = ref(false)
 
@@ -437,6 +508,22 @@ async function loadDatasetsRoot() {
   } catch (e) {
     console.error('Failed to load datasets root')
   }
+}
+
+async function loadStorageVolumes() {
+  loadingVolumes.value = true
+  try {
+    const response = await api.get('/api/admin/storage-volumes')
+    storageVolumes.value = response.data.volumes || []
+  } catch (e) {
+    console.error('Failed to load storage volumes')
+  } finally {
+    loadingVolumes.value = false
+  }
+}
+
+function toggleVolume(path: string) {
+  expandedVolumes[path] = !expandedVolumes[path]
 }
 
 function openCreateDialog() {
@@ -585,5 +672,18 @@ onMounted(() => {
   loadUsers()
   loadFolders()
   loadDatasetsRoot()
+  loadStorageVolumes()
 })
 </script>
+
+<style scoped>
+.file-tree-item {
+  display: flex;
+  align-items: center;
+  padding: 1px 0;
+  font-family: monospace;
+}
+.file-tree-item code {
+  font-size: 11px;
+}
+</style>

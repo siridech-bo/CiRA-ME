@@ -70,6 +70,24 @@ if %errorlevel% neq 0 (
 )
 echo.
 
+REM Load optional images if present
+if exist "cirame-ti-modelmaker.tar" (
+    echo Loading TI ModelMaker image...
+    docker load -i cirame-ti-modelmaker.tar
+    echo.
+) else (
+    echo Skipped: cirame-ti-modelmaker.tar not found ^(optional^)
+)
+
+if exist "cirame-mosquitto.tar" (
+    echo Loading Mosquitto MQTT broker...
+    docker load -i cirame-mosquitto.tar
+    echo.
+) else (
+    echo Skipped: cirame-mosquitto.tar not found ^(optional^)
+)
+echo.
+
 REM Remove dangling old image layers to free disk space
 echo [4/4] Cleaning up old image layers...
 docker image prune -f >nul 2>&1

@@ -8,6 +8,7 @@ Includes intelligent feature selection with statistical and hypothesis testing m
 """
 
 import logging
+import time
 import numpy as np
 import pandas as pd
 import uuid
@@ -318,6 +319,40 @@ class FeatureExtractor:
         labels = session.get('labels')
         categories = session.get('categories')
         metadata = session['metadata']
+
+        # Raw mode: skip feature extraction, use column values directly as features
+        if metadata.get('no_windowing'):
+            num_windows = len(windows)
+            sensor_columns = metadata.get('sensor_columns', [])
+            # Each window is shape (1, n_features) — flatten to (n_features,)
+            raw_matrix = np.array([w.flatten() for w in windows])
+            feature_names = list(sensor_columns) if sensor_columns else [f'col_{i}' for i in range(raw_matrix.shape[1])]
+            feature_matrix = pd.DataFrame(raw_matrix, columns=feature_names)
+
+            logger.info(f"Raw mode: {num_windows} samples, {len(feature_names)} features (no extraction)")
+
+            feature_session_id = f"features_{session_id}"
+            _feature_sessions[feature_session_id] = {
+                    'features': feature_matrix,
+                    'labels': labels,
+                    'categories': categories,
+                    'feature_names': feature_names,
+                    'metadata': {
+                        **metadata,
+                        'no_windowing': True,
+                        'feature_count': len(feature_names),
+                    },
+                    'created_at': time.monotonic(),
+                }
+
+            return {
+                'session_id': feature_session_id,
+                'num_windows': int(num_windows),
+                'num_features': len(feature_names),
+                'feature_names': feature_names,
+                'no_windowing': True,
+                'metadata': metadata,
+            }
 
         num_windows = len(windows)
         num_channels = windows[0].shape[1]

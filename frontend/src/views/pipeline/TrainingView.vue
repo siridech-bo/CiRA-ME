@@ -1690,14 +1690,23 @@
                   {{ label }}
                 </text>
 
-                <!-- Train/Test separator line -->
-                <line v-if="tsViewMode === 'all' && tsTrainLength > 0"
-                  :x1="50 + tsTrainLength * tsXScale" :x2="50 + tsTrainLength * tsXScale"
-                  y1="20" y2="195"
-                  stroke="#FF9800" stroke-width="1" stroke-dasharray="4" />
-                <text v-if="tsViewMode === 'all' && tsTrainLength > 0"
-                  :x="50 + tsTrainLength * tsXScale + 4" y="30"
-                  fill="#FF9800" font-size="9">Test →</text>
+                <!-- Test region highlights (orange background bands) -->
+                <template v-for="(region, ri) in tsTestRegions" :key="'tr'+ri">
+                  <rect
+                    :x="region.x1" y="20" :width="Math.max(1, region.x2 - region.x1)" height="175"
+                    fill="#FF9800" fill-opacity="0.08" />
+                  <line :x1="region.x1" :x2="region.x1" y1="20" y2="195"
+                    stroke="#FF9800" stroke-width="0.5" stroke-dasharray="3" stroke-opacity="0.5" />
+                  <line :x1="region.x2" :x2="region.x2" y1="20" y2="195"
+                    stroke="#FF9800" stroke-width="0.5" stroke-dasharray="3" stroke-opacity="0.5" />
+                </template>
+                <!-- Test label on first region -->
+                <text v-if="tsTestRegions.length > 0"
+                  :x="tsTestRegions[0].x1 + 3" y="30"
+                  fill="#FF9800" font-size="9" font-weight="bold">Test</text>
+                <text v-if="tsTestRegions.length > 1"
+                  :x="tsTestRegions[tsTestRegions.length - 1].x1 + 3" y="30"
+                  fill="#FF9800" font-size="9" font-weight="bold">Test</text>
 
                 <!-- Actual line -->
                 <polyline :points="tsActualPoints" fill="none" stroke="#22D3EE" stroke-width="1.5" stroke-opacity="0.9" />
@@ -2306,10 +2315,11 @@ const rocAreaPoints = computed(() => {
 const tsViewMode = ref<'test' | 'all'>('all')
 
 const tsChartWidth = computed(() => {
+  const ts = trainingResult.value?.metrics?.timeseries_data
+  if (!ts) return 500
   const n = tsViewMode.value === 'all'
-    ? (trainingResult.value?.metrics?.timeseries_data?.train_actual?.length || 0)
-      + (trainingResult.value?.metrics?.timeseries_data?.test_actual?.length || 0)
-    : (trainingResult.value?.metrics?.timeseries_data?.test_actual?.length || 0)
+    ? (ts.all_actual?.length || (ts.train_actual?.length || 0) + (ts.test_actual?.length || 0))
+    : (ts.test_actual?.length || 0)
   return Math.max(500, Math.min(60 + n * 6, 1200))
 })
 
@@ -2320,23 +2330,39 @@ const tsTrainLength = computed(() => {
 
 const tsAllData = computed(() => {
   const ts = trainingResult.value?.metrics?.timeseries_data
-  if (!ts) return { actual: [], predicted: [] }
+  if (!ts) return { actual: [], predicted: [], isTest: [] }
+
+  // Use original-order data if available (interleaved/random splits)
+  if (tsViewMode.value === 'all' && ts.all_actual) {
+    return {
+      actual: ts.all_actual,
+      predicted: ts.all_predicted,
+      isTest: ts.is_test || [],
+    }
+  }
   if (tsViewMode.value === 'all') {
+    const trainLen = ts.train_actual?.length || 0
+    const testLen = ts.test_actual?.length || 0
     return {
       actual: [...(ts.train_actual || []), ...(ts.test_actual || [])],
       predicted: [...(ts.train_predicted || []), ...(ts.test_predicted || [])],
+      isTest: [...Array(trainLen).fill(false), ...Array(testLen).fill(true)],
     }
   }
-  return { actual: ts.test_actual || [], predicted: ts.test_predicted || [] }
+  return {
+    actual: ts.test_actual || [],
+    predicted: ts.test_predicted || [],
+    isTest: Array(ts.test_actual?.length || 0).fill(true),
+  }
 })
 
 const tsYMin = computed(() => {
-  const all = [...tsAllData.value.actual, ...tsAllData.value.predicted]
+  const all = [...tsAllData.value.actual, ...tsAllData.value.predicted].filter((v: any) => v != null && !isNaN(v))
   return all.length > 0 ? Math.min(...all) : 0
 })
 
 const tsYMax = computed(() => {
-  const all = [...tsAllData.value.actual, ...tsAllData.value.predicted]
+  const all = [...tsAllData.value.actual, ...tsAllData.value.predicted].filter((v: any) => v != null && !isNaN(v))
   return all.length > 0 ? Math.max(...all) : 1
 })
 
@@ -2360,15 +2386,44 @@ function tsToSvgY(val: number): number {
 }
 
 const tsActualPoints = computed(() => {
-  return tsAllData.value.actual.map((v, i) =>
-    `${50 + i * tsXScale.value},${tsToSvgY(v)}`
-  ).join(' ')
+  return tsAllData.value.actual
+    .map((v: any, i: number) => v != null ? `${50 + i * tsXScale.value},${tsToSvgY(v)}` : null)
+    .filter(Boolean).join(' ')
 })
 
 const tsPredictedPoints = computed(() => {
-  return tsAllData.value.predicted.map((v, i) =>
-    `${50 + i * tsXScale.value},${tsToSvgY(v)}`
-  ).join(' ')
+  return tsAllData.value.predicted
+    .map((v: any, i: number) => v != null ? `${50 + i * tsXScale.value},${tsToSvgY(v)}` : null)
+    .filter(Boolean).join(' ')
+})
+
+// Compute contiguous test regions for chart highlighting
+const tsTestRegions = computed(() => {
+  if (tsViewMode.value !== 'all') return []
+  const isTest = tsAllData.value.isTest || []
+  if (!isTest.length) return []
+
+  const regions: { x1: number; x2: number }[] = []
+  let inTest = false
+  let startIdx = 0
+
+  for (let i = 0; i <= isTest.length; i++) {
+    if (i < isTest.length && isTest[i]) {
+      if (!inTest) {
+        startIdx = i
+        inTest = true
+      }
+    } else {
+      if (inTest) {
+        regions.push({
+          x1: 50 + startIdx * tsXScale.value,
+          x2: 50 + (i - 1) * tsXScale.value + tsXScale.value,
+        })
+        inTest = false
+      }
+    }
+  }
+  return regions
 })
 
 // Comparison table headers based on mode

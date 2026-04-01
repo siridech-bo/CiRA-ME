@@ -1001,31 +1001,63 @@ class MLTrainer:
             'predicted': scatter_pred.tolist()
         }
 
-        # Time-series overlay: actual vs predicted for test set (in order)
-        # Also include train predictions for full picture
+        # Time-series overlay: actual vs predicted in ORIGINAL order
+        # Reconstruct original order for proper visualization of interleaved/random splits
         max_ts_points = 300
-        # Test set time-series
+
+        # Build combined arrays in original data order
+        total_len = len(y)
+        all_actual = np.full(total_len, np.nan)
+        all_predicted = np.full(total_len, np.nan)
+        is_test = np.zeros(total_len, dtype=bool)
+
+        # Place train data back at original positions
+        train_indices = np.where(train_mask)[0] if categories is not None and np.sum(train_mask) > 0 else np.arange(len(y_train))
+        test_indices = np.where(test_mask)[0] if categories is not None and np.sum(test_mask) > 0 else np.arange(len(y_train), len(y_train) + len(y_test))
+        print(f"[MLTrainer] Chart: total={total_len}, train_indices={train_indices[:5]}...{train_indices[-3:]}, test_indices={test_indices[:5]}...{test_indices[-3:]}")
+
+        for i, orig_idx in enumerate(train_indices):
+            if orig_idx < total_len:
+                all_actual[orig_idx] = y_train[i]
+                all_predicted[orig_idx] = y_pred_train[i]
+        for i, orig_idx in enumerate(test_indices):
+            if orig_idx < total_len:
+                all_actual[orig_idx] = y_test[i]
+                all_predicted[orig_idx] = y_pred_test[i]
+                is_test[orig_idx] = True
+
+        # Downsample if too many points
+        if total_len > max_ts_points:
+            sample_idx = np.linspace(0, total_len - 1, max_ts_points, dtype=int)
+            all_actual = all_actual[sample_idx]
+            all_predicted = all_predicted[sample_idx]
+            is_test = is_test[sample_idx]
+
+        # Also keep separate train/test arrays for backward compatibility
         ts_test_actual = y_test.tolist()
         ts_test_pred = y_pred_test.tolist()
-        if len(ts_test_actual) > max_ts_points:
-            indices = np.linspace(0, len(ts_test_actual) - 1, max_ts_points, dtype=int)
-            ts_test_actual = [ts_test_actual[i] for i in indices]
-            ts_test_pred = [ts_test_pred[i] for i in indices]
-
-        # Train set time-series
         ts_train_actual = y_train.tolist()
         ts_train_pred = y_pred_train.tolist()
+        if len(ts_test_actual) > max_ts_points:
+            idx = np.linspace(0, len(ts_test_actual) - 1, max_ts_points, dtype=int)
+            ts_test_actual = [ts_test_actual[i] for i in idx]
+            ts_test_pred = [ts_test_pred[i] for i in idx]
         if len(ts_train_actual) > max_ts_points:
-            indices = np.linspace(0, len(ts_train_actual) - 1, max_ts_points, dtype=int)
-            ts_train_actual = [ts_train_actual[i] for i in indices]
-            ts_train_pred = [ts_train_pred[i] for i in indices]
+            idx = np.linspace(0, len(ts_train_actual) - 1, max_ts_points, dtype=int)
+            ts_train_actual = [ts_train_actual[i] for i in idx]
+            ts_train_pred = [ts_train_pred[i] for i in idx]
 
         metrics['timeseries_data'] = {
             'train_actual': ts_train_actual,
             'train_predicted': ts_train_pred,
             'test_actual': ts_test_actual,
             'test_predicted': ts_test_pred,
+            # New: original-order data with test mask for interleaved/random visualization
+            'all_actual': [float(v) if not np.isnan(v) else None for v in all_actual],
+            'all_predicted': [float(v) if not np.isnan(v) else None for v in all_predicted],
+            'is_test': is_test.tolist(),
         }
+        metrics['split_method'] = split_method
 
         # Residual distribution
         residuals = y_pred_test - y_test

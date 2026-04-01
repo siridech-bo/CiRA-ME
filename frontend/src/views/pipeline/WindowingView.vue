@@ -14,8 +14,36 @@
         <v-card class="pa-4">
           <h3 class="text-subtitle-1 font-weight-bold mb-4">Window Settings</h3>
 
-          <!-- Window Size -->
-          <div class="mb-6">
+          <!-- Raw Mode Toggle -->
+          <v-alert
+            :type="windowingConfig.no_windowing ? 'warning' : 'info'"
+            variant="tonal"
+            density="compact"
+            class="mb-4"
+          >
+            <div class="d-flex align-center">
+              <v-switch
+                v-model="windowingConfig.no_windowing"
+                label="Raw Mode (no windowing)"
+                density="compact"
+                hide-details
+                color="warning"
+                class="mr-2"
+              />
+            </div>
+            <div class="text-caption mt-1">
+              <template v-if="windowingConfig.no_windowing">
+                Each CSV row is treated as one complete sample. Columns are used directly as input features.
+                No windowing or feature extraction will be applied. Ideal for pre-processed / tabular data.
+              </template>
+              <template v-else>
+                Time-series mode: sliding window segments the signal, then features are extracted per window.
+              </template>
+            </div>
+          </v-alert>
+
+          <!-- Window Size (hidden in raw mode) -->
+          <div v-if="!windowingConfig.no_windowing" class="mb-6">
             <div class="d-flex justify-space-between align-center mb-2">
               <span class="text-body-2">Window Size (samples)</span>
               <v-text-field
@@ -45,7 +73,7 @@
 
           <!-- Warning if no windows possible -->
           <v-alert
-            v-if="estimatedWindows === 0 && totalSamples > 0"
+            v-if="!windowingConfig.no_windowing && estimatedWindows === 0 && totalSamples > 0"
             type="warning"
             variant="tonal"
             density="compact"
@@ -57,7 +85,7 @@
 
           <!-- Smart Recommendation -->
           <v-alert
-            v-if="windowRecommendation && windowRecommendation.status === 'bad'"
+            v-if="!windowingConfig.no_windowing && windowRecommendation && windowRecommendation.status === 'bad'"
             type="error"
             variant="tonal"
             density="compact"
@@ -87,7 +115,7 @@
           </v-alert>
 
           <v-alert
-            v-else-if="windowRecommendation && windowRecommendation.status === 'warning'"
+            v-else-if="!windowingConfig.no_windowing && windowRecommendation && windowRecommendation.status === 'warning'"
             type="warning"
             variant="tonal"
             density="compact"
@@ -155,8 +183,8 @@
             </div>
           </v-alert>
 
-          <!-- Stride -->
-          <div class="mb-6">
+          <!-- Stride (hidden in raw mode) -->
+          <div v-if="!windowingConfig.no_windowing" class="mb-6">
             <div class="d-flex justify-space-between align-center mb-2">
               <span class="text-body-2">Stride (samples)</span>
               <v-text-field
@@ -214,6 +242,33 @@
               color="warning"
               hide-details
             />
+
+            <!-- Split Strategy Selector (only for single CSV without preset, not raw mode) -->
+            <div v-if="!hasPresetCategory && !hasSampleId && !windowingConfig.no_windowing" class="mt-3 mb-1">
+              <span class="text-body-2 d-block mb-2">Split Strategy</span>
+              <v-btn-toggle
+                v-model="windowingConfig.split_strategy"
+                mandatory
+                density="compact"
+                color="warning"
+                variant="outlined"
+                divided
+              >
+                <v-btn value="temporal_end" size="small">
+                  <v-icon start size="14">mdi-arrow-right-bold</v-icon>
+                  End Block
+                </v-btn>
+                <v-btn value="temporal_blocks" size="small">
+                  <v-icon start size="14">mdi-swap-horizontal</v-icon>
+                  Interleaved
+                </v-btn>
+                <v-btn value="random" size="small">
+                  <v-icon start size="14">mdi-shuffle</v-icon>
+                  Random
+                </v-btn>
+              </v-btn-toggle>
+            </div>
+
             <div class="text-caption text-medium-emphasis mt-1">
               <template v-if="hasPresetCategory">
                 Train/test split is preset from dataset folders (training/testing).
@@ -221,8 +276,14 @@
               <template v-else-if="hasSampleId">
                 {{ Math.round((1 - windowingConfig.test_ratio) * 100) }}% train / {{ Math.round(windowingConfig.test_ratio * 100) }}% test. Split by file if enough files, otherwise stratified random split at window level.
               </template>
+              <template v-else-if="windowingConfig.split_strategy === 'temporal_end'">
+                <strong>End Block:</strong> First {{ Math.round((1 - windowingConfig.test_ratio) * 100) }}% for training, last {{ Math.round(windowingConfig.test_ratio * 100) }}% for testing, gap = window size. Preserves temporal order.
+              </template>
+              <template v-else-if="windowingConfig.split_strategy === 'temporal_blocks'">
+                <strong>Interleaved:</strong> Signal is divided into {{ Math.max(3, Math.round(1 / windowingConfig.test_ratio)) }} blocks. Test blocks are evenly distributed throughout the signal for better coverage.
+              </template>
               <template v-else>
-                Temporal split with gap: first {{ Math.round((1 - windowingConfig.test_ratio) * 100) }}% for training, last {{ Math.round(windowingConfig.test_ratio * 100) }}% for testing, gap = window size.
+                <strong>Random:</strong> Windows are randomly assigned to train/test sets. Best variety but may leak temporal patterns.
               </template>
             </div>
           </div>
@@ -266,8 +327,8 @@
             </div>
           </template>
 
-          <!-- Anomaly/Classification: Label Preservation -->
-          <template v-else>
+          <!-- Anomaly/Classification: Label Preservation (hidden in raw mode) -->
+          <template v-else-if="!windowingConfig.no_windowing">
             <h4 class="text-subtitle-2 font-weight-bold mb-3">Label Preservation</h4>
             <v-radio-group v-model="windowingConfig.label_method" hide-details>
               <v-radio value="majority">
@@ -395,7 +456,7 @@
           <h3 class="text-subtitle-1 font-weight-bold mb-4">Windowing Complete</h3>
 
           <v-alert type="success" variant="tonal" class="mb-4">
-            <strong>{{ windowedResult.num_windows }}</strong> windows created successfully
+            <strong>{{ windowedResult.num_windows }}</strong> {{ windowingConfig.no_windowing ? 'samples loaded (raw mode — no windowing)' : 'windows created successfully' }}
           </v-alert>
 
           <div v-if="windowedResult.summary?.label_distribution">
@@ -429,6 +490,10 @@
                 'preset': 'preset (dataset folders)',
                 'sample': 'by file (whole files)',
                 'temporal': 'temporal (with gap)',
+                'temporal (with gap)': 'temporal (end block, with gap)',
+                'temporal (no gap)': 'temporal (end block, no gap)',
+                'interleaved blocks': 'interleaved blocks (test distributed throughout signal)',
+                'random': 'random (windows randomly assigned)',
                 'stratified': 'stratified random (all classes in train & test)'
               }[windowedResult.metadata.split_method] || windowedResult.metadata.split_method }}
             </div>
@@ -621,10 +686,11 @@
           :loading="loading"
           @click="applyWindowing"
         >
-          Apply Windowing
+          {{ windowingConfig.no_windowing ? 'Prepare Data & Go to Training' : 'Apply Windowing' }}
         </v-btn>
 
         <v-btn
+          v-if="!windowingConfig.no_windowing"
           color="primary"
           size="large"
           :disabled="!windowedResult"
@@ -886,7 +952,9 @@ const windowingConfig = reactive({
   window_size: pipelineStore.windowingConfig.window_size,
   stride: pipelineStore.windowingConfig.stride,
   label_method: pipelineStore.windowingConfig.label_method,
-  test_ratio: pipelineStore.windowingConfig.test_ratio
+  test_ratio: pipelineStore.windowingConfig.test_ratio,
+  split_strategy: pipelineStore.windowingConfig.split_strategy || 'temporal_end',
+  no_windowing: pipelineStore.windowingConfig.no_windowing || false
 })
 
 const totalSamples = computed(() =>
@@ -1152,6 +1220,8 @@ async function applyWindowing() {
   pipelineStore.windowingConfig.stride = windowingConfig.stride
   pipelineStore.windowingConfig.label_method = windowingConfig.label_method
   pipelineStore.windowingConfig.test_ratio = windowingConfig.test_ratio
+  pipelineStore.windowingConfig.split_strategy = windowingConfig.split_strategy
+  pipelineStore.windowingConfig.no_windowing = windowingConfig.no_windowing
 
   loading.value = true
 
@@ -1159,7 +1229,22 @@ async function applyWindowing() {
 
   if (result.success) {
     windowedResult.value = result.data
-    notificationStore.showSuccess('Windowing applied successfully')
+
+    if (windowingConfig.no_windowing) {
+      // Raw mode: auto-run feature extraction (pass-through) and skip to training
+      notificationStore.showSuccess(`${result.data.num_windows} samples loaded — preparing for training...`)
+      const featResult = await pipelineStore.extractFeatures([])
+      if (featResult.success) {
+        notificationStore.showSuccess(`Ready! ${featResult.data.num_features} features from ${featResult.data.num_windows} samples`)
+        loading.value = false
+        router.push({ name: 'pipeline-training' })
+        return
+      } else {
+        notificationStore.showError(featResult.error || 'Failed to prepare features')
+      }
+    } else {
+      notificationStore.showSuccess('Windowing applied successfully')
+    }
   } else {
     notificationStore.showError(result.error || 'Failed to apply windowing')
   }

@@ -18,7 +18,11 @@ if ! docker images | grep -q cirame-backend; then
 fi
 
 echo "Starting core services..."
-docker compose -f docker-compose.yml up -d backend frontend
+if ! docker compose -f docker-compose.yml up -d backend frontend; then
+    echo "ERROR: Failed to start core services."
+    echo "Check logs: docker compose -f docker-compose.yml logs"
+    exit 1
+fi
 
 # Start optional services if images are available
 if docker images | grep -q cirame-ti-modelmaker; then

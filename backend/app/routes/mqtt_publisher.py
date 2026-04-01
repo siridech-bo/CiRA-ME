@@ -92,7 +92,9 @@ def start_publish():
         df = pd.read_csv(full_path)
         numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
         # Exclude timestamp-like columns
-        sensor_cols = [c for c in numeric_cols if c.lower() not in ('timestamp', 'time', 'index')]
+        non_sensor = ('timestamp', 'time', 'index', 'label', 'labels', 'class', 'class_name',
+                      'target', 'category', 'sample_id')
+        sensor_cols = [c for c in numeric_cols if c.lower() not in non_sensor]
         if not sensor_cols:
             return jsonify({'error': 'CSV has no numeric sensor columns'}), 400
     except Exception as e:
@@ -119,9 +121,46 @@ def start_publish():
     }
     _publishers[session_id] = pub_state
 
+    # Detect label column for ground truth inclusion
+    label_col = None
+    for candidate in ['label', 'labels', 'class', 'class_name', 'target', 'category']:
+        if candidate in df.columns:
+            label_col = candidate
+            break
+
+    # For CBOR-converted CSVs, the filename contains the true label (e.g., idle.1.cbor...)
+    # Build a mapping from integer labels to string labels using filename
+    label_decode_map = None
+    if label_col:
+        fname = os.path.basename(file_path).lower()
+        # CBOR format: {label}.{index}.cbor...
+        parts = fname.split('.')
+        if len(parts) >= 3 and 'cbor' in fname:
+            string_label = parts[0]  # e.g., "idle", "wave", "updown"
+            # All rows in this file have the same label
+            int_label = df[label_col].iloc[0]
+            label_decode_map = {int_label: string_label}
+            # Try to build full map from the dataset folder
+            dataset_dir = os.path.dirname(full_path)
+            try:
+                for f2 in os.listdir(dataset_dir):
+                    if f2.endswith('.csv') and 'cbor' in f2.lower():
+                        p2 = f2.split('.')
+                        if len(p2) >= 3:
+                            lbl_str = p2[0]
+                            try:
+                                df2 = pd.read_csv(os.path.join(dataset_dir, f2), nrows=1)
+                                if label_col in df2.columns:
+                                    lbl_int = df2[label_col].iloc[0]
+                                    label_decode_map[lbl_int] = lbl_str
+                            except Exception:
+                                pass
+            except Exception:
+                pass
+
     thread = threading.Thread(
         target=_publish_worker,
-        args=(session_id, df, sensor_cols, topic, rate, loop),
+        args=(session_id, df, sensor_cols, topic, rate, loop, label_col, label_decode_map),
         daemon=True,
     )
     thread.start()
@@ -332,7 +371,7 @@ def subscribe_test():
     })
 
 
-def _publish_worker(session_id, df, sensor_cols, topic, rate, loop):
+def _publish_worker(session_id, df, sensor_cols, topic, rate, loop, label_col=None, label_decode_map=None):
     """Background thread that publishes CSV rows to MQTT."""
     import paho.mqtt.client as paho_mqtt
 
@@ -362,6 +401,16 @@ def _publish_worker(session_id, df, sensor_cols, topic, rate, loop):
             payload = {col: float(row[col]) for col in sensor_cols}
             payload['_timestamp'] = time.time()
             payload['_index'] = row_idx
+            # Include label column for ground truth (decoded to string if possible)
+            if label_col and label_col in df.columns:
+                raw_label = row[label_col]
+                if hasattr(raw_label, 'item'):
+                    raw_label = raw_label.item()
+                # Decode integer label to string using filename-derived map
+                if label_decode_map and raw_label in label_decode_map:
+                    payload[label_col] = label_decode_map[raw_label]
+                else:
+                    payload[label_col] = raw_label
 
             client.publish(topic, json.dumps(payload), qos=0)
             pub['published'] += 1

@@ -8,6 +8,18 @@
       Extract and select optimal features for {{ pipelineStore.mode === 'anomaly' ? 'anomaly detection' : 'classification' }}
     </p>
 
+    <!-- Raw Mode Banner -->
+    <v-alert
+      v-if="pipelineStore.windowingConfig.no_windowing"
+      type="warning"
+      variant="tonal"
+      density="compact"
+      class="mb-4"
+    >
+      <strong>Raw Mode:</strong> No windowing applied. Each CSV row is used as one sample.
+      Click "Extract Features" to use the raw column values directly as input features (no DSP/statistical extraction).
+    </v-alert>
+
     <!-- Workflow Tabs -->
     <v-tabs v-model="activeTab" class="mb-4">
       <v-tab value="extract">1. Extract</v-tab>

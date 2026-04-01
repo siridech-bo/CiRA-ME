@@ -346,12 +346,42 @@ def run_app(slug):
         # Error response
         return input_data
 
+    # Check for live target values (from MQTT with ground truth column)
+    live_target_values = None
+    body = request.get_json(silent=True)
+    if body and body.get('target_values'):
+        live_target_values = body['target_values']
+
     # Execute pipeline
     try:
         current_data = input_data
         column_names = None  # Track column names through pipeline
         model_mode = None
         actual_values = None  # Ground truth for comparison
+        dataset_labels = None  # For integer label decoding
+
+        # Pre-fetch dataset_labels from any endpoint in the pipeline (needed for both CSV and MQTT)
+        for node in ordered_nodes:
+            _nt = node.get('type', '')
+            _eids = []
+            if _nt.startswith('model.endpoint.'):
+                _eids.append(_nt.replace('model.endpoint.', ''))
+            if _nt == 'output.multi_model_compare':
+                for _es in node.get('config', {}).get('endpoint_ids', []):
+                    _eids.append(_es.split(':')[0])
+            for _eid in _eids:
+                _ep = MeLabEndpoint.get_by_id(_eid)
+                if _ep:
+                    _saved = SavedModel.get_by_id(_ep.get('saved_model_id'))
+                    if _saved:
+                        _di = _saved.get('dataset_info', {})
+                        if isinstance(_di, str):
+                            _di = json.loads(_di) if _di else {}
+                        if _di.get('labels'):
+                            dataset_labels = sorted([str(l) for l in _di['labels']])
+                            break
+            if dataset_labels:
+                break
 
         # If input is a DataFrame, remember column names and extract target
         import pandas as pd
@@ -366,34 +396,34 @@ def run_app(slug):
                     target_col = node.get('config', {}).get('target_column')
                     if target_col:
                         break
-            # Check model's pipeline_config for target_column
+            # Check model's pipeline_config for target_column and dataset_labels
             # Collect from single model nodes AND multi-model compare endpoints
             dataset_labels = None
-            if not target_col:
-                all_endpoint_ids = []
-                for node in ordered_nodes:
-                    ntype = node.get('type', '')
-                    if ntype.startswith('model.endpoint.'):
-                        all_endpoint_ids.append(ntype.replace('model.endpoint.', ''))
-                    if ntype == 'output.multi_model_compare':
-                        for eidStr in node.get('config', {}).get('endpoint_ids', []):
-                            all_endpoint_ids.append(eidStr.split(':')[0])
-                for eid in all_endpoint_ids:
-                    ep = MeLabEndpoint.get_by_id(eid)
-                    if ep:
-                        saved = SavedModel.get_by_id(ep.get('saved_model_id'))
-                        if saved:
-                            pc = saved.get('pipeline_config', {})
-                            if isinstance(pc, str):
-                                pc = json.loads(pc) if pc else {}
-                            target_col = target_col or pc.get('target_column')
-                            # Get dataset labels for integer label decoding
-                            di = saved.get('dataset_info', {})
-                            if isinstance(di, str):
-                                di = json.loads(di) if di else {}
-                            if di.get('labels'):
-                                dataset_labels = sorted([str(l) for l in di['labels']])
-                        break
+            all_endpoint_ids = []
+            for node in ordered_nodes:
+                ntype = node.get('type', '')
+                if ntype.startswith('model.endpoint.'):
+                    all_endpoint_ids.append(ntype.replace('model.endpoint.', ''))
+                if ntype == 'output.multi_model_compare':
+                    for eidStr in node.get('config', {}).get('endpoint_ids', []):
+                        all_endpoint_ids.append(eidStr.split(':')[0])
+            for eid in all_endpoint_ids:
+                ep = MeLabEndpoint.get_by_id(eid)
+                if ep:
+                    saved = SavedModel.get_by_id(ep.get('saved_model_id'))
+                    if saved:
+                        pc = saved.get('pipeline_config', {})
+                        if isinstance(pc, str):
+                            pc = json.loads(pc) if pc else {}
+                        if not target_col:
+                            target_col = pc.get('target_column')
+                        # Always get dataset labels for integer label decoding
+                        di = saved.get('dataset_info', {})
+                        if isinstance(di, str):
+                            di = json.loads(di) if di else {}
+                        if di.get('labels'):
+                            dataset_labels = sorted([str(l) for l in di['labels']])
+                    break
 
             if target_col and target_col in current_data.columns:
                 raw_target = current_data[target_col].values
@@ -422,8 +452,25 @@ def run_app(slug):
                     ws = params.get('window_size', 32)
                     st = params.get('step', params.get('stride', 16))
                     actual_values = []
+                    # Determine mode from multi-model or single-model endpoint
+                    _app_mode = None
+                    for _n in ordered_nodes:
+                        _nt = _n.get('type', '')
+                        if _nt.startswith('model.endpoint.'):
+                            _ep = MeLabEndpoint.get_by_id(_nt.replace('model.endpoint.', ''))
+                            if _ep: _app_mode = _ep.get('mode')
+                            break
+                        if _nt == 'output.multi_model_compare':
+                            _app_mode = _n.get('config', {}).get('mode', 'regression')
+                            break
                     for start in range(0, len(raw_target) - ws + 1, st):
-                        actual_values.append(float(np.mean(raw_target[start:start + ws])))
+                        window = raw_target[start:start + ws]
+                        if _app_mode in ('classification', 'anomaly'):
+                            # Use mode (most frequent label) for classification/anomaly
+                            from collections import Counter
+                            actual_values.append(Counter(window).most_common(1)[0][0])
+                        else:
+                            actual_values.append(float(np.mean(window)))
 
                 current_data = _apply_windowing(current_data, params)
 
@@ -434,21 +481,27 @@ def run_app(slug):
 
                 # Try to get normalization params from the model's pipeline_config
                 norm_params = dict(params)
+                _norm_eids = []
                 for n2 in ordered_nodes:
-                    if n2.get('type', '').startswith('model.endpoint.'):
-                        eid = n2['type'].replace('model.endpoint.', '')
-                        ep = MeLabEndpoint.get_by_id(eid)
-                        if ep:
-                            saved = SavedModel.get_by_id(ep.get('saved_model_id'))
-                            if saved:
-                                pc = saved.get('pipeline_config', {})
-                                if isinstance(pc, str):
-                                    pc = json.loads(pc) if pc else {}
-                                model_norm = pc.get('normalization', {})
-                                if model_norm and model_norm.get('channel_min'):
-                                    norm_params['_model_norm'] = model_norm
-                                    norm_params['_sensor_columns'] = column_names
-                        break
+                    _nt2 = n2.get('type', '')
+                    if _nt2.startswith('model.endpoint.'):
+                        _norm_eids.append(_nt2.replace('model.endpoint.', ''))
+                    if _nt2 == 'output.multi_model_compare':
+                        for _es in n2.get('config', {}).get('endpoint_ids', []):
+                            _norm_eids.append(_es.split(':')[0])
+                for _neid in _norm_eids:
+                    ep = MeLabEndpoint.get_by_id(_neid)
+                    if ep:
+                        saved = SavedModel.get_by_id(ep.get('saved_model_id'))
+                        if saved:
+                            pc = saved.get('pipeline_config', {})
+                            if isinstance(pc, str):
+                                pc = json.loads(pc) if pc else {}
+                            model_norm = pc.get('normalization', {})
+                            if model_norm and model_norm.get('channel_min'):
+                                norm_params['_model_norm'] = model_norm
+                                norm_params['_sensor_columns'] = column_names
+                                break
                 current_data = _apply_normalization(current_data, norm_params)
 
             elif ntype == 'transform.fill_missing':
@@ -473,15 +526,26 @@ def run_app(slug):
             elif ntype == 'output.multi_model_compare':
                 # Run multiple models on the same feature data
                 endpoint_ids_raw = params.get('endpoint_ids', [])
-                # Parse "id:name" format
+                # Parse "id:name (algo)" format
                 endpoint_ids = [eid.split(':')[0] for eid in endpoint_ids_raw if eid]
+                # Set model_mode from node config
+                model_mode = model_mode or params.get('mode')
+                print(f"[AppBuilder] Multi-model: {len(endpoint_ids)} endpoints: {endpoint_ids}, data type={type(current_data).__name__}, shape={current_data.shape if hasattr(current_data, 'shape') else 'N/A'}", flush=True)
                 if endpoint_ids and isinstance(current_data, np.ndarray):
+                    # Filter to active endpoints first, then apply max 5 limit
+                    valid_endpoints = []
+                    for eid in endpoint_ids:
+                        ep = MeLabEndpoint.get_by_id(eid)
+                        if ep and ep['status'] == 'active':
+                            valid_endpoints.append((eid, ep))
+                        else:
+                            print(f"[AppBuilder] Endpoint {eid}: not found or inactive (skipped)", flush=True)
+                    valid_endpoints = valid_endpoints[:5]  # Max 5 active models
+                    print(f"[AppBuilder] Running {len(valid_endpoints)} active endpoints", flush=True)
+
                     multi_results = {}
-                    for eid in endpoint_ids[:5]:  # Max 5
+                    for eid, ep in valid_endpoints:
                         try:
-                            ep = MeLabEndpoint.get_by_id(eid)
-                            if not ep or ep['status'] != 'active':
-                                continue
                             model_mode = model_mode or ep.get('mode')
                             preds = _run_model_inference(eid, current_data.copy())
                             multi_results[eid] = {
@@ -490,11 +554,14 @@ def run_app(slug):
                                 'mode': ep.get('mode', ''),
                                 'predictions': preds,
                             }
+                            print(f"[AppBuilder] Endpoint {eid} ({ep.get('name')}): {len(preds)} predictions OK", flush=True)
                         except Exception as me:
+                            print(f"[AppBuilder] Endpoint {eid} FAILED: {me}", flush=True)
                             multi_results[eid] = {
                                 'name': eid,
                                 'error': str(me),
                             }
+                    print(f"[AppBuilder] Multi-model complete: {len(multi_results)} models ran", flush=True)
                     # Store multi results — will be used in response building
                     current_data = multi_results
                 continue
@@ -519,8 +586,30 @@ def run_app(slug):
     ) if isinstance(current_data, dict) else False
 
     if is_multi:
+        # If live target values provided (MQTT with ground truth), compute actual
+        if live_target_values and actual_values is None:
+            try:
+                vals = live_target_values
+                if model_mode == 'regression':
+                    actual_values = [float(np.mean([float(v) for v in vals]))]
+                elif model_mode in ('classification', 'anomaly'):
+                    # Decode integer labels using dataset_labels
+                    from collections import Counter
+                    most_common = Counter(vals).most_common(1)[0][0]
+                    # Try to decode integer label
+                    if dataset_labels and isinstance(most_common, (int, float)):
+                        idx = int(most_common)
+                        if 0 <= idx < len(dataset_labels):
+                            most_common = dataset_labels[idx]
+                    elif dataset_labels and str(most_common).isdigit():
+                        idx = int(most_common)
+                        if 0 <= idx < len(dataset_labels):
+                            most_common = dataset_labels[idx]
+                    actual_values = [most_common]
+            except Exception as e:
+                print(f"[AppBuilder] Live target decode error: {e}", flush=True)
+
         # Multi-model response
-        AppBuilderApp.increment_calls(app['id'])
         # Count windows from first model's predictions
         first_model_count = 0
         for mresult in current_data.values():
@@ -893,19 +982,26 @@ def _extract_sensor_data(df, ordered_nodes):
     import pandas as pd
     sensor_df = df.select_dtypes(include=[np.number])
 
-    # Find model's sensor columns from pipeline_config
+    # Find model's sensor columns from pipeline_config (single-model or multi-model)
     model_sensors = None
+    all_eids = []
     for n in ordered_nodes:
-        if n.get('type', '').startswith('model.endpoint.'):
-            eid = n['type'].replace('model.endpoint.', '')
-            ep = MeLabEndpoint.get_by_id(eid)
-            if ep:
-                saved = SavedModel.get_by_id(ep.get('saved_model_id'))
-                if saved:
-                    pc = saved.get('pipeline_config', {})
-                    if isinstance(pc, str):
-                        pc = json.loads(pc) if pc else {}
-                    model_sensors = pc.get('normalization', {}).get('sensor_columns', [])
+        ntype = n.get('type', '')
+        if ntype.startswith('model.endpoint.'):
+            all_eids.append(ntype.replace('model.endpoint.', ''))
+        if ntype == 'output.multi_model_compare':
+            for eidStr in n.get('config', {}).get('endpoint_ids', []):
+                all_eids.append(eidStr.split(':')[0])
+    for eid in all_eids:
+        ep = MeLabEndpoint.get_by_id(eid)
+        if ep:
+            saved = SavedModel.get_by_id(ep.get('saved_model_id'))
+            if saved:
+                pc = saved.get('pipeline_config', {})
+                if isinstance(pc, str):
+                    pc = json.loads(pc) if pc else {}
+                model_sensors = pc.get('normalization', {}).get('sensor_columns', [])
+        if model_sensors:
             break
 
     if model_sensors:

@@ -372,3 +372,94 @@ def dashboard_stats():
         import traceback
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
+
+
+@admin_bp.route('/storage-volumes', methods=['GET'])
+@admin_required
+def storage_volumes():
+    """Return information about mounted storage volumes and their contents."""
+    import shutil
+
+    def dir_size_mb(path):
+        total = 0
+        try:
+            for dirpath, dirnames, filenames in os.walk(path):
+                for f in filenames:
+                    fp = os.path.join(dirpath, f)
+                    try:
+                        total += os.path.getsize(fp)
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+        return round(total / (1024 * 1024), 2)
+
+    def list_dir_contents(path, max_depth=2, current_depth=0):
+        """List directory contents recursively up to max_depth."""
+        items = []
+        try:
+            for entry in sorted(os.scandir(path), key=lambda e: (not e.is_dir(), e.name)):
+                item = {
+                    'name': entry.name,
+                    'is_dir': entry.is_dir(),
+                }
+                try:
+                    stat = entry.stat()
+                    if entry.is_file():
+                        item['size_mb'] = round(stat.st_size / (1024 * 1024), 2)
+                    elif entry.is_dir() and current_depth < max_depth:
+                        item['children'] = list_dir_contents(entry.path, max_depth, current_depth + 1)
+                        item['size_mb'] = dir_size_mb(entry.path)
+                except OSError:
+                    pass
+                items.append(item)
+        except OSError:
+            pass
+        return items
+
+    # Define the known volume mounts
+    volumes = []
+
+    # 1. Data volume (/app/data) — database, config
+    data_path = '/app/data'
+    if os.path.exists(data_path):
+        disk = shutil.disk_usage(data_path)
+        volumes.append({
+            'name': 'Database & Config',
+            'container_path': data_path,
+            'host_hint': './data/database (deployment) or backend-data volume (dev)',
+            'size_mb': dir_size_mb(data_path),
+            'disk_total_gb': round(disk.total / (1024**3), 1),
+            'disk_free_gb': round(disk.free / (1024**3), 1),
+            'contents': list_dir_contents(data_path),
+        })
+
+    # 2. Models volume (/app/models) — trained model files
+    models_path = '/app/models'
+    if os.path.exists(models_path):
+        disk = shutil.disk_usage(models_path)
+        volumes.append({
+            'name': 'Trained Models',
+            'container_path': models_path,
+            'host_hint': './data/models (deployment) or backend-models volume (dev)',
+            'size_mb': dir_size_mb(models_path),
+            'disk_total_gb': round(disk.total / (1024**3), 1),
+            'disk_free_gb': round(disk.free / (1024**3), 1),
+            'contents': list_dir_contents(models_path),
+        })
+
+    # 3. Datasets shared (/app/datasets/shared) — shared datasets
+    shared_path = current_app.config.get('DATASETS_ROOT_PATH', '/app/datasets')
+    if os.path.exists(shared_path):
+        disk = shutil.disk_usage(shared_path)
+        volumes.append({
+            'name': 'Datasets',
+            'container_path': shared_path,
+            'host_hint': './shared (bind mount, accessible from host file browser)',
+            'size_mb': dir_size_mb(shared_path),
+            'disk_total_gb': round(disk.total / (1024**3), 1),
+            'disk_free_gb': round(disk.free / (1024**3), 1),
+            'contents': list_dir_contents(shared_path),
+        })
+
+    return jsonify({'volumes': volumes})

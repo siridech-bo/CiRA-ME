@@ -493,20 +493,25 @@
                 <thead>
                   <tr style="border-bottom:1px solid #21262d;">
                     <th style="text-align:left; padding:4px; color:#8b949e;">Model</th>
-                    <th style="text-align:center; padding:4px; color:#8b949e;">R² / Acc</th>
-                    <th style="text-align:center; padding:4px; color:#8b949e;">RMSE / F1</th>
+                    <th style="text-align:center; padding:4px; color:#8b949e;">{{ previewMultiCompareNode.config?.mode === 'regression' ? 'R²' : 'Accuracy' }}</th>
+                    <th style="text-align:center; padding:4px; color:#8b949e;">{{ previewMultiCompareNode.config?.mode === 'regression' ? 'RMSE' : 'F1' }}</th>
                   </tr>
                 </thead>
                 <tbody>
                   <tr v-for="(eidStr, idx) in (previewMultiCompareNode.config?.endpoint_ids || []).slice(0, 5)" :key="idx"
                       style="border-bottom:1px solid #161b22;">
                     <td style="padding:4px; color:#e6edf3;">{{ eidStr.includes(':') ? eidStr.split(':').slice(1).join(':') : eidStr }}</td>
-                    <td style="text-align:center; padding:4px; color:#34d399;">{{ (0.95 - idx * 0.02).toFixed(3) }}</td>
-                    <td style="text-align:center; padding:4px; color:#94a3b8;">{{ (0.5 + idx * 0.1).toFixed(3) }}</td>
+                    <td style="text-align:center; padding:4px; color:#34d399;">
+                      {{ previewMultiCompareNode.config?.mode === 'regression' ? (0.95 - idx * 0.02).toFixed(3) : ((95 - idx * 2).toFixed(1) + '%') }}
+                    </td>
+                    <td style="text-align:center; padding:4px; color:#94a3b8;">
+                      {{ previewMultiCompareNode.config?.mode === 'regression' ? (0.5 + idx * 0.1).toFixed(3) : ((93 - idx * 3).toFixed(1) + '%') }}
+                    </td>
                   </tr>
                 </tbody>
               </table>
-              <div style="margin-top:12px;">
+              <!-- Regression: show comparison chart -->
+              <div v-if="previewMultiCompareNode.config?.mode === 'regression'" style="margin-top:12px;">
                 <svg width="100%" height="60" viewBox="0 0 300 60">
                   <path d="M0,30 Q75,10 150,35 T300,25" fill="none" stroke="#22d3ee" stroke-width="1.5" />
                   <path d="M0,32 Q75,15 150,33 T300,28" fill="none" stroke="#a78bfa" stroke-width="1" stroke-dasharray="4,2" />
@@ -517,6 +522,30 @@
                   <span><span style="color:#a78bfa;">- -</span> model 1</span>
                   <span><span style="color:#f59e0b;">- -</span> model 2</span>
                 </div>
+              </div>
+              <!-- Classification: show per-window prediction table -->
+              <div v-else style="margin-top:12px;">
+                <div style="font-size:10px; color:#8b949e; margin-bottom:4px;">Per-Window Predictions</div>
+                <table style="width:100%; font-size:10px; border-collapse:collapse;">
+                  <thead>
+                    <tr style="border-bottom:1px solid #21262d;">
+                      <th style="text-align:left; padding:3px; color:#8b949e;">#</th>
+                      <th style="text-align:center; padding:3px; color:#22d3ee;">Actual</th>
+                      <th v-for="(eidStr, idx) in (previewMultiCompareNode.config?.endpoint_ids || []).slice(0, 3)" :key="'pth'+idx"
+                          style="text-align:center; padding:3px; color:#8b949e;">
+                        {{ eidStr.includes(':') ? eidStr.split(':').slice(1).join(':').split(' ')[0] : 'Model ' + (idx+1) }}
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="w in 3" :key="'pw'+w" style="border-bottom:1px solid #161b22;">
+                      <td style="padding:3px; color:#8b949e;">{{ w }}</td>
+                      <td style="text-align:center; padding:3px; color:#22d3ee;">wave</td>
+                      <td v-for="(_, idx) in (previewMultiCompareNode.config?.endpoint_ids || []).slice(0, 3)" :key="'ptd'+idx+w"
+                          style="text-align:center; padding:3px; color:#34d399;">wave</td>
+                    </tr>
+                  </tbody>
+                </table>
               </div>
             </div>
           </div>
@@ -782,7 +811,7 @@ const STATIC_CAPS = {
   'output.alert_badge':        { label: 'Alert Badge',     icon: 'mdi-shield-alert',          color: '#94a3b8', category: 'Output',    inputs: ['anomaly_result'], configSchema: [{ key: 'label_normal', label: 'Normal Label', type: 'text', default: 'Normal' }, { key: 'label_anomaly', label: 'Anomaly Label', type: 'text', default: 'Anomaly Detected' }, { key: 'webhook_url', label: 'Webhook URL', type: 'text', default: '' }] },
   'output.table':              { label: 'Table View',      icon: 'mdi-table',                 color: '#94a3b8', category: 'Output',    inputs: ['classification_result','regression_result'], configSchema: [{ key: 'max_rows', label: 'Max Rows', type: 'number', default: 50 }, { key: 'show_confidence', label: 'Show Confidence', type: 'toggle', default: true }] },
   'output.signal_recorder':    { label: 'Signal Recorder', icon: 'mdi-record-circle',         color: '#ef4444', category: 'Output',    inputs: ['timeseries'], configSchema: [{ key: 'labels', label: 'Label Names (comma-separated)', type: 'text', default: 'idle, wave, snake, updown' }, { key: 'target_sample_rate', label: 'Target Sample Rate (Hz)', type: 'number', default: 62.5 }, { key: 'max_duration', label: 'Max Duration (seconds)', type: 'number', default: 300 }, { key: 'file_prefix', label: 'File Name Prefix', type: 'text', default: 'sensor_data' }] },
-  'output.multi_model_compare': { label: 'Multi-Model Compare', icon: 'mdi-compare-horizontal', color: '#f59e0b', category: 'Output', inputs: ['features'], configSchema: [{ key: 'endpoint_ids', label: 'Model Endpoints (select up to 5)', type: 'multiselect', options: [], default: [] }, { key: 'target_column', label: 'Target Column (ground truth)', type: 'text', default: '' }, { key: 'show_chart', label: 'Show Comparison Chart', type: 'toggle', default: true }, { key: 'show_metrics', label: 'Show Metrics Table', type: 'toggle', default: true }] },
+  'output.multi_model_compare': { label: 'Multi-Model Compare', icon: 'mdi-compare-horizontal', color: '#f59e0b', category: 'Output', inputs: ['features'], configSchema: [{ key: 'mode', label: 'Model Mode', type: 'select', options: ['regression','classification','anomaly'], default: 'regression' }, { key: 'endpoint_ids', label: 'Model Endpoints (select up to 5)', type: 'multiselect', options: [], default: [] }, { key: 'target_column', label: 'Target Column (ground truth)', type: 'text', default: '' }, { key: 'show_chart', label: 'Show Comparison Chart', type: 'toggle', default: true }, { key: 'show_metrics', label: 'Show Metrics Table', type: 'toggle', default: true }] },
 }
 
 const PALETTE_ORDER = ['Input', 'Transform', 'Model', 'Output']
@@ -1044,7 +1073,12 @@ function removeNode(id) {
 
 function updateConfig(nodeId, key, val) {
   const node = nodes.value.find(n => n.id === nodeId)
-  if (node) node.config[key] = val
+  if (!node) return
+  node.config[key] = val
+  // When mode changes on multi_model_compare, clear endpoint selection (different mode = different models)
+  if (node.type === 'output.multi_model_compare' && key === 'mode') {
+    node.config.endpoint_ids = []
+  }
 }
 
 // Available endpoints for switching (same mode as current model node)
@@ -1091,11 +1125,12 @@ async function discoverTopics() {
 }
 
 function getMultiselectOptions(node, field) {
-  // For multi_model_compare endpoint selection
+  // For multi_model_compare endpoint selection — filter by selected mode
   if (node?.type === 'output.multi_model_compare' && field.key === 'endpoint_ids') {
+    const selectedMode = node.config?.mode || 'regression'
     return melabEndpoints.value
-      .filter(e => e.status === 'active')
-      .map(e => e.id + ':' + e.name)
+      .filter(e => e.status === 'active' && e.mode === selectedMode)
+      .map(e => e.id + ':' + e.name + ' (' + e.algorithm + ')')
   }
   // For feature_extract nodes, merge generic features with model-required features
   if (node?.type === 'transform.feature_extract' && field.key === 'features') {

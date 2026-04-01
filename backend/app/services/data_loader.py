@@ -1230,7 +1230,9 @@ class DataLoader:
         label_method: str = 'majority',
         test_ratio: float = 0.2,
         target_column: str = None,
-        selected_columns: list = None
+        selected_columns: list = None,
+        split_strategy: str = 'temporal_end',
+        no_windowing: bool = False
     ) -> Dict[str, Any]:
         """
         Apply windowing to loaded data, respecting sample boundaries.
@@ -1335,46 +1337,153 @@ class DataLoader:
                     split_method = 'stratified'
                     # Don't assign categories now — will be done after windowing
             else:
-                # Temporal split with gap for single CSV
-                split_method = 'temporal'
+                # Single CSV — apply split_strategy
                 total_rows = len(df)
-                gap = window_size  # gap equal to window_size prevents overlap
-                test_rows = max(window_size, round(total_rows * test_ratio))
-                train_rows = total_rows - test_rows - gap
-
-                if train_rows < window_size:
-                    # Not enough data for gap, skip gap
-                    gap = 0
-                    train_rows = total_rows - test_rows
-
-                # Ensure both splits can produce at least 2 windows each
-                min_rows_for_2_windows = window_size + stride
-                if train_rows < min_rows_for_2_windows or test_rows < min_rows_for_2_windows:
-                    # Reduce gap to half, redistribute
-                    gap = max(0, gap // 2)
-                    desired_test = max(min_rows_for_2_windows, round(total_rows * test_ratio))
-                    train_rows = total_rows - desired_test - gap
-                    test_rows = desired_test
-                    if train_rows < min_rows_for_2_windows:
-                        # Last resort: no gap, split proportionally
-                        gap = 0
-                        test_rows = max(min_rows_for_2_windows, round(total_rows * test_ratio))
-                        train_rows = total_rows - test_rows
-                    split_method = 'temporal (with gap)' if gap > 0 else 'temporal (no gap)'
-
+                gap = window_size  # gap prevents train/test window overlap
                 df = df.copy()
-                df['category'] = 'gap'
-                df.iloc[:train_rows, df.columns.get_loc('category')] = 'training'
-                df.iloc[train_rows + gap:, df.columns.get_loc('category')] = 'testing'
-                # Remove gap rows so no window can span train/test
-                df = df[df['category'] != 'gap'].reset_index(drop=True)
-                has_category = True
+
+                if split_strategy == 'temporal_blocks':
+                    # Interleaved blocks: divide signal into N blocks, distribute test blocks evenly
+                    # Adaptive: each test block should have at least 3 windows worth of data
+                    min_block_rows = window_size * 3  # minimum rows per block for meaningful windows
+                    max_possible_blocks = max(3, total_rows // min_block_rows)
+
+                    # Scale test blocks with data size: 2 for small, up to 5 for large datasets
+                    if total_rows < 2000:
+                        n_test_blocks = 2
+                    elif total_rows < 10000:
+                        n_test_blocks = 3
+                    elif total_rows < 50000:
+                        n_test_blocks = 4
+                    else:
+                        n_test_blocks = 5
+
+                    n_blocks = min(max_possible_blocks, round(n_test_blocks / test_ratio))
+                    n_blocks = max(n_test_blocks + 2, n_blocks)  # at least 2 train blocks between tests
+                    n_test_blocks = min(n_test_blocks, max(2, round(n_blocks * test_ratio)))
+                    # Ensure test ratio doesn't exceed requested by too much
+                    while n_test_blocks / n_blocks > test_ratio * 1.5 and n_test_blocks > 2:
+                        n_test_blocks -= 1
+                    block_size = total_rows // n_blocks
+
+                    # Evenly space test blocks throughout the signal
+                    test_block_indices = set()
+                    step = n_blocks / n_test_blocks
+                    for i in range(n_test_blocks):
+                        idx = int(round(step * (i + 0.5)))
+                        idx = min(idx, n_blocks - 1)
+                        test_block_indices.add(idx)
+
+                    half_gap = gap // 2
+                    df['category'] = 'training'
+                    for block_idx in range(n_blocks):
+                        start = block_idx * block_size
+                        end = start + block_size if block_idx < n_blocks - 1 else total_rows
+                        if block_idx in test_block_indices:
+                            # Gap at start of test block
+                            gap_end_pos = min(start + half_gap, end)
+                            df.iloc[start:gap_end_pos, df.columns.get_loc('category')] = 'gap'
+                            # Test region
+                            test_end = end - half_gap if end < total_rows else end
+                            df.iloc[gap_end_pos:test_end, df.columns.get_loc('category')] = 'testing'
+                            # Gap at end of test block
+                            if test_end < end:
+                                df.iloc[test_end:end, df.columns.get_loc('category')] = 'gap'
+
+                    print(f"[DataLoader] Interleaved: {n_blocks} blocks, {n_test_blocks} test blocks at indices {sorted(test_block_indices)}, block_size={block_size}")
+                    df = df[df['category'] != 'gap'].reset_index(drop=True)
+                    has_category = True
+                    split_method = 'interleaved blocks'
+
+                elif split_strategy == 'random':
+                    # Random split — assign categories after windowing (at window level)
+                    split_method = 'random'
+                    # Don't assign row-level categories; will be done after windowing below
+
+                else:
+                    # Default: temporal_end — test at the end
+                    split_method = 'temporal'
+                    test_rows = max(window_size, round(total_rows * test_ratio))
+                    train_rows = total_rows - test_rows - gap
+
+                    if train_rows < window_size:
+                        gap = 0
+                        train_rows = total_rows - test_rows
+
+                    min_rows_for_2_windows = window_size + stride
+                    if train_rows < min_rows_for_2_windows or test_rows < min_rows_for_2_windows:
+                        gap = max(0, gap // 2)
+                        desired_test = max(min_rows_for_2_windows, round(total_rows * test_ratio))
+                        train_rows = total_rows - desired_test - gap
+                        test_rows = desired_test
+                        if train_rows < min_rows_for_2_windows:
+                            gap = 0
+                            test_rows = max(min_rows_for_2_windows, round(total_rows * test_ratio))
+                            train_rows = total_rows - test_rows
+                        split_method = 'temporal (with gap)' if gap > 0 else 'temporal (no gap)'
+
+                    df['category'] = 'gap'
+                    df.iloc[:train_rows, df.columns.get_loc('category')] = 'training'
+                    df.iloc[train_rows + gap:, df.columns.get_loc('category')] = 'testing'
+                    df = df[df['category'] != 'gap'].reset_index(drop=True)
+                    has_category = True
 
         windows = []
         labels = []
         categories = []
 
-        if has_sample_id:
+        if no_windowing:
+            # Raw mode: each row is one sample, no windowing or feature extraction
+            split_method = split_method or 'random'
+            print(f"[DataLoader] Raw mode: label_col={label_col}, regression_target={regression_target}, columns={list(df.columns)}")
+
+            # For classification: ensure label_col is found
+            if not label_col and not regression_target:
+                for candidate in ['label', 'labels', 'class', 'class_name', 'target', 'category']:
+                    if candidate in df.columns:
+                        label_col = candidate
+                        break
+
+            # Ensure label_col is not also in sensor_cols (avoid using label as input feature)
+            if label_col and label_col in sensor_cols:
+                sensor_cols = [c for c in sensor_cols if c != label_col]
+
+            print(f"[DataLoader] Raw mode: {len(df)} rows, label_col={label_col}, "
+                  f"regression_target={regression_target}, sensor_cols={sensor_cols[:5]}...")
+
+            for idx in range(len(df)):
+                row_data = df.iloc[idx][sensor_cols].values
+                windows.append(row_data.reshape(1, -1))  # shape (1, n_features)
+
+                if regression_target:
+                    labels.append(float(df.iloc[idx][regression_target]))
+                elif label_col and label_col in df.columns:
+                    labels.append(df.iloc[idx][label_col])
+
+                if has_category:
+                    categories.append(df.iloc[idx]['category'])
+
+            # If no categories assigned yet, do random split
+            if not categories and test_ratio and 0 < test_ratio < 1:
+                from sklearn.model_selection import train_test_split as sk_split
+                num_rows = len(windows)
+                indices = np.arange(num_rows)
+                if labels and not regression_target:
+                    try:
+                        train_idx, test_idx = sk_split(
+                            indices, test_size=test_ratio,
+                            random_state=42, stratify=np.array(labels)
+                        )
+                    except ValueError:
+                        train_idx, test_idx = sk_split(indices, test_size=test_ratio, random_state=42)
+                else:
+                    train_idx, test_idx = sk_split(indices, test_size=test_ratio, random_state=42)
+                categories = ['training'] * num_rows
+                for idx in test_idx:
+                    categories[idx] = 'testing'
+                split_method = 'random (raw mode)'
+
+        elif has_sample_id:
             # Window within each sample to prevent cross-sample leakage
             for sample_id, sample_df in df.groupby('sample_id', sort=False):
                 sample_data = sample_df[sensor_cols].values
@@ -1411,25 +1520,48 @@ class DataLoader:
         else:
             # No sample_id — window within each category to prevent leakage
             if has_category:
-                for cat, cat_df in df.groupby('category', sort=False):
-                    cat_data = cat_df[sensor_cols].values
-                    n_rows = len(cat_data)
-                    if n_rows < window_size:
-                        continue
-
-                    cat_target = cat_df[regression_target].values if regression_target else None
-
+                is_interleaved = split_method in ('interleaved blocks', 'random')
+                if is_interleaved:
+                    # Interleaved/random: window the ENTIRE signal sequentially,
+                    # assign category based on the center of each window
+                    all_data = df[sensor_cols].values
+                    all_cats = df['category'].values
+                    all_target = df[regression_target].values if regression_target else None
+                    n_rows = len(all_data)
                     n_windows = (n_rows - window_size) // stride + 1
                     for i in range(n_windows):
                         start = i * stride
                         end = start + window_size
-                        windows.append(cat_data[start:end])
-                        categories.append(cat)
+                        center = start + window_size // 2
+                        win_cat = all_cats[center]
+                        windows.append(all_data[start:end])
+                        categories.append(win_cat)
                         if regression_target:
-                            labels.append(float(np.mean(cat_target[start:end])))
+                            labels.append(float(np.mean(all_target[start:end])))
                         elif label_col:
-                            window_labels = cat_df.iloc[start:end][label_col].values
+                            window_labels = df.iloc[start:end][label_col].values
                             labels.append(self._get_window_label(window_labels, label_method))
+                else:
+                    # Temporal end block: group by category to prevent cross-boundary windows
+                    for cat, cat_df in df.groupby('category', sort=False):
+                        cat_data = cat_df[sensor_cols].values
+                        n_rows = len(cat_data)
+                        if n_rows < window_size:
+                            continue
+
+                        cat_target = cat_df[regression_target].values if regression_target else None
+
+                        n_windows = (n_rows - window_size) // stride + 1
+                        for i in range(n_windows):
+                            start = i * stride
+                            end = start + window_size
+                            windows.append(cat_data[start:end])
+                            categories.append(cat)
+                            if regression_target:
+                                labels.append(float(np.mean(cat_target[start:end])))
+                            elif label_col:
+                                window_labels = cat_df.iloc[start:end][label_col].values
+                                labels.append(self._get_window_label(window_labels, label_method))
             else:
                 # No category, no sample_id — plain sequential windowing
                 num_samples = len(df)
@@ -1457,6 +1589,26 @@ class DataLoader:
                 f"No windows could be created. Window size ({window_size}) may be "
                 f"larger than individual samples. Try a smaller window size."
             )
+
+        # --- Post-windowing random split (user-selected random strategy) ---
+        if split_method == 'random' and num_windows > 1:
+            from sklearn.model_selection import train_test_split as sk_split
+            indices = np.arange(num_windows)
+            if labels and not regression_target:
+                # Classification: stratified random to ensure all classes in both sets
+                try:
+                    train_idx, test_idx = sk_split(
+                        indices, test_size=test_ratio,
+                        random_state=42, stratify=np.array(labels)
+                    )
+                except ValueError:
+                    train_idx, test_idx = sk_split(indices, test_size=test_ratio, random_state=42)
+            else:
+                train_idx, test_idx = sk_split(indices, test_size=test_ratio, random_state=42)
+            categories = ['training'] * num_windows
+            for idx in test_idx:
+                categories[idx] = 'testing'
+            split_method = 'random'
 
         # --- Post-windowing random split for regression (can't stratify continuous targets) ---
         if split_method == 'stratified' and regression_target and labels and num_windows > 1:
@@ -1583,11 +1735,12 @@ class DataLoader:
         windowed_metadata = {
             **metadata,
             'windowed': True,
-            'window_size': int(window_size),
-            'stride': int(stride),
-            'overlap': overlap_pct,
+            'no_windowing': bool(no_windowing),
+            'window_size': int(window_size) if not no_windowing else 1,
+            'stride': int(stride) if not no_windowing else 1,
+            'overlap': overlap_pct if not no_windowing else 0,
             'num_windows': int(num_windows),
-            'label_method': label_method,
+            'label_method': label_method if not no_windowing else 'direct',
             'original_session_id': session_id,
             'per_sample_windowing': has_sample_id,
             'has_category_split': bool(categories),

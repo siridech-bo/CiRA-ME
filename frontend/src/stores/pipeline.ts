@@ -30,6 +30,8 @@ interface WindowingConfig {
   stride: number
   label_method: 'majority' | 'first' | 'last' | 'threshold'
   test_ratio: number
+  split_strategy: 'temporal_end' | 'temporal_blocks' | 'random'
+  no_windowing: boolean
 }
 
 interface WindowedSession {
@@ -108,7 +110,9 @@ export const usePipelineStore = defineStore('pipeline', () => {
     window_size: 128,
     stride: 64,
     label_method: 'majority',
-    test_ratio: 0.2
+    test_ratio: 0.2,
+    split_strategy: 'temporal_end',
+    no_windowing: false
   })
   const windowedSession = ref<WindowedSession | null>(null)
 

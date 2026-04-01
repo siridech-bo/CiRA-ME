@@ -332,40 +332,49 @@
             <tr>
               <th>Model</th>
               <th>Algorithm</th>
-              <template v-if="result.mode === 'regression'">
+              <template v-if="result.actual && result.mode === 'regression'">
                 <th class="text-center">R²</th>
                 <th class="text-center">RMSE</th>
                 <th class="text-center">MAE</th>
               </template>
-              <template v-else-if="result.mode === 'classification'">
+              <template v-else-if="result.actual && result.mode === 'classification'">
                 <th class="text-center">Accuracy</th>
                 <th class="text-center">Precision</th>
                 <th class="text-center">F1</th>
               </template>
               <template v-else>
-                <th class="text-center">Predictions</th>
+                <th class="text-center">Latest Prediction</th>
+                <th class="text-center">Windows</th>
               </template>
             </tr>
           </thead>
           <tbody>
             <tr v-for="(m, eid) in result.models" :key="eid"
                 :class="{
-                  'bg-amber-darken-4': result.mode === 'regression' ? m.r2 === bestR2 : m.accuracy === bestAccuracy
+                  'bg-amber-darken-4': !m.error && result.actual && (result.mode === 'regression' ? m.r2 === bestR2 : m.accuracy === bestAccuracy),
+                  'bg-red-darken-4': !!m.error
                 }">
               <td class="font-weight-medium">
                 {{ m.name }}
-                <v-icon v-if="(result.mode === 'regression' && m.r2 === bestR2) || (result.mode === 'classification' && m.accuracy === bestAccuracy)"
+                <v-icon v-if="m.error" size="14" color="error" class="ml-1">mdi-alert-circle</v-icon>
+                <v-icon v-else-if="result.actual && ((result.mode === 'regression' && m.r2 === bestR2) || (result.mode === 'classification' && m.accuracy === bestAccuracy))"
                         size="14" color="amber" class="ml-1">mdi-trophy</v-icon>
               </td>
-              <td class="text-caption">{{ m.algorithm }}</td>
-              <template v-if="result.mode === 'regression'">
+              <td class="text-caption">
+                <span v-if="m.error" class="text-error text-caption">{{ m.error }}</span>
+                <span v-else>{{ m.algorithm }}</span>
+              </td>
+              <template v-if="m.error">
+                <!-- Error: skip metric columns -->
+              </template>
+              <template v-else-if="result.actual && result.mode === 'regression'">
                 <td class="text-center" :style="{ color: m.r2 > 0.8 ? '#34d399' : m.r2 > 0.5 ? '#fbbf24' : '#f87171' }">
                   {{ m.r2 != null ? m.r2.toFixed(4) : '-' }}
                 </td>
                 <td class="text-center">{{ m.rmse != null ? m.rmse.toFixed(4) : '-' }}</td>
                 <td class="text-center">{{ m.mae != null ? m.mae.toFixed(4) : '-' }}</td>
               </template>
-              <template v-else-if="result.mode === 'classification'">
+              <template v-else-if="result.actual && result.mode === 'classification'">
                 <td class="text-center" :style="{ color: m.accuracy > 0.9 ? '#34d399' : m.accuracy > 0.7 ? '#fbbf24' : '#f87171' }">
                   {{ m.accuracy != null ? (m.accuracy * 100).toFixed(1) + '%' : '-' }}
                 </td>
@@ -373,6 +382,9 @@
                 <td class="text-center">{{ m.f1 != null ? (m.f1 * 100).toFixed(1) + '%' : '-' }}</td>
               </template>
               <template v-else>
+                <td class="text-center" :style="{ color: '#34d399' }">
+                  {{ m.predictions?.length > 0 ? m.predictions[m.predictions.length - 1] : '-' }}
+                </td>
                 <td class="text-center">{{ m.count || 0 }}</td>
               </template>
             </tr>
@@ -779,7 +791,7 @@ onMounted(async () => {
 })
 
 // Multi-model comparison
-const showMultiTable = ref(false)
+const showMultiTable = ref(true)
 const MULTI_COLORS = ['#a78bfa', '#f59e0b', '#34d399', '#f87171', '#60a5fa']
 
 const bestR2 = computed(() => {
@@ -932,6 +944,8 @@ const sensorBufferProgress = ref(0)
 const liveInferenceCount = ref(0)
 const livePrediction = ref(null)
 const livePredictionHistory = ref([])
+const liveMultiHistory = ref({})  // { eid: { name, algorithm, mode, predictions: [] } }
+const liveMultiActuals = ref([])  // accumulated actual values from MQTT target column
 const MAX_LIVE_HISTORY = 200
 const liveLastUpdated = ref(null)
 let mqttClient = null
@@ -1038,6 +1052,16 @@ function stopLiveStream() {
 // ── Signal Recorder ─────────────────────────────────
 const isMultiModelApp = computed(() => {
   return parsedNodes.value.some(n => n.type === 'output.multi_model_compare')
+})
+
+const multiModelTargetCol = computed(() => {
+  const node = parsedNodes.value.find(n => n.type === 'output.multi_model_compare')
+  return node?.config?.target_column || ''
+})
+
+const multiModelMode = computed(() => {
+  const node = parsedNodes.value.find(n => n.type === 'output.multi_model_compare')
+  return node?.config?.mode || 'regression'
 })
 
 const isRecorderMode = computed(() => {
@@ -1192,11 +1216,16 @@ function parseSensorPayload(raw) {
     const sample = {}
     let hasNumeric = false
     const detectedKeys = []
+    const targetCol = multiModelTargetCol.value
     for (const [k, v] of Object.entries(raw)) {
-      if (!skip.has(k) && typeof v === 'number') {
+      if (skip.has(k)) continue
+      if (typeof v === 'number') {
         sample[k] = v
         hasNumeric = true
         detectedKeys.push(k)
+      } else if (typeof v === 'string' && k === targetCol) {
+        // Include string label column for ground truth comparison
+        sample[k] = v
       }
     }
     if (hasNumeric) {
@@ -1236,21 +1265,119 @@ async function runLiveInference(windowData) {
     return channels.map((ch) => sample[ch] ?? 0)
   })
 
+  // Extract target column values from MQTT data for live ground truth comparison
+  let targetColValues = null
+  const targetCol = multiModelTargetCol.value
+  if (targetCol && isMultiModelApp.value && windowData.length > 0) {
+    const firstSample = windowData[0]
+    if (typeof firstSample === 'object' && !Array.isArray(firstSample) && targetCol in firstSample) {
+      targetColValues = windowData.map(s => s[targetCol])
+    }
+  }
+
   try {
     const resp = await api.post(`/api/app-builder/run/${slug.value}`, {
       data: csvRows,
       channels: channels,
+      target_values: targetColValues,
     }, { timeout: 30000 })
 
     liveInferenceCount.value++
     liveLastUpdated.value = Date.now()
 
     if (resp.data?.multi_model) {
-      // Multi-model response — show comparison results directly
+      // Multi-model response — accumulate prediction history per model
       const models = resp.data.models || {}
-      const names = Object.values(models).map(m => m.name).join(', ')
       livePrediction.value = `${Object.keys(models).length} models compared`
-      result.value = resp.data
+
+      // Accumulate each model's predictions into history
+      for (const [eid, m] of Object.entries(models)) {
+        if (m.error) {
+          // Log error only once per model
+          if (!liveMultiHistory.value[eid]) {
+            console.warn(`[Multi-Model] ${m.name || eid} error: ${m.error}`)
+            liveMultiHistory.value[eid] = {
+              name: m.name || eid, algorithm: m.algorithm || '', mode: m.mode || '',
+              predictions: [], error: m.error,
+            }
+          }
+          continue
+        }
+        if (!liveMultiHistory.value[eid]) {
+          liveMultiHistory.value[eid] = {
+            name: m.name, algorithm: m.algorithm, mode: m.mode,
+            predictions: [],
+          }
+        }
+        const hist = liveMultiHistory.value[eid]
+        // Append latest prediction(s)
+        if (m.predictions && m.predictions.length > 0) {
+          hist.predictions.push(...m.predictions)
+          if (hist.predictions.length > MAX_LIVE_HISTORY) {
+            hist.predictions = hist.predictions.slice(-MAX_LIVE_HISTORY)
+          }
+        }
+      }
+
+      // Accumulate actual values from backend response (decoded labels)
+      if (resp.data.actual && resp.data.actual.length > 0) {
+        liveMultiActuals.value.push(...resp.data.actual)
+        if (liveMultiActuals.value.length > MAX_LIVE_HISTORY) {
+          liveMultiActuals.value = liveMultiActuals.value.slice(-MAX_LIVE_HISTORY)
+        }
+      }
+
+      // Build accumulated result for display
+      const accModels = {}
+      for (const [eid, hist] of Object.entries(liveMultiHistory.value)) {
+        accModels[eid] = {
+          name: hist.name,
+          algorithm: hist.algorithm,
+          mode: hist.mode,
+          predictions: [...hist.predictions],
+          count: hist.predictions.length,
+        }
+        if (hist.error) accModels[eid].error = hist.error
+      }
+      const numWindows = Math.max(...Object.values(accModels).map(m => m.predictions?.length || 0), 0)
+      // Include accumulated actuals if target column detected in MQTT stream
+      const hasLiveActuals = liveMultiActuals.value.length > 0
+      const actuals = hasLiveActuals ? [...liveMultiActuals.value] : resp.data.actual
+
+      // Compute metrics client-side when we have live actuals
+      if (actuals && actuals.length > 0) {
+        const mode = multiModelMode.value || resp.data.mode
+        for (const [eid, mm] of Object.entries(accModels)) {
+          const preds = mm.predictions || []
+          const len = Math.min(actuals.length, preds.length)
+          if (len === 0) continue
+          if (mode === 'regression') {
+            const a = actuals.slice(0, len).map(Number)
+            const p = preds.slice(0, len).map(Number)
+            const meanA = a.reduce((s, v) => s + v, 0) / len
+            const ssRes = a.reduce((s, v, i) => s + (v - p[i]) ** 2, 0)
+            const ssTot = a.reduce((s, v) => s + (v - meanA) ** 2, 0)
+            mm.r2 = ssTot > 0 ? 1 - ssRes / ssTot : 0
+            mm.rmse = Math.sqrt(ssRes / len)
+            mm.mae = a.reduce((s, v, i) => s + Math.abs(v - p[i]), 0) / len
+          } else if (mode === 'classification') {
+            const aStr = actuals.slice(0, len).map(v => String(v).trim().toLowerCase())
+            const pStr = preds.slice(0, len).map(v => String(v).trim().toLowerCase())
+            let correct = 0
+            for (let i = 0; i < len; i++) { if (aStr[i] === pStr[i]) correct++ }
+            mm.accuracy = correct / len
+            mm.precision = mm.accuracy  // simplified for live
+            mm.f1 = mm.accuracy
+          }
+        }
+      }
+
+      result.value = {
+        ...resp.data,
+        models: accModels,
+        num_windows: numWindows,
+        actual: actuals,
+      }
     } else {
       // Single model response
       const preds = resp.data?.predictions || []
