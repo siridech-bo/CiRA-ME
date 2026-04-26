@@ -12,6 +12,12 @@ import pandas as pd
 import numpy as np
 from typing import Dict, List, Any, Optional
 
+
+def _safe_labels(series):
+    """Convert pandas unique values to JSON-safe native Python types."""
+    return [v.item() if hasattr(v, 'item') else v for v in series.unique()]
+
+
 # Global session storage for loaded data
 # NOTE: This is in-process memory — the WSGI server MUST run with a single
 # worker process (threads are fine) so all requests share this dict.
@@ -152,7 +158,7 @@ class DataLoader:
             'sensor_columns': sensor_cols,
             'label_column': label_col,
             'timestamp_column': timestamp_col,
-            'labels': df[label_col].unique().tolist() if label_col else None
+            'labels': _safe_labels(df[label_col]) if label_col else None
         }
 
         self._store_session(session_id, df, metadata)
@@ -238,7 +244,7 @@ class DataLoader:
             'sensor_columns': sensor_cols,
             'label_column': label_col,
             'timestamp_column': timestamp_col,
-            'labels': combined[label_col].unique().tolist() if label_col else None,
+            'labels': _safe_labels(combined[label_col]) if label_col else None,
             'source_files': [os.path.basename(fp) for fp in file_paths]
         }
 
@@ -329,7 +335,7 @@ class DataLoader:
             'sensor_columns': sensor_cols,
             'label_column': 'label',
             'timestamp_column': 'timestamp',
-            'labels': df['label'].unique().tolist() if 'label' in df.columns else None
+            'labels': _safe_labels(df['label']) if 'label' in df.columns else None
         }
 
         self._store_session(session_id, df, metadata)
@@ -405,7 +411,7 @@ class DataLoader:
             'sensor_columns': sensor_cols,
             'label_column': 'label',
             'timestamp_column': 'timestamp',
-            'labels': df['label'].unique().tolist() if 'label' in df.columns else None
+            'labels': _safe_labels(df['label']) if 'label' in df.columns else None
         }
 
         self._store_session(session_id, df, metadata)
@@ -544,7 +550,7 @@ class DataLoader:
             'sensor_columns': sensor_cols,
             'label_column': 'label',
             'timestamp_column': 'timestamp',
-            'labels': df['label'].unique().tolist(),
+            'labels': _safe_labels(df['label']),
             # Diagnostic info for label detection
             'label_debug': {
                 'has_info_labels': has_info_labels,
@@ -817,7 +823,7 @@ class DataLoader:
             'sensor_columns': sensor_cols,
             'label_column': 'label',
             'timestamp_column': 'timestamp',
-            'labels': df['label'].unique().tolist()
+            'labels': _safe_labels(df['label'])
         }
 
         self._store_session(session_id, df, metadata)
@@ -945,7 +951,7 @@ class DataLoader:
 
             df = pd.DataFrame(parsed_rows)
             sensor_cols = ['value']
-            labels = df['label'].unique().tolist()
+            labels = _safe_labels(df['label'])
         else:
             # Legacy format: {'metadata': {...}, 'data': {'ch1': [...], ...}}
             meta = data.get('metadata', {})
@@ -1100,7 +1106,7 @@ class DataLoader:
             'sensor_columns': sensor_cols,
             'label_column': 'label',
             'timestamp_column': 'timestamp',
-            'labels': df['label'].unique().tolist(),
+            'labels': _safe_labels(df['label']),
         }
 
         self._store_session(session_id, df, metadata)
@@ -1438,8 +1444,9 @@ class DataLoader:
             print(f"[DataLoader] Raw mode: label_col={label_col}, regression_target={regression_target}, columns={list(df.columns)}")
 
             # For classification: ensure label_col is found
+            # Note: 'category' is excluded — it's used internally for train/test splitting
             if not label_col and not regression_target:
-                for candidate in ['label', 'labels', 'class', 'class_name', 'target', 'category']:
+                for candidate in ['label', 'labels', 'class', 'class_name', 'target']:
                     if candidate in df.columns:
                         label_col = candidate
                         break
@@ -1715,8 +1722,8 @@ class DataLoader:
         # Save normalization params for deployment
         norm_params = {
             'method': 'min_max',
-            'channel_min': ch_min.tolist(),
-            'channel_max': ch_max.tolist(),
+            'channel_min': [float(v) for v in ch_min],
+            'channel_max': [float(v) for v in ch_max],
             'sensor_columns': kept_cols,
             'dropped_columns': dropped_cols,
         }
