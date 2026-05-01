@@ -346,11 +346,11 @@ def run_app(slug):
         # Error response
         return input_data
 
-    # Check for live target values (from MQTT with ground truth column)
+    # Check for live target values and channels (from MQTT with ground truth column)
     live_target_values = None
-    body = request.get_json(silent=True)
-    if body and body.get('target_values'):
-        live_target_values = body['target_values']
+    request_body = request.get_json(silent=True)
+    if request_body and request_body.get('target_values'):
+        live_target_values = request_body['target_values']
 
     # Execute pipeline
     try:
@@ -359,8 +359,9 @@ def run_app(slug):
         model_mode = None
         actual_values = None  # Ground truth for comparison
         dataset_labels = None  # For integer label decoding
+        is_raw_mode_model = False  # Whether model was trained without windowing
 
-        # Pre-fetch dataset_labels from any endpoint in the pipeline (needed for both CSV and MQTT)
+        # Pre-fetch dataset_labels and raw mode flag from any endpoint in the pipeline
         for node in ordered_nodes:
             _nt = node.get('type', '')
             _eids = []
@@ -374,13 +375,19 @@ def run_app(slug):
                 if _ep:
                     _saved = SavedModel.get_by_id(_ep.get('saved_model_id'))
                     if _saved:
+                        _pc = _saved.get('pipeline_config', {})
+                        if isinstance(_pc, str):
+                            _pc = json.loads(_pc) if _pc else {}
+                        if _pc.get('no_windowing'):
+                            is_raw_mode_model = True
+                            print(f"[AppBuilder] Detected no_windowing=True for endpoint {_eid}", flush=True)
                         _di = _saved.get('dataset_info', {})
                         if isinstance(_di, str):
                             _di = json.loads(_di) if _di else {}
                         if _di.get('labels'):
                             dataset_labels = sorted([str(l) for l in _di['labels']])
-                            break
-            if dataset_labels:
+                        break
+            if dataset_labels or is_raw_mode_model:
                 break
 
         # If input is a DataFrame, remember column names and extract target
@@ -436,11 +443,53 @@ def run_app(slug):
             else:
                 raw_target = None
 
+        # Raw mode: skip windowing/normalize/feature_extract — pass raw values to model
+        if is_raw_mode_model:
+            if isinstance(current_data, pd.DataFrame):
+                current_data, column_names = _extract_sensor_data(current_data, ordered_nodes)
+            elif isinstance(current_data, np.ndarray):
+                # MQTT JSON input: select only model's expected sensor columns from channels
+                mqtt_channels = request_body.get('channels', []) if request_body else []
+                # Get model's expected sensor columns from pipeline_config
+                model_sensors = None
+                for _n in ordered_nodes:
+                    _nt = _n.get('type', '')
+                    _eid = None
+                    if _nt.startswith('model.endpoint.'):
+                        _eid = _nt.replace('model.endpoint.', '')
+                    if _eid:
+                        _ep = MeLabEndpoint.get_by_id(_eid)
+                        if _ep:
+                            _saved = SavedModel.get_by_id(_ep.get('saved_model_id'))
+                            if _saved:
+                                _pc = _saved.get('pipeline_config', {})
+                                if isinstance(_pc, str):
+                                    _pc = json.loads(_pc) if _pc else {}
+                                model_sensors = _pc.get('normalization', {}).get('sensor_columns', [])
+                        break
+                if model_sensors and mqtt_channels and len(mqtt_channels) == current_data.shape[1]:
+                    # Map channel names to column indices, select only model's columns
+                    ch_to_idx = {ch: i for i, ch in enumerate(mqtt_channels)}
+                    col_indices = [ch_to_idx[s] for s in model_sensors if s in ch_to_idx]
+                    if col_indices:
+                        current_data = current_data[:, col_indices]
+                        print(f"[AppBuilder] Raw mode MQTT: selected {len(col_indices)}/{len(mqtt_channels)} columns for model", flush=True)
+                    else:
+                        print(f"[AppBuilder] Raw mode MQTT: no matching columns! model expects {model_sensors[:5]}, got {mqtt_channels[:5]}", flush=True)
+                else:
+                    print(f"[AppBuilder] Raw mode MQTT: model_sensors={model_sensors is not None}, channels={len(mqtt_channels)}, data_cols={current_data.shape[1]}", flush=True)
+            # current_data is now (n_rows, n_model_features) numpy array
+
         for node in ordered_nodes:
             ntype = node.get('type', '')
             params = node.get('config', {}) or {}
 
             if ntype.startswith('input.'):
+                continue
+
+            elif is_raw_mode_model and ntype in ('transform.window', 'transform.feature_extract'):
+                # Skip windowing and feature extraction for raw mode models
+                # (normalization is still applied — model was trained on normalized data)
                 continue
 
             elif ntype == 'transform.window':

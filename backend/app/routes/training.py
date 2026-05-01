@@ -774,11 +774,15 @@ def save_benchmark():
 
     # Augment normalization from windowed session if not already provided
     windowed_session_id = pipeline_config.get('windowed_session_id')
-    if windowed_session_id and not pipeline_config.get('normalization'):
+    if windowed_session_id:
         windowed_session = _data_sessions.get(windowed_session_id)
         if windowed_session and 'metadata' in windowed_session:
             wm = windowed_session['metadata']
-            pipeline_config['normalization'] = wm.get('normalization')
+            # Always check no_windowing flag
+            if wm.get('no_windowing'):
+                pipeline_config['no_windowing'] = True
+            if not pipeline_config.get('normalization'):
+                pipeline_config['normalization'] = wm.get('normalization')
             if 'windowing' not in pipeline_config:
                 pipeline_config['windowing'] = {
                     'window_size': wm.get('window_size'),

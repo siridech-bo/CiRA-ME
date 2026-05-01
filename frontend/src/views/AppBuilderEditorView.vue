@@ -852,6 +852,7 @@ const capabilities = computed(() => {
         feature_count: e.n_features,
         feature_names: e.feature_names || [],
         target_column: e.target_column || null,
+        no_windowing: e.no_windowing || false,
         endpoint_id: e.id,
         inputs: ['features'],
         outputs: [meta.output],
@@ -1107,6 +1108,16 @@ function switchEndpoint(newEndpointId) {
     type: newType,
     config: Object.fromEntries((newCap.configSchema || []).map(f => [f.key, f.default])),
   }
+
+  // Raw mode model: set windowing to 1/1 (each row = 1 sample, no actual windowing)
+  if (newCap.no_windowing) {
+    nodes.value.forEach(n => {
+      if (n.type === 'transform.window') {
+        n.config.window_size = 1
+        n.config.step = 1
+      }
+    })
+  }
 }
 
 // MQTT topic discovery
@@ -1203,6 +1214,11 @@ function autoConfigureFeatures() {
     // Auto-fill target column on Line Chart
     if (n.type === 'output.line_chart' && selectedCap.value.target_column && !n.config.target_column) {
       n.config.target_column = selectedCap.value.target_column
+    }
+    // Raw mode model: set windowing to 1/1
+    if (selectedCap.value.no_windowing && n.type === 'transform.window') {
+      n.config.window_size = 1
+      n.config.step = 1
     }
   })
 }

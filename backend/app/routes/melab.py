@@ -59,8 +59,10 @@ def list_endpoints():
                     import json
                     pc = json.loads(pc) if pc else {}
                 ep['target_column'] = pc.get('target_column')
+                ep['no_windowing'] = bool(pc.get('no_windowing'))
         except Exception:
             ep['target_column'] = None
+            ep['no_windowing'] = False
 
     return jsonify(endpoints)
 

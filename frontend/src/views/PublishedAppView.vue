@@ -163,6 +163,21 @@
           </div>
         </div>
 
+        <!-- Actual Column Selector (regression MQTT apps) -->
+        <div v-if="mqttConnected && !isRecorderMode && !isMultiModelApp && appMode === 'regression' && (autoDetectedChannels.length > 0 || liveChannels.length > 0)"
+             class="actual-col-selector mb-3">
+          <v-select
+            v-model="liveActualColumn"
+            :items="['(none)', ...(autoDetectedChannels.length > 0 ? autoDetectedChannels : liveChannels)]"
+            label="Compare with column (actual)"
+            density="compact"
+            variant="outlined"
+            hide-details
+            style="max-width: 300px"
+            prepend-inner-icon="mdi-chart-line"
+          />
+        </div>
+
         <!-- Signal Recorder Mode -->
         <div v-if="isRecorderMode && mqttConnected" class="recorder-section">
           <!-- Label buttons -->
@@ -944,6 +959,9 @@ const sensorBufferProgress = ref(0)
 const liveInferenceCount = ref(0)
 const livePrediction = ref(null)
 const livePredictionHistory = ref([])
+const liveActualColumn = ref('(none)')  // Selected MQTT column for actual comparison
+const liveActualHistory = ref([])  // accumulated actual values from selected column
+watch(liveActualColumn, () => { liveActualHistory.value = [] })
 const liveMultiHistory = ref({})  // { eid: { name, algorithm, mode, predictions: [] } }
 const liveMultiActuals = ref([])  // accumulated actual values from MQTT target column
 const MAX_LIVE_HISTORY = 200
@@ -1229,7 +1247,7 @@ function parseSensorPayload(raw) {
       }
     }
     if (hasNumeric) {
-      if (channels.length === 0 && autoDetectedChannels.value.length === 0) {
+      if (autoDetectedChannels.value.length === 0) {
         autoDetectedChannels.value = detectedKeys
       }
       return sample
@@ -1391,10 +1409,28 @@ async function runLiveInference(windowData) {
           }
         }
       }
+
+      // Extract actual value from selected column for live comparison (regression)
+      if (liveActualColumn.value && liveActualColumn.value !== '(none)' && windowData.length > 0) {
+        const col = liveActualColumn.value
+        const firstSample = windowData[0]
+        if (typeof firstSample === 'object' && !Array.isArray(firstSample) && col in firstSample) {
+          const colValues = windowData.map(s => s[col]).filter(v => typeof v === 'number')
+          if (colValues.length > 0) {
+            const windowMean = colValues.reduce((a, b) => a + b, 0) / colValues.length
+            liveActualHistory.value.push(windowMean)
+            if (liveActualHistory.value.length > MAX_LIVE_HISTORY) {
+              liveActualHistory.value = liveActualHistory.value.slice(-MAX_LIVE_HISTORY)
+            }
+          }
+        }
+      }
+
       result.value = {
         ...resp.data,
         predictions: livePredictionHistory.value.length > 0 ? [...livePredictionHistory.value] : resp.data?.predictions,
         count: livePredictionHistory.value.length || resp.data?.count,
+        actual: liveActualHistory.value.length > 0 ? [...liveActualHistory.value] : resp.data?.actual,
       }
     }
   } catch (e) {
