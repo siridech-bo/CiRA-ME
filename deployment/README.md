@@ -14,8 +14,10 @@
 | `cirame-mosquitto.tar` | ~36 MB | Optional (MQTT) |
 | `docker-compose.yml` | — | GPU servers |
 | `docker-compose-no-gpu.yml` | — | CPU-only servers |
-| `shared/` | — | Customer datasets |
+| `datasets/` | — | User-uploaded datasets (created on first run) |
+| `data/` | — | Database, models, MQTT data (created on first run) |
 | `mosquitto/` | — | MQTT broker config |
+| `MIGRATION.md` | — | Update & data-migration guide |
 
 ## Requirements
 
@@ -38,18 +40,23 @@ Step 1: install.bat (or bash install.sh)
 Step 2: start.bat (or bash start.sh)
   └── docker compose up -d
 
-Customer data preserved:
-  ├── Docker volumes (database, models) survive image replacement
-  ├── shared/ folder (datasets) on host disk
-  └── mosquitto/ folder (broker config) on host disk
+Customer data preserved on host disk (bind-mounted):
+  ├── data/database/    (SQLite database)
+  ├── data/models/      (trained model files)
+  ├── data/ti-projects/ (TI training projects)
+  ├── data/mosquitto/   (MQTT broker persistent data)
+  ├── datasets/         (user-uploaded datasets, shared + private folders)
+  └── mosquitto/        (broker config)
 
 
 
-## Installation (Fresh Install or Upgrade)
+## Installation (Fresh Install)
 
-The install script handles both fresh installation and upgrades.
-It is safe to re-run — it stops the old version first, then loads the new images.
+For a fresh installation on a new machine, run `install.bat` (Windows) or `bash install.sh` (Linux).
 
+**To upgrade an existing installation, see the [Updating to a New Version](#updating-to-a-new-version) section below.**
+
+The install script is safe to re-run — it stops the old version first, then loads the new images.
 **Your data (trained models, database, datasets) is preserved across upgrades.**
 
 ### What the installer does:
@@ -72,8 +79,13 @@ Step 3: Load new images from .tar files
          └── cirame-mosquitto.tar    (optional — skips if missing)
 
 Step 4: Create folders and configuration
-         ├── shared/                 (dataset folder)
+         ├── data/database/          (SQLite database)
+         ├── data/models/            (trained model files)
+         ├── data/ti-projects/       (TI ModelMaker projects)
+         ├── data/mosquitto/         (MQTT broker persistent data)
+         ├── datasets/shared/        (shared datasets folder)
          └── mosquitto/mosquitto.conf (MQTT broker config)
+         (auto-migrates legacy ./shared/ -> ./datasets/shared/ if found)
 ```
 
 ### Windows
@@ -99,23 +111,63 @@ bash start.sh         # starts all services
 # Access at http://localhost:3030
 ```
 
+## Updating to a New Version
+
+You will receive a new package containing updated `.tar` image files.
+There are **two ways** to update — both preserve all your data
+(users, models, datasets, endpoints, apps, MQTT history):
+
+### Option A — In-place update (recommended, simplest)
+
+Drop the new `.tar` files into your **existing** deployment folder and run:
+
+```
+update.bat              (Windows)
+bash update.sh          (Linux / macOS)
+```
+
+That's it. Then run `start.bat` (or `start-no-gpu.bat`) to launch the new version.
+
+### Option B — Extract new release to a new folder
+
+If you prefer to extract each release to its own folder for safety:
+
+```
+1. Extract the new release into a new folder
+2. Open a terminal in the NEW folder
+3. Copy data from the OLD folder:
+       migrate.bat "C:\path\to\old\deployment"        (Windows)
+       bash migrate.sh /path/to/old/deployment        (Linux / macOS)
+4. Load the new images:
+       install.bat   (or update.bat if images are already loaded)
+5. Start:
+       start.bat
+```
+
+`migrate` copies `data/`, `datasets/`, legacy `shared/` (auto-converts), and
+`mosquitto.conf` from the old folder. The old folder is **not deleted** — it
+remains as a backup.
+
+### Detailed guide
+
+See **`MIGRATION.md`** for the full update & migration guide, including
+backup checklist and troubleshooting.
+
 ## Data Preservation
 
-Docker volumes store your data separately from images:
+All user data lives on the host disk (bind-mounted into containers):
 
-| Data | Storage | Survives upgrade? |
+| Data | Host folder | Survives upgrade? |
 |---|---|---|
-| Database (users, models, endpoints) | `backend-data` volume | Yes |
-| Trained model files (.pkl, .onnx) | `backend-models` volume | Yes |
-| TI training projects | `ti-projects` volume | Yes |
-| MQTT broker data | `mosquitto-data` volume | Yes |
-| Datasets (CSV, CBOR files) | `shared/` folder on host | Yes |
-| MQTT config | `mosquitto/` folder on host | Yes |
+| Database (users, models, endpoints, apps) | `data/database/` | Yes |
+| Trained model files (.pkl, .onnx) | `data/models/` | Yes |
+| TI training projects | `data/ti-projects/` | Yes |
+| MQTT broker data | `data/mosquitto/` | Yes |
+| Datasets (shared + user private folders) | `datasets/` | Yes |
+| MQTT broker config | `mosquitto/mosquitto.conf` | Yes |
 
-To **reset all data** (fresh start), remove volumes:
-```bash
-docker compose down -v    # WARNING: deletes all data
-```
+To **reset all data** (fresh start), delete the `data/` and `datasets/` folders
+manually, then re-run `install.bat`.
 
 ## Default Login
 
@@ -133,10 +185,12 @@ Password: admin123
 | Start (GPU) | `start.bat` | `bash start.sh` |
 | Start (CPU) | `start-no-gpu.bat` | `bash start-no-gpu.sh` |
 | Stop | `stop.bat` | `bash stop.sh` |
-| View logs | `logs.bat` | `docker compose logs -f` |
-| Check status | `status.bat` | `docker compose ps` |
+| View logs | `logs.bat` | `bash logs.sh` |
+| Check status | `status.bat` | `bash status.sh` |
+| **Update** (new .tar files in same folder) | `update.bat` | `bash update.sh` |
+| **Migrate** (copy data from another deployment folder) | `migrate.bat <old_folder>` | `bash migrate.sh <old_folder>` |
+| Fresh install / reinstall | `install.bat` | `bash install.sh` |
 | Uninstall | `uninstall.bat` | `bash uninstall.sh` |
-| Update images | Place new .tar files, run `install.bat` again |
 
 ## Network Ports
 
@@ -152,7 +206,9 @@ Ports in **bold** should be accessible from the local network for other machines
 
 ## Datasets
 
-Place CSV or CBOR datasets in the `shared/` folder. They will appear in CiRA ME under "Browse Files > shared".
+Place CSV or CBOR datasets in the `datasets/shared/` folder. They will appear in CiRA ME under "Browse Files > shared".
+
+User private folders are stored in `datasets/<folder_name>/` — each user with a private folder will have their own subfolder there.
 
 ## MQTT Live Streaming
 
@@ -220,8 +276,15 @@ docker compose up -d --force-recreate
 ```
 
 ### Database or models lost after upgrade
-This should NOT happen — data is stored in Docker volumes.
-If it does, check that you did NOT run `docker compose down -v` (the `-v` flag deletes volumes).
+This should NOT happen — data is stored on the host disk in `./data/` and `./datasets/`.
+Common causes:
+1. You extracted the new release to a **different folder**. Run `migrate.bat <old_folder>`
+   to copy your data over (see the **Updating to a New Version** section above).
+2. You ran `install.bat` in an empty new folder instead of `update.bat`.
+   `install.bat` is also safe — but only if data folders already exist there.
+3. You accidentally deleted the `data/` or `datasets/` folder.
+
+See **`MIGRATION.md`** for the full migration guide.
 
 ## Support
 
