@@ -81,7 +81,16 @@ echo
 
 # Create folders and config
 echo "[4/4] Setting up folders and configuration..."
-mkdir -p shared
+
+# Migration: legacy ./shared/ -> ./datasets/shared/ (for upgrades from old layout)
+if [ -d "shared" ] && [ ! -d "datasets/shared" ]; then
+    echo "  Migrating legacy shared/ folder to datasets/shared/..."
+    mkdir -p datasets
+    mv shared datasets/shared
+    echo "  Migration complete: ./shared/ moved to ./datasets/shared/"
+fi
+
+mkdir -p datasets/shared
 mkdir -p data/database
 mkdir -p data/models
 mkdir -p data/ti-projects

@@ -10,10 +10,15 @@ echo ============================================
 echo.
 echo This will:
 echo   1. Stop the running application
-echo   2. Load the new Docker images
+echo   2. Load the new Docker images (from .tar files in this folder)
 echo   3. Restart the application
 echo.
-echo Your data (database, models, datasets) will be preserved.
+echo IMPORTANT: Run this script in the SAME folder as your existing
+echo            installation. Your data in ./data/ and ./datasets/
+echo            is automatically preserved (bind-mounted).
+echo.
+echo If you extracted a new release to a DIFFERENT folder,
+echo run 'migrate.bat ^<old_folder^>' first to copy your data over.
 echo.
 set /p confirm="Continue with update? (yes/no): "
 if /i not "%confirm%"=="yes" (
@@ -51,6 +56,17 @@ docker compose -f docker-compose.yml down 2>nul
 docker compose -f docker-compose-no-gpu.yml down 2>nul
 echo Done.
 echo.
+
+REM Migration: legacy ./shared/ -> ./datasets/shared/ (for upgrades from old layout)
+if exist "shared" if not exist "datasets\shared" (
+    echo Migrating legacy shared/ folder to datasets/shared/...
+    if not exist "datasets" mkdir datasets
+    move /Y "shared" "datasets\shared" >nul 2>&1
+    if exist "datasets\shared" (
+        echo   Migration complete: ./shared/ moved to ./datasets/shared/
+    )
+    echo.
+)
 
 echo [2/4] Loading new backend image...
 docker load -i cirame-backend.tar

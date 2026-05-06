@@ -10,10 +10,15 @@ echo "============================================"
 echo
 echo "This will:"
 echo "  1. Stop the running application"
-echo "  2. Load the new Docker images"
+echo "  2. Load the new Docker images (from .tar files in this folder)"
 echo "  3. Clean up old image layers"
 echo
-echo "Your data (database, models, datasets) will be preserved."
+echo "IMPORTANT: Run this script in the SAME folder as your existing"
+echo "           installation. Your data in ./data/ and ./datasets/"
+echo "           is automatically preserved (bind-mounted)."
+echo
+echo "If you extracted a new release to a DIFFERENT folder,"
+echo "run 'bash migrate.sh <old_folder>' first to copy your data over."
 echo
 read -p "Continue with update? (yes/no): " confirm
 if [ "$confirm" != "yes" ]; then
@@ -43,6 +48,15 @@ fi
 echo "[1/4] Stopping current application (data is preserved)..."
 docker compose -f docker-compose.yml down 2>/dev/null || true
 docker compose -f docker-compose-no-gpu.yml down 2>/dev/null || true
+
+# Migration: legacy ./shared/ -> ./datasets/shared/ (for upgrades from old layout)
+if [ -d "shared" ] && [ ! -d "datasets/shared" ]; then
+    echo "Migrating legacy shared/ folder to datasets/shared/..."
+    mkdir -p datasets
+    mv shared datasets/shared
+    echo "  Migration complete: ./shared/ moved to ./datasets/shared/"
+    echo
+fi
 echo "Done."
 echo
 

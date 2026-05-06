@@ -23,8 +23,9 @@ services:
       # Persistent data on local disk (survives container updates, easy to backup)
       - ./data/database:/app/data
       - ./data/models:/app/models
-      # Shared folder - put datasets here for customers to access
-      - ./shared:/app/datasets/shared
+      # Datasets folder - includes shared/ AND all user private folders
+      # Mounting the entire datasets root ensures user-uploaded data persists across updates
+      - ./datasets:/app/datasets
 
     ports:
       # Expose backend port (optional - frontend proxies through nginx)
@@ -97,7 +98,8 @@ services:
     container_name: cirame-ti-modelmaker
     restart: unless-stopped
     volumes:
-      - ./shared:/app/data/datasets/shared
+      # Mount full datasets folder so TI ModelMaker can access shared + user private folders
+      - ./datasets:/app/data/datasets
       - ./data/ti-projects:/app/data/projects
     ports:
       - "5200:5200"
@@ -135,15 +137,17 @@ services:
           cpus: '0.5'
           memory: 128M
 
-# All data is stored in ./data/ folder on the host disk:
-#   data/database/  — SQLite database (users, models, endpoints, apps)
-#   data/models/    — Trained model files (.pkl, .onnx)
+# All user data is stored on the host disk (bind-mounted into containers):
+#   data/database/    — SQLite database (users, models, endpoints, apps)
+#   data/models/      — Trained model files (.pkl, .onnx)
 #   data/ti-projects/ — TI ModelMaker training projects
-#   data/mosquitto/ — MQTT broker persistent data
-#   shared/         — Datasets uploaded by users
+#   data/mosquitto/   — MQTT broker persistent data
+#   datasets/         — User-uploaded datasets (shared/ + per-user private folders)
 #
-# To backup: copy the entire data/ and shared/ folders
+# To backup:  copy the entire data/ and datasets/ folders
 # To restore: copy them back before starting
+# To migrate from another deployment folder: run migrate.bat / migrate.sh
+# See MIGRATION.md for full update/migration guide.
 
 # Network for service communication
 networks:

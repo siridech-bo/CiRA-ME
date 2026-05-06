@@ -91,7 +91,19 @@ echo.
 
 REM Create folders and config
 echo [4/4] Setting up folders and configuration...
-if not exist "shared" mkdir shared
+
+REM Migration: legacy ./shared/ -> ./datasets/shared/ (for upgrades from old layout)
+if exist "shared" if not exist "datasets\shared" (
+    echo   Migrating legacy shared/ folder to datasets/shared/...
+    if not exist "datasets" mkdir datasets
+    move /Y "shared" "datasets\shared" >nul 2>&1
+    if exist "datasets\shared" (
+        echo   Migration complete: ./shared/ moved to ./datasets/shared/
+    )
+)
+
+if not exist "datasets" mkdir datasets
+if not exist "datasets\shared" mkdir datasets\shared
 if not exist "data\database" mkdir data\database
 if not exist "data\models" mkdir data\models
 if not exist "data\ti-projects" mkdir data\ti-projects
