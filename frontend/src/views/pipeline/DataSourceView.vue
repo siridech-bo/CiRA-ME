@@ -76,9 +76,29 @@
       <!-- File Browser -->
       <v-col cols="12" md="8">
         <v-card class="pa-4">
-          <div class="d-flex align-center mb-4">
+          <div class="d-flex align-center mb-4 flex-wrap">
             <h3 class="text-subtitle-1 font-weight-bold">Browse Files</h3>
+            <v-chip
+              v-if="isCsvFormat && selectedFiles.length > 0"
+              size="x-small"
+              color="primary"
+              variant="tonal"
+              class="ml-2"
+            >
+              {{ selectedFiles.length }} / {{ csvFilesInFolder.length }} selected
+            </v-chip>
             <v-spacer />
+            <v-btn
+              v-if="isCsvFormat && csvFilesInFolder.length > 0"
+              variant="tonal"
+              size="small"
+              :color="allCsvSelectedInFolder ? 'warning' : 'success'"
+              :prepend-icon="allCsvSelectedInFolder ? 'mdi-checkbox-blank-outline' : 'mdi-checkbox-multiple-marked'"
+              class="mr-2"
+              @click="toggleSelectAllCsv"
+            >
+              {{ allCsvSelectedInFolder ? 'Deselect All' : `Select All (${csvFilesInFolder.length})` }}
+            </v-btn>
             <v-btn
               v-if="authStore.isAdmin"
               variant="tonal"
@@ -1003,6 +1023,16 @@ const isFileSelected = computed(() => {
   return (path: string) => selectedFiles.value.some(f => f.path === path)
 })
 
+// CSV files in the current folder (for Select All)
+const csvFilesInFolder = computed(() => {
+  return currentItems.value.filter(i => !i.is_dir && i.extension === '.csv')
+})
+
+const allCsvSelectedInFolder = computed(() => {
+  if (csvFilesInFolder.value.length === 0) return false
+  return csvFilesInFolder.value.every(f => selectedFiles.value.some(s => s.path === f.path))
+})
+
 // Detect if current folder is a dataset root (has training/testing subfolders)
 const isDatasetFolder = computed(() => {
   if (!isCborFormat.value) return false
@@ -1186,6 +1216,36 @@ function navigateTo(path: string) {
   selectedFiles.value = []
   multiCsvError.value = null
   loadFolders()
+}
+
+function toggleSelectAllCsv() {
+  multiCsvError.value = null
+  const folderFiles = csvFilesInFolder.value
+  if (folderFiles.length === 0) return
+
+  if (allCsvSelectedInFolder.value) {
+    // Deselect all CSV files in this folder
+    const folderPaths = new Set(folderFiles.map(f => f.path))
+    selectedFiles.value = selectedFiles.value.filter(f => !folderPaths.has(f.path))
+  } else {
+    // Add any unselected CSV files from this folder
+    const existingPaths = new Set(selectedFiles.value.map(f => f.path))
+    for (const f of folderFiles) {
+      if (!existingPaths.has(f.path)) selectedFiles.value.push(f)
+    }
+  }
+
+  // Sync selectedFile + preview state
+  if (selectedFiles.value.length === 1) {
+    selectedFile.value = selectedFiles.value[0]
+    previewFile(selectedFiles.value[0])
+  } else if (selectedFiles.value.length > 1) {
+    selectedFile.value = null
+    previewMultipleCsv()
+  } else {
+    selectedFile.value = null
+    dataPreview.value = null
+  }
 }
 
 function toggleCsvFile(item: FileItem) {

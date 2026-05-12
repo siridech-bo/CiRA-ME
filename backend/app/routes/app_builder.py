@@ -392,6 +392,32 @@ def run_app(slug):
 
         # If input is a DataFrame, remember column names and extract target
         import pandas as pd
+        # Save raw input signal for multi-model timeline visualization
+        raw_signal_preview = None
+        try:
+            if isinstance(current_data, pd.DataFrame):
+                # Pick first numeric column (most representative) and downsample to max 500 points
+                numeric_cols = current_data.select_dtypes(include=[np.number]).columns.tolist()
+                non_sensor = {'timestamp', 'time', 'index', 'label', 'class', 'target', 'category', 'sample_id'}
+                sensor_only = [c for c in numeric_cols if c.lower() not in non_sensor]
+                if sensor_only:
+                    sig = current_data[sensor_only[0]].values
+                    if len(sig) > 500:
+                        idx = np.linspace(0, len(sig) - 1, 500, dtype=int)
+                        sig = sig[idx]
+                    raw_signal_preview = [float(v) for v in sig if not np.isnan(v)]
+            elif isinstance(current_data, np.ndarray):
+                # MQTT live: flatten and take first channel
+                arr = current_data
+                if arr.ndim == 2 and arr.shape[1] > 0:
+                    sig = arr[:, 0]
+                    if len(sig) > 500:
+                        idx = np.linspace(0, len(sig) - 1, 500, dtype=int)
+                        sig = sig[idx]
+                    raw_signal_preview = [float(v) for v in sig if not np.isnan(v)]
+        except Exception as _e:
+            raw_signal_preview = None
+
         if isinstance(current_data, pd.DataFrame):
             column_names = list(current_data.columns)
             logger.info(f"[AppBuilder] Input: DataFrame {current_data.shape}, columns={column_names}")
@@ -675,6 +701,7 @@ def run_app(slug):
             'num_windows': first_model_count,
             'models': {},
             'latency_ms': round(latency_ms, 1),
+            'signal_preview': raw_signal_preview,
         }
 
         for eid, mresult in current_data.items():

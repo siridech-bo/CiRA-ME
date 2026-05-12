@@ -433,6 +433,61 @@
           </div>
         </div>
 
+        <!-- Multi-model classification timeline chart -->
+        <div v-if="result.mode === 'classification' && classTimelineRows.length > 0" class="chart-container">
+          <div class="chart-header">
+            <span class="chart-title-text">Predictions Timeline</span>
+          </div>
+          <svg :viewBox="`0 0 ${classChartW} ${classChartH}`" style="width: 100%; min-width: 500px;" class="prediction-chart">
+            <!-- Background grid -->
+            <line v-for="i in 5" :key="'cg'+i"
+              :x1="classPadL" :y1="20 + (i-1) * (classBandsH / 4)"
+              :x2="classChartW - 10" :y2="20 + (i-1) * (classBandsH / 4)"
+              stroke="#21262d" stroke-width="0.5" />
+
+            <!-- Class bands (one row per model + actual if present) -->
+            <g v-for="(row, ri) in classTimelineRows" :key="'row'+ri">
+              <!-- Row label -->
+              <text :x="classPadL - 6" :y="row.y + row.h / 2 + 4"
+                    text-anchor="end" fill="#94a3b8" font-size="10" font-family="monospace">
+                {{ row.label }}
+              </text>
+              <!-- Class rectangles -->
+              <rect v-for="(seg, si) in row.segments" :key="'seg'+ri+'-'+si"
+                :x="seg.x" :y="row.y" :width="seg.w" :height="row.h"
+                :fill="seg.color" fill-opacity="0.7"
+                :stroke="seg.mismatch ? '#f87171' : 'none'" :stroke-width="seg.mismatch ? 1 : 0">
+                <title>{{ row.label }} | Window {{ seg.idx + 1 }}: {{ seg.label }}</title>
+              </rect>
+            </g>
+
+            <!-- Signal plot below the bands -->
+            <g v-if="classSignalPath">
+              <line :x1="classPadL" :y1="classBandsBottom + 4" :x2="classChartW - 10" :y2="classBandsBottom + 4"
+                    stroke="#30363d" stroke-width="0.5" />
+              <text :x="classPadL - 6" :y="classBandsBottom + classSignalH / 2 + 10"
+                    text-anchor="end" fill="#94a3b8" font-size="10" font-family="monospace">Signal</text>
+              <path :d="classSignalPath" fill="none" stroke="#22d3ee" stroke-width="1" stroke-opacity="0.8" />
+            </g>
+
+            <!-- X-axis label -->
+            <text :x="classChartW / 2" :y="classChartH - 4" text-anchor="middle"
+                  fill="#8b949e" font-size="9">Window Index (time →)</text>
+          </svg>
+
+          <!-- Class legend -->
+          <div class="chart-legend-items" style="margin-top: 6px; flex-wrap: wrap; gap: 4px 12px;">
+            <template v-for="(color, label) in classColorMap" :key="'lg'+label">
+              <span class="chart-legend-dot" :style="{ background: color, opacity: 0.7 }"></span>
+              <span class="chart-legend-label">{{ label }}</span>
+            </template>
+            <template v-if="hasMismatch">
+              <span style="display:inline-block; width: 10px; height: 10px; border: 1px solid #f87171; border-radius: 2px; margin-left: 8px;"></span>
+              <span class="chart-legend-label" style="color: #f87171;">= mismatch with actual</span>
+            </template>
+          </div>
+        </div>
+
         <!-- Per-window predictions table -->
         <div class="table-toggle mt-3" @click="showMultiTable = !showMultiTable">
           <v-icon size="14">{{ showMultiTable ? 'mdi-chevron-down' : 'mdi-chevron-right' }}</v-icon>
@@ -871,6 +926,117 @@ const multiModelPaths = computed(() => {
   })
 })
 
+// ── Multi-Model Classification Timeline ──────────────────
+const CLASS_COLOR_PALETTE = [
+  '#a78bfa', '#34d399', '#f59e0b', '#22d3ee', '#f472b6',
+  '#fbbf24', '#60a5fa', '#fb7185', '#10b981', '#c084fc',
+]
+const classPadL = 70
+const classChartW = 800
+const classBandsTop = 20
+const classRowH = 22
+const classRowGap = 4
+const classSignalH = 60
+
+const classColorMap = computed(() => {
+  if (!result.value?.multi_model || result.value.mode !== 'classification') return {}
+  const labels = new Set()
+  if (result.value.actual) result.value.actual.forEach(v => labels.add(String(v)))
+  Object.values(result.value.models || {}).forEach(m => {
+    (m.predictions || []).forEach(v => labels.add(String(v)))
+  })
+  const map = {}
+  Array.from(labels).sort().forEach((lbl, i) => {
+    map[lbl] = CLASS_COLOR_PALETTE[i % CLASS_COLOR_PALETTE.length]
+  })
+  return map
+})
+
+const classTimelineRows = computed(() => {
+  if (!result.value?.multi_model || result.value.mode !== 'classification') return []
+  const colors = classColorMap.value
+  const actuals = result.value.actual || null
+  const models = Object.entries(result.value.models || {}).filter(([, m]) => m.predictions && m.predictions.length > 0)
+  if (models.length === 0) return []
+
+  // Determine total window count
+  const total = Math.max(
+    actuals ? actuals.length : 0,
+    ...models.map(([, m]) => m.predictions.length)
+  )
+  if (total === 0) return []
+
+  // Downsample if too many windows (>300)
+  const MAX = 300
+  let displayCount = total
+  let strideStep = 1
+  if (total > MAX) {
+    displayCount = MAX
+    strideStep = total / MAX
+  }
+
+  const innerW = classChartW - classPadL - 10
+  const segW = innerW / displayCount
+
+  const buildSegments = (arr) => {
+    if (!arr) return []
+    const out = []
+    for (let i = 0; i < displayCount; i++) {
+      const srcIdx = Math.min(arr.length - 1, Math.floor(i * strideStep))
+      const lbl = String(arr[srcIdx])
+      const actLbl = actuals ? String(actuals[Math.min(actuals.length - 1, Math.floor(i * strideStep))]) : null
+      out.push({
+        x: classPadL + i * segW,
+        w: segW + 0.5,
+        idx: srcIdx,
+        label: lbl,
+        color: colors[lbl] || '#666',
+        mismatch: actLbl !== null && actLbl !== lbl && arr !== actuals,
+      })
+    }
+    return out
+  }
+
+  const rows = []
+  let y = classBandsTop
+
+  if (actuals) {
+    rows.push({ label: 'Actual', y, h: classRowH, segments: buildSegments(actuals) })
+    y += classRowH + classRowGap
+  }
+  for (const [eid, m] of models) {
+    rows.push({ label: m.name || eid, y, h: classRowH, segments: buildSegments(m.predictions) })
+    y += classRowH + classRowGap
+  }
+  return rows
+})
+
+const classBandsH = computed(() => classTimelineRows.value.length * (classRowH + classRowGap))
+const classBandsBottom = computed(() => classBandsTop + classBandsH.value)
+const classChartH = computed(() => {
+  const sig = result.value?.signal_preview && result.value.signal_preview.length > 0 ? classSignalH : 0
+  return classBandsBottom.value + sig + 20
+})
+
+const classSignalPath = computed(() => {
+  const sig = result.value?.signal_preview
+  if (!sig || sig.length === 0 || classTimelineRows.value.length === 0) return ''
+  const innerW = classChartW - classPadL - 10
+  const minV = Math.min(...sig)
+  const maxV = Math.max(...sig)
+  const range = (maxV - minV) || 1
+  const sigTop = classBandsBottom.value + 10
+  return sig.map((v, i) => {
+    const x = classPadL + (i / (sig.length - 1 || 1)) * innerW
+    const y = sigTop + (1 - (v - minV) / range) * (classSignalH - 12)
+    return `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`
+  }).join(' ')
+})
+
+const hasMismatch = computed(() => {
+  return classTimelineRows.value.some(r => r.segments.some(s => s.mismatch))
+})
+
 function downloadMultiModelCsv() {
   if (!result.value?.multi_model || !result.value?.models) return
   const models = Object.values(result.value.models).filter(m => m.predictions)
@@ -964,6 +1130,7 @@ const liveActualHistory = ref([])  // accumulated actual values from selected co
 watch(liveActualColumn, () => { liveActualHistory.value = [] })
 const liveMultiHistory = ref({})  // { eid: { name, algorithm, mode, predictions: [] } }
 const liveMultiActuals = ref([])  // accumulated actual values from MQTT target column
+const liveSignalHistory = ref([])  // accumulated signal data for classification timeline chart
 const MAX_LIVE_HISTORY = 200
 const liveLastUpdated = ref(null)
 let mqttClient = null
@@ -1390,11 +1557,23 @@ async function runLiveInference(windowData) {
         }
       }
 
+      // Accumulate signal preview for classification timeline (one sample per window)
+      if (resp.data.signal_preview && resp.data.signal_preview.length > 0) {
+        // Take the mean of current window's signal as one timeline point
+        const winSig = resp.data.signal_preview
+        const winMean = winSig.reduce((a, b) => a + b, 0) / winSig.length
+        liveSignalHistory.value.push(winMean)
+        if (liveSignalHistory.value.length > MAX_LIVE_HISTORY) {
+          liveSignalHistory.value = liveSignalHistory.value.slice(-MAX_LIVE_HISTORY)
+        }
+      }
+
       result.value = {
         ...resp.data,
         models: accModels,
         num_windows: numWindows,
         actual: actuals,
+        signal_preview: liveSignalHistory.value.length > 0 ? [...liveSignalHistory.value] : resp.data.signal_preview,
       }
     } else {
       // Single model response
