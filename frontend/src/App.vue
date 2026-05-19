@@ -91,8 +91,9 @@
           prepend-icon="mdi-database"
           title="Data Source"
           value="data"
-          :to="{ name: 'pipeline-data' }"
+          :active="route.name === 'pipeline-data'"
           rounded="lg"
+          @click="requestNavigateToDataSource"
         />
 
         <v-list-item
@@ -266,6 +267,30 @@
       </v-card>
     </v-dialog>
 
+    <!-- Restart Pipeline Confirmation Dialog -->
+    <v-dialog v-model="pipelineStore.showResetDialog" max-width="440" persistent>
+      <v-card>
+        <v-card-title class="d-flex align-center">
+          <v-icon color="warning" class="mr-2">mdi-restart-alert</v-icon>
+          Restart Pipeline?
+        </v-card-title>
+        <v-card-text>
+          <p class="mb-2">Do you want to restart all the process?</p>
+          <p class="text-caption text-medium-emphasis">
+            Windowing, Features, and the current Training run will be cleared.
+            Models already saved to the Benchmark are not affected.
+          </p>
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="text" @click="onCancelResetPipeline">No</v-btn>
+          <v-btn color="warning" variant="flat" @click="onConfirmResetPipeline">
+            Yes, Restart
+          </v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
+
     <!-- Global Snackbar -->
     <v-snackbar
       v-model="snackbar.show"
@@ -328,6 +353,25 @@ const toggleTheme = () => {
 const logout = async () => {
   await authStore.logout()
   router.push({ name: 'login' })
+}
+
+const requestNavigateToDataSource = () => {
+  if (route.name === 'pipeline-data') return
+  if (pipelineStore.hasDownstreamState) {
+    pipelineStore.showResetDialog = true
+  } else {
+    router.push({ name: 'pipeline-data' })
+  }
+}
+
+const onConfirmResetPipeline = () => {
+  pipelineStore.reset()
+  pipelineStore.showResetDialog = false
+  router.push({ name: 'pipeline-data' })
+}
+
+const onCancelResetPipeline = () => {
+  pipelineStore.showResetDialog = false
 }
 
 const closePasswordDialog = () => {

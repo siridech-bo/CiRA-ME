@@ -147,6 +147,17 @@ export const usePipelineStore = defineStore('pipeline', () => {
   const loading = ref(false)
   const error = ref<string | null>(null)
 
+  // Confirm-restart-pipeline dialog state (driven from Data Source nav clicks)
+  const showResetDialog = ref(false)
+
+  const hasDownstreamState = computed(() =>
+    !!windowedSession.value ||
+    !!featureSession.value ||
+    !!trainingSession.value ||
+    !!featureSelectionState.value.extractionResult ||
+    !!featureSelectionState.value.selectionResult
+  )
+
   // Computed
   const canProceedToWindowing = computed(() => !!dataSession.value)
   const canProceedToFeatures = computed(() => !!windowedSession.value)
@@ -477,6 +488,9 @@ export const usePipelineStore = defineStore('pipeline', () => {
     markSelectionApplied,
     hasUnappliedSelection,
     activeFeatureCount,
-    selectedFeatureNames
+    selectedFeatureNames,
+    // Restart-pipeline confirmation
+    showResetDialog,
+    hasDownstreamState
   }
 })

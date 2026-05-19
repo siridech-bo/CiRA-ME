@@ -117,6 +117,45 @@
           </v-btn>
         </div>
 
+        <!-- Auto-record predictions toggle (inference apps incl. multi-model; not recorder) -->
+        <div
+          v-if="!isRecorderMode"
+          class="d-flex align-center flex-wrap gap-2 mb-3"
+        >
+          <v-checkbox
+            v-model="autoRecordPredictions"
+            :disabled="mqttConnected"
+            density="compact"
+            hide-details
+            color="error"
+            class="mr-2"
+          >
+            <template #label>
+              <span class="text-caption">
+                <v-icon size="x-small" color="error" class="mr-1">mdi-record-circle-outline</v-icon>
+                Auto-record predictions to CSV
+              </span>
+            </template>
+          </v-checkbox>
+          <v-select
+            v-model="predictionRecordMode"
+            :items="[
+              { title: 'Per inference (1 row per prediction)', value: 'per_inference' },
+              { title: 'Per sample (1 row per MQTT message)', value: 'per_sample' },
+              { title: 'Full window (all samples per prediction)', value: 'full_window' },
+            ]"
+            :disabled="!autoRecordPredictions || mqttConnected"
+            density="compact"
+            variant="outlined"
+            hide-details
+            style="max-width: 280px; font-size: 12px;"
+            label="Granularity"
+          />
+          <span class="text-caption text-medium-emphasis">
+            Saves a CSV when you Disconnect.
+          </span>
+        </div>
+
         <!-- Error message -->
         <v-alert v-if="mqttError" type="error" variant="tonal" density="compact" class="mb-3" closable>
           {{ mqttError }}
@@ -139,6 +178,18 @@
           <div class="live-stat">
             <div class="live-stat-label">Inferences</div>
             <div class="live-stat-value">{{ liveInferenceCount }}</div>
+          </div>
+          <div
+            v-if="isRecordingPredictions"
+            class="live-stat"
+            style="background: rgba(244, 67, 54, 0.12); border-color: rgba(244, 67, 54, 0.4);"
+          >
+            <div class="live-stat-label" style="color: #ef5350;">
+              <v-icon size="x-small" color="error" class="mr-1">mdi-circle</v-icon>Recording
+            </div>
+            <div class="live-stat-value" style="color: #ef5350;">
+              {{ predictionRecordBuffer.length }} rows
+            </div>
           </div>
         </div>
 
@@ -854,6 +905,16 @@ onMounted(async () => {
       brokerUrl = brokerUrl.replace('localhost', window.location.hostname)
                            .replace('127.0.0.1', window.location.hostname)
     }
+    // Browsers block ws:// from https:// pages. When the page is HTTPS and the
+    // broker is on the same host over plain ws://, use the nginx /mqtt WSS proxy.
+    if (window.location.protocol === 'https:' && brokerUrl.startsWith('ws://')) {
+      try {
+        const u = new URL(brokerUrl)
+        if (u.hostname === window.location.hostname) {
+          brokerUrl = `wss://${window.location.host}/mqtt`
+        }
+      } catch { /* leave URL unchanged */ }
+    }
     mqttBrokerUrl.value = brokerUrl
     mqttTopic.value = cfg.topic || 'sensors/#'
   }
@@ -1133,6 +1194,34 @@ const liveMultiActuals = ref([])  // accumulated actual values from MQTT target 
 const liveSignalHistory = ref([])  // accumulated signal data for classification timeline chart
 const MAX_LIVE_HISTORY = 200
 const liveLastUpdated = ref(null)
+
+// ── Prediction recording (auto on Connect → CSV on Disconnect) ──
+const autoRecordPredictions = ref(false)
+const predictionRecordMode = ref('per_inference') // 'per_inference' | 'per_sample' | 'full_window'
+const isRecordingPredictions = ref(false)
+const predictionRecordBuffer = ref([])
+const predictionRecordStart = ref(0)
+const predictionRecordTick = ref(0)
+let predictionRecordTimer = null
+let recordModeInitialized = false
+// Latest inference output, used to stamp per-sample rows in Mode 2
+const latestPredictionState = ref({
+  prediction: null,
+  confidence: null,
+  score: null,
+  modelPredictions: null,
+})
+
+const predictionRecordDuration = computed(() => {
+  if (!predictionRecordStart.value) return '00:00'
+  void predictionRecordTick.value
+  const sec = Math.floor((Date.now() - predictionRecordStart.value) / 1000)
+  const h = Math.floor(sec / 3600)
+  const m = Math.floor((sec % 3600) / 60)
+  const s = sec % 60
+  const pad = (n) => String(n).padStart(2, '0')
+  return h > 0 ? `${pad(h)}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`
+})
 let mqttClient = null
 let sensorBuffer = []
 let rateCounter = 0
@@ -1167,6 +1256,9 @@ async function startLiveStream() {
       mqttConnected.value = true
       mqttError.value = null
       mqttClient.subscribe(mqttTopic.value, { qos: 0 })
+      if (autoRecordPredictions.value && !isRecorderMode.value) {
+        startPredictionRecording()
+      }
     })
 
     mqttClient.on('error', (err) => {
@@ -1201,7 +1293,11 @@ async function startLiveStream() {
           }
           // Buffer for inference (non-recorder mode)
           if (!isRecorderMode.value) {
+            sample._ts = Date.now()
             pushSensorSample(sample)
+            if (isRecordingPredictions.value && predictionRecordMode.value === 'per_sample') {
+              pushPerSampleRecord(sample)
+            }
           }
         }
       } catch { /* ignore non-JSON */ }
@@ -1220,6 +1316,9 @@ async function startLiveStream() {
 }
 
 function stopLiveStream() {
+  if (isRecordingPredictions.value) {
+    stopAndDownloadPredictionRecording()
+  }
   if (mqttClient) {
     mqttClient.end(true)
     mqttClient = null
@@ -1232,6 +1331,206 @@ function stopLiveStream() {
   sensorBuffer = []
   sensorBufferLen.value = 0
   sensorBufferProgress.value = 0
+}
+
+function startPredictionRecording() {
+  predictionRecordBuffer.value = []
+  predictionRecordStart.value = Date.now()
+  isRecordingPredictions.value = true
+  latestPredictionState.value = { prediction: null, confidence: null, score: null, modelPredictions: null }
+  if (predictionRecordTimer) clearInterval(predictionRecordTimer)
+  predictionRecordTimer = setInterval(() => { predictionRecordTick.value++ }, 1000)
+}
+
+function getActualFromSample(samp) {
+  let col = null
+  if (isMultiModelApp.value) {
+    col = multiModelTargetCol.value
+  } else if (liveActualColumn.value && liveActualColumn.value !== '(none)') {
+    col = liveActualColumn.value
+  }
+  if (!col || !samp || typeof samp !== 'object' || Array.isArray(samp)) return null
+  return col in samp ? samp[col] : null
+}
+
+function extractChannelVals(samp) {
+  const channels = liveChannels.value || []
+  const out = {}
+  for (const ch of channels) {
+    if (Array.isArray(samp)) {
+      const idx = channels.indexOf(ch)
+      out[ch] = idx >= 0 ? samp[idx] : null
+    } else if (samp && typeof samp === 'object') {
+      out[ch] = samp[ch] ?? null
+    } else {
+      out[ch] = null
+    }
+  }
+  return out
+}
+
+function pushPerSampleRecord(sample) {
+  const channelVals = extractChannelVals(sample)
+  const state = latestPredictionState.value || {}
+  const actual = getActualFromSample(sample)
+  const timestamp = new Date(sample._ts || Date.now()).toISOString()
+  if (state.modelPredictions) {
+    predictionRecordBuffer.value.push({
+      timestamp,
+      ...channelVals,
+      modelPredictions: { ...state.modelPredictions },
+      actual,
+    })
+  } else {
+    predictionRecordBuffer.value.push({
+      timestamp,
+      ...channelVals,
+      prediction: state.prediction,
+      confidence: state.confidence,
+      score: state.score,
+      actual,
+    })
+  }
+}
+
+function recordInferenceRows(opts) {
+  const { windowData, prediction, confidence, score, modelPredictions } = opts
+  latestPredictionState.value = {
+    prediction: prediction ?? null,
+    confidence: confidence ?? null,
+    score: score ?? null,
+    modelPredictions: modelPredictions ? { ...modelPredictions } : null,
+  }
+  if (!isRecordingPredictions.value) return
+  if (predictionRecordMode.value === 'per_sample') return // handled in MQTT handler
+
+  const samples = predictionRecordMode.value === 'full_window'
+    ? windowData
+    : [windowData[windowData.length - 1]]
+
+  const nowIso = new Date().toISOString()
+  for (const samp of samples) {
+    const channelVals = extractChannelVals(samp)
+    const actual = getActualFromSample(samp)
+    const ts = (samp && typeof samp === 'object' && !Array.isArray(samp) && samp._ts)
+      ? new Date(samp._ts).toISOString()
+      : nowIso
+    if (modelPredictions) {
+      predictionRecordBuffer.value.push({
+        timestamp: ts,
+        ...channelVals,
+        modelPredictions: { ...modelPredictions },
+        actual,
+      })
+    } else {
+      predictionRecordBuffer.value.push({
+        timestamp: ts,
+        ...channelVals,
+        prediction: prediction ?? null,
+        confidence: confidence ?? null,
+        score: score ?? null,
+        actual,
+      })
+    }
+  }
+}
+
+function stopAndDownloadPredictionRecording() {
+  isRecordingPredictions.value = false
+  if (predictionRecordTimer) {
+    clearInterval(predictionRecordTimer)
+    predictionRecordTimer = null
+  }
+  if (predictionRecordBuffer.value.length === 0) {
+    predictionRecordStart.value = 0
+    return
+  }
+  const csv = buildPredictionCSV()
+  downloadCSV(csv, predictionCsvFilename())
+  predictionRecordBuffer.value = []
+  predictionRecordStart.value = 0
+}
+
+function csvEscape(val) {
+  if (val === null || val === undefined) return ''
+  const s = String(val)
+  if (s.includes(',') || s.includes('"') || s.includes('\n')) {
+    return '"' + s.replace(/"/g, '""') + '"'
+  }
+  return s
+}
+
+function formatNum(v) {
+  if (v === null || v === undefined || v === '') return ''
+  if (typeof v === 'number' && Number.isFinite(v)) return String(v)
+  return csvEscape(v)
+}
+
+function buildPredictionCSV() {
+  const rows = predictionRecordBuffer.value
+  const channels = liveChannels.value || []
+  const hasActual = rows.some(r => r.actual !== null && r.actual !== undefined)
+  const isMulti = rows.some(r => r.modelPredictions && typeof r.modelPredictions === 'object')
+
+  if (isMulti) {
+    const modelNames = []
+    const seen = new Set()
+    for (const r of rows) {
+      if (!r.modelPredictions) continue
+      for (const name of Object.keys(r.modelPredictions)) {
+        if (!seen.has(name)) { seen.add(name); modelNames.push(name) }
+      }
+    }
+    const header = ['timestamp', ...channels, ...modelNames]
+    if (hasActual) header.push('actual')
+    const csvRows = rows.map(r => {
+      const vals = [csvEscape(r.timestamp)]
+      for (const ch of channels) vals.push(formatNum(r[ch]))
+      for (const name of modelNames) {
+        const v = r.modelPredictions ? r.modelPredictions[name] : null
+        vals.push(formatNum(v))
+      }
+      if (hasActual) vals.push(formatNum(r.actual))
+      return vals.join(',')
+    })
+    return [header.join(','), ...csvRows].join('\n')
+  }
+
+  const hasConfidence = rows.some(r => r.confidence !== null && r.confidence !== undefined)
+  const hasScore = rows.some(r => r.score !== null && r.score !== undefined)
+
+  const header = ['timestamp', ...channels, 'prediction']
+  if (hasConfidence) header.push('confidence')
+  if (hasScore) header.push('anomaly_score')
+  if (hasActual) header.push('actual')
+
+  const csvRows = rows.map(r => {
+    const vals = [csvEscape(r.timestamp)]
+    for (const ch of channels) vals.push(formatNum(r[ch]))
+    vals.push(formatNum(r.prediction))
+    if (hasConfidence) vals.push(formatNum(r.confidence))
+    if (hasScore) vals.push(formatNum(r.score))
+    if (hasActual) vals.push(formatNum(r.actual))
+    return vals.join(',')
+  })
+
+  return [header.join(','), ...csvRows].join('\n')
+}
+
+function predictionCsvFilename() {
+  const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+  const base = (slug.value || 'app').replace(/[^a-zA-Z0-9_-]/g, '_')
+  return `predictions_${base}_${ts}.csv`
+}
+
+function downloadCSV(csvText, filename) {
+  const blob = new Blob([csvText], { type: 'text/csv;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(url)
 }
 
 // ── Signal Recorder ─────────────────────────────────
@@ -1248,6 +1547,15 @@ const multiModelMode = computed(() => {
   const node = parsedNodes.value.find(n => n.type === 'output.multi_model_compare')
   return node?.config?.mode || 'regression'
 })
+
+// Default record granularity once we know the app mode: classification → Per sample, else → Per inference
+watch([appMode, multiModelMode, isMultiModelApp], ([am, mm, isMulti]) => {
+  if (recordModeInitialized) return
+  const m = isMulti ? mm : am
+  if (!m) return
+  recordModeInitialized = true
+  predictionRecordMode.value = m === 'classification' ? 'per_sample' : 'per_inference'
+}, { immediate: true })
 
 const isRecorderMode = computed(() => {
   return parsedNodes.value.some(n => n.type === 'output.signal_recorder')
@@ -1575,6 +1883,17 @@ async function runLiveInference(windowData) {
         actual: actuals,
         signal_preview: liveSignalHistory.value.length > 0 ? [...liveSignalHistory.value] : resp.data.signal_preview,
       }
+
+      // Multi-model: update latest state + record rows per chosen granularity
+      const mPreds = {}
+      for (const [eid, m] of Object.entries(resp.data.models || {})) {
+        if (m.error || !m.predictions || m.predictions.length === 0) continue
+        const name = m.name || eid
+        mPreds[name] = m.predictions[m.predictions.length - 1]
+      }
+      if (Object.keys(mPreds).length > 0) {
+        recordInferenceRows({ windowData, modelPredictions: mPreds })
+      }
     } else {
       // Single model response
       const preds = resp.data?.predictions || []
@@ -1610,6 +1929,18 @@ async function runLiveInference(windowData) {
         predictions: livePredictionHistory.value.length > 0 ? [...livePredictionHistory.value] : resp.data?.predictions,
         count: livePredictionHistory.value.length || resp.data?.count,
         actual: liveActualHistory.value.length > 0 ? [...liveActualHistory.value] : resp.data?.actual,
+      }
+
+      // Single-model: update latest state + record rows per chosen granularity
+      if (preds.length > 0) {
+        const lastPred = preds[preds.length - 1]
+        const full = resp.data?.predictions_full
+        const lastFull = Array.isArray(full) && full.length > 0 ? full[full.length - 1] : null
+        const confidence = lastFull && typeof lastFull === 'object' && 'confidence' in lastFull
+          ? lastFull.confidence : null
+        const score = lastFull && typeof lastFull === 'object' && 'score' in lastFull
+          ? lastFull.score : null
+        recordInferenceRows({ windowData, prediction: lastPred, confidence, score })
       }
     }
   } catch (e) {

@@ -423,25 +423,84 @@
         </template>
       </v-data-table>
 
+      <!-- Signal Visualization -->
+      <v-expand-transition>
+        <div v-if="showVisualization && canVisualize" class="mt-4">
+          <v-card variant="outlined" class="pa-4">
+            <div class="d-flex align-center mb-2">
+              <v-icon size="small" class="mr-1" color="primary">mdi-chart-line</v-icon>
+              <span class="text-subtitle-2 font-weight-medium">
+                Signal Visualization
+              </span>
+              <v-chip size="x-small" color="primary" variant="tonal" class="ml-2">
+                {{ plottableColumns.length }} signal{{ plottableColumns.length === 1 ? '' : 's' }}
+              </v-chip>
+              <v-btn
+                size="x-small"
+                variant="text"
+                prepend-icon="mdi-restore"
+                class="ml-2"
+                :disabled="!isZoomed"
+                @click="resetZoom"
+              >
+                Reset Zoom
+              </v-btn>
+              <v-spacer />
+              <span class="text-caption text-medium-emphasis">
+                Plotting {{ dataPreview.preview.length.toLocaleString() }} of {{ dataPreview.metadata.total_rows.toLocaleString() }} rows
+              </span>
+            </div>
+            <div
+              class="chart-container"
+              :style="{ height: '340px', position: 'relative', cursor: panCursor, userSelect: 'none' }"
+              @wheel="onChartWheel"
+              @mousedown="onChartMouseDown"
+              @mousemove="onChartMouseMove"
+              @mouseup="onChartMouseUp"
+              @mouseleave="onChartMouseUp"
+              @dblclick="resetZoom"
+            >
+              <Line ref="chartRef" :data="chartData" :options="chartOptions" />
+            </div>
+            <div class="text-caption text-medium-emphasis mt-1">
+              X-axis: {{ timestampColumn }} &nbsp;·&nbsp; <strong>Scroll</strong> to zoom, <strong>drag</strong> to pan, <strong>double-click</strong> to reset. Toggle signals via the column headers above.
+            </div>
+          </v-card>
+        </div>
+      </v-expand-transition>
+
       <!-- Load More Info -->
       <div class="d-flex align-center justify-space-between pa-2 mt-2">
         <span class="text-caption text-medium-emphasis">
           Loaded {{ dataPreview.preview.length }} of {{ dataPreview.metadata.total_rows.toLocaleString() }} total rows
         </span>
-        <v-btn
-          v-if="dataPreview.preview.length < dataPreview.metadata.total_rows && dataPreview.preview.length < maxPreviewRows"
-          variant="tonal"
-          size="small"
-          color="primary"
-          :loading="loadingMore"
-          @click="loadMorePreview"
-        >
-          <v-icon start>mdi-plus</v-icon>
-          Load More Rows
-        </v-btn>
-        <span v-else-if="dataPreview.preview.length >= maxPreviewRows" class="text-caption text-warning">
-          Preview limit reached ({{ maxPreviewRows }} rows max)
-        </span>
+        <div class="d-flex align-center">
+          <v-btn
+            variant="tonal"
+            size="small"
+            :color="showVisualization ? 'primary' : 'secondary'"
+            :prepend-icon="showVisualization ? 'mdi-chart-line-variant' : 'mdi-chart-line'"
+            :disabled="!canVisualize"
+            class="mr-2"
+            @click="showVisualization = !showVisualization"
+          >
+            {{ showVisualization ? 'Hide Chart' : 'Visualize' }}
+          </v-btn>
+          <v-btn
+            v-if="dataPreview.preview.length < dataPreview.metadata.total_rows && dataPreview.preview.length < maxPreviewRows"
+            variant="tonal"
+            size="small"
+            color="primary"
+            :loading="loadingMore"
+            @click="loadMorePreview"
+          >
+            <v-icon start>mdi-plus</v-icon>
+            Load More Rows
+          </v-btn>
+          <span v-else-if="dataPreview.preview.length >= maxPreviewRows" class="text-caption text-warning">
+            Preview limit reached ({{ maxPreviewRows }} rows max)
+          </span>
+        </div>
       </div>
 
       <!-- Metadata -->
@@ -914,7 +973,31 @@ import { usePipelineStore } from '@/stores/pipeline'
 import { useNotificationStore } from '@/stores/notification'
 import { useAuthStore } from '@/stores/auth'
 import PipelineStepper from '@/components/PipelineStepper.vue'
+import { Line } from 'vue-chartjs'
+import {
+  Chart as ChartJS,
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  Title,
+  Tooltip,
+  Legend
+} from 'chart.js'
 import api from '@/services/api'
+
+ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend)
+
+const channelColors = [
+  '#6366F1',
+  '#22D3EE',
+  '#F59E0B',
+  '#10B981',
+  '#EF4444',
+  '#8B5CF6',
+  '#EC4899',
+  '#14B8A6'
+]
 
 interface FileItem {
   name: string
@@ -943,7 +1026,17 @@ const loadingFolders = ref(false)
 const loadingMore = ref(false)
 const loadingFull = ref(false)
 const previewItemsPerPage = ref(10)
-const maxPreviewRows = 500
+const maxPreviewRows = 50000
+
+const showVisualization = ref(false)
+const chartRef = ref<any>(null)
+const xMin = ref<number | null>(null)
+const xMax = ref<number | null>(null)
+const panCursor = ref<'grab' | 'grabbing'>('grab')
+let isPanning = false
+let panStartClientX = 0
+let panStartMin = 0
+let panStartMax = 0
 
 // Dataset scan & partition state
 const datasetScan = ref<any>(null)
@@ -1133,6 +1226,146 @@ function selectNoColumns() {
 const timestampColumn = computed(() =>
   dataPreview.value?.metadata?.timestamp_column || null
 )
+
+const plottableColumns = computed<string[]>(() => {
+  const ts = timestampColumn.value
+  return pipelineStore.selectedColumns.filter(
+    (c: string) => c !== ts && isSensorColumn(c)
+  )
+})
+
+const canVisualize = computed(() =>
+  !!dataPreview.value && !!timestampColumn.value && plottableColumns.value.length > 0
+)
+
+const chartData = computed(() => {
+  if (!dataPreview.value || !timestampColumn.value) {
+    return { labels: [] as (string | number)[], datasets: [] as any[] }
+  }
+  const rows = dataPreview.value.preview as any[]
+  const ts = timestampColumn.value as string
+  const labels = rows.map((r) => r[ts])
+  const datasets = plottableColumns.value.map((col, idx) => ({
+    label: col,
+    data: rows.map((r) => Number(r[col])),
+    borderColor: channelColors[idx % channelColors.length],
+    backgroundColor: channelColors[idx % channelColors.length] + '20',
+    borderWidth: 1.5,
+    pointRadius: 0,
+    tension: 0.1,
+    spanGaps: true
+  }))
+  return { labels, datasets }
+})
+
+const chartOptions = computed(() => ({
+  responsive: true,
+  maintainAspectRatio: false,
+  animation: false as const,
+  plugins: {
+    legend: { position: 'bottom' as const, labels: { usePointStyle: true, padding: 15 } },
+    tooltip: { mode: 'index' as const, intersect: false }
+  },
+  scales: {
+    x: {
+      title: { display: true, text: 'timestamp' },
+      ticks: { autoSkip: true, maxTicksLimit: 12 },
+      grid: { display: false },
+      min: xMin.value ?? undefined,
+      max: xMax.value ?? undefined
+    },
+    y: {
+      title: { display: true, text: 'value' },
+      grid: { color: 'rgba(127, 127, 127, 0.1)' }
+    }
+  },
+  interaction: { mode: 'nearest' as const, axis: 'x' as const, intersect: false }
+}))
+
+const isZoomed = computed(() => xMin.value !== null || xMax.value !== null)
+
+const dataLength = computed(() => dataPreview.value?.preview?.length ?? 0)
+
+function clampRange(min: number, max: number): [number, number] {
+  const last = Math.max(0, dataLength.value - 1)
+  if (max - min < 2) max = Math.min(last, min + 2)
+  if (min < 0) { max -= min; min = 0 }
+  if (max > last) { min -= (max - last); max = last }
+  if (min < 0) min = 0
+  return [Math.round(min), Math.round(max)]
+}
+
+function resetZoom() {
+  xMin.value = null
+  xMax.value = null
+}
+
+function onChartWheel(e: WheelEvent) {
+  if (!chartRef.value?.chart || dataLength.value < 3) return
+  e.preventDefault()
+  const chart = chartRef.value.chart
+  const rect = chart.canvas.getBoundingClientRect()
+  const cursorPx = e.clientX - rect.left
+  const xScale = chart.scales.x
+  const last = dataLength.value - 1
+  const curMin = xMin.value ?? 0
+  const curMax = xMax.value ?? last
+  let valueAtCursor: number
+  try {
+    valueAtCursor = xScale.getValueForPixel(cursorPx) ?? (curMin + curMax) / 2
+  } catch {
+    valueAtCursor = (curMin + curMax) / 2
+  }
+  const factor = e.deltaY < 0 ? 0.8 : 1.25
+  const newMin = valueAtCursor - (valueAtCursor - curMin) * factor
+  const newMax = valueAtCursor + (curMax - valueAtCursor) * factor
+  const [m, M] = clampRange(newMin, newMax)
+  if (m === 0 && M === last) {
+    resetZoom()
+  } else {
+    xMin.value = m
+    xMax.value = M
+  }
+}
+
+function onChartMouseDown(e: MouseEvent) {
+  if (e.button !== 0 || !chartRef.value?.chart || dataLength.value < 2) return
+  isPanning = true
+  panCursor.value = 'grabbing'
+  panStartClientX = e.clientX
+  panStartMin = xMin.value ?? 0
+  panStartMax = xMax.value ?? (dataLength.value - 1)
+}
+
+function onChartMouseMove(e: MouseEvent) {
+  if (!isPanning || !chartRef.value?.chart) return
+  const chart = chartRef.value.chart
+  const rect = chart.canvas.getBoundingClientRect()
+  const range = panStartMax - panStartMin
+  if (range <= 0 || rect.width <= 0) return
+  const pixelsPerUnit = rect.width / range
+  const shift = -(e.clientX - panStartClientX) / pixelsPerUnit
+  const [m, M] = clampRange(panStartMin + shift, panStartMax + shift)
+  const last = Math.max(0, dataLength.value - 1)
+  if (m === 0 && M === last) {
+    resetZoom()
+  } else {
+    xMin.value = m
+    xMax.value = M
+  }
+}
+
+function onChartMouseUp() {
+  if (isPanning) {
+    isPanning = false
+    panCursor.value = 'grab'
+  }
+}
+
+watch([() => showVisualization.value, () => dataLength.value], () => {
+  if (xMin.value !== null && xMin.value >= dataLength.value) resetZoom()
+  if (xMax.value !== null && xMax.value >= dataLength.value) resetZoom()
+})
 
 function getFileIcon(ext: string | null) {
   switch (ext) {

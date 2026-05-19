@@ -78,9 +78,13 @@ function getStepColor(stepValue: string) {
 }
 
 function navigateToStep(step: typeof allSteps[0]) {
-  if (isStepEditable(step.value)) {
-    router.push({ name: step.route })
+  if (!isStepEditable(step.value)) return
+  if (step.value === props.currentStep) return
+  if (step.value === 'data' && pipelineStore.hasDownstreamState) {
+    pipelineStore.showResetDialog = true
+    return
   }
+  router.push({ name: step.route })
 }
 </script>
 
