@@ -699,8 +699,50 @@
           Continue to Features
           <v-icon end>mdi-arrow-right</v-icon>
         </v-btn>
+
+        <v-btn
+          v-if="!windowingConfig.no_windowing"
+          color="warning"
+          size="large"
+          variant="outlined"
+          class="ml-2"
+          :disabled="!windowedResult"
+          @click="skipFeaturesDialog = true"
+        >
+          <v-icon start>mdi-skip-next</v-icon>
+          Skip Features &amp; Go to Training
+        </v-btn>
       </div>
     </div>
+
+    <!-- Confirmation: skip Feature Extraction and go straight to Training -->
+    <v-dialog v-model="skipFeaturesDialog" max-width="520">
+      <v-card>
+        <v-card-title class="d-flex align-center">
+          <v-icon color="warning" class="mr-2">mdi-alert-circle-outline</v-icon>
+          Skip Feature Extraction?
+        </v-card-title>
+        <v-card-text class="pt-2">
+          <p class="mb-3">
+            <strong>TI TinyML</strong> (NN models like <code>REGR_1k</code>, <code>CLS_ResAdd_3k</code>)
+            and <strong>TimesNet</strong> models train directly on the raw windowed signal &mdash;
+            they don't use extracted statistical features.
+          </p>
+          <p class="mb-0">
+            Skipping this step is safe for those models but will
+            <strong>disable Traditional ML and Custom Model training</strong>
+            in the next step. You can always come back to Features later.
+          </p>
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="text" @click="skipFeaturesDialog = false">Cancel</v-btn>
+          <v-btn color="warning" variant="flat" @click="confirmSkipFeatures">
+            Skip and Continue
+          </v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
   </v-container>
 </template>
 
@@ -1206,6 +1248,18 @@ function applyRecommendation() {
       `Applied: window_size=${windowRecommendation.value.suggestedWindowSize}, stride=${windowRecommendation.value.suggestedStride}`
     )
   }
+}
+
+const skipFeaturesDialog = ref(false)
+
+function confirmSkipFeatures() {
+  skipFeaturesDialog.value = false
+  // Default to Deep Learning if the current approach requires features (ML/Custom).
+  // TI and DL both work without a feature session; leave those choices alone.
+  if (pipelineStore.trainingApproach === 'ml' || pipelineStore.trainingApproach === 'custom') {
+    pipelineStore.setTrainingApproach('dl')
+  }
+  router.push({ name: 'pipeline-training' })
 }
 
 async function applyWindowing() {

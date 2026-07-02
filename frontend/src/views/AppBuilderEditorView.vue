@@ -770,6 +770,36 @@
     </div>
 
   </div>
+
+  <!-- Confirmation: remove Feature Extract when switching to a DL endpoint -->
+  <v-dialog v-model="removeFeatureExtractDialog" max-width="520">
+    <v-card>
+      <v-card-title class="d-flex align-center">
+        <v-icon color="warning" class="mr-2">mdi-alert-circle-outline</v-icon>
+        Remove Feature Extract node?
+      </v-card-title>
+      <v-card-text class="pt-2">
+        <p class="mb-3">
+          The <strong>{{ dlSwitchModelName }}</strong> model operates on the raw
+          windowed signal and does not use extracted statistical features.
+        </p>
+        <p class="mb-0">
+          You can remove the Feature Extract node from the canvas so it matches the
+          actual runtime behaviour, or keep it &mdash; it will be skipped automatically
+          at prediction time either way.
+        </p>
+      </v-card-text>
+      <v-card-actions>
+        <v-spacer />
+        <v-btn variant="text" @click="removeFeatureExtractDialog = false">
+          Keep it
+        </v-btn>
+        <v-btn color="warning" variant="flat" @click="removeFeatureExtractFromPipeline">
+          Remove Feature Extract
+        </v-btn>
+      </v-card-actions>
+    </v-card>
+  </v-dialog>
 </template>
 
 <script setup>
@@ -1122,6 +1152,23 @@ function switchEndpoint(newEndpointId) {
       }
     })
   }
+
+  // DL model (TimesNet): the pipeline runner will skip Feature Extract anyway, but
+  // if the user has an FE node still in the pipeline we prompt to remove it so the
+  // canvas matches the actual runtime behaviour. Keeping it is a valid choice.
+  if (newCap.is_dl && nodes.value.some(n => n.type === 'transform.feature_extract')) {
+    dlSwitchModelName.value = newCap.label || newCap.algorithm || 'this DL model'
+    removeFeatureExtractDialog.value = true
+  }
+}
+
+// Confirmation dialog state for removing Feature Extract when switching to a DL endpoint
+const removeFeatureExtractDialog = ref(false)
+const dlSwitchModelName = ref('')
+
+function removeFeatureExtractFromPipeline() {
+  nodes.value = nodes.value.filter(n => n.type !== 'transform.feature_extract')
+  removeFeatureExtractDialog.value = false
 }
 
 // MQTT topic discovery
