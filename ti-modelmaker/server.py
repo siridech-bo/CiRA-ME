@@ -826,9 +826,14 @@ def _load_csvs_from_directory(dir_path, is_classification):
     import glob as _glob
     import pandas as pd
 
-    csv_files = sorted(_glob.glob(os.path.join(dir_path, '**', '*.csv'), recursive=True))
+    # Prefer top-level CSVs (typical Edge Impulse layout: `idle.1.csv`, `wave.2.csv`,
+    # etc. all in one folder). Only recurse if the top level has none — that avoids
+    # accidentally pulling in every unrelated CSV under a broadly-scoped folder like
+    # `datasets/shared/`, which would create a multi-million-row combined DataFrame
+    # and either OOM the container or run for hours.
+    csv_files = sorted(_glob.glob(os.path.join(dir_path, '*.csv')))
     if not csv_files:
-        csv_files = sorted(_glob.glob(os.path.join(dir_path, '*.csv')))
+        csv_files = sorted(_glob.glob(os.path.join(dir_path, '**', '*.csv'), recursive=True))
     if not csv_files:
         raise ValueError(f"No CSV files found under directory: {dir_path}")
 
