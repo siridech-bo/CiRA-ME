@@ -30,13 +30,18 @@ _MAX_SESSIONS = 50
 
 
 def _build_multi_csv_selection_dir(session_id: str, file_paths: List[str]) -> str:
-    """Create a per-session directory containing symlinks (or copies) to just
-    the CSVs the user selected, and return its absolute path.
+    """Create a per-session directory containing copies of just the CSVs the
+    user selected, and return its absolute path.
 
     Lives under DATASETS_ROOT_PATH/.multi_csv_selections/<session_id>/ so
     every container that bind-mounts the datasets root can see it (backend,
-    TI ModelMaker). Prefers symlinks; falls back to copy on filesystems /
-    platforms that reject symlink creation without elevation (e.g. Windows).
+    TI ModelMaker). We copy instead of symlinking because the backend and TI
+    containers mount the datasets folder at DIFFERENT container paths
+    (/app/datasets vs /app/data/datasets), and absolute-path symlinks written
+    from the backend's perspective resolve to non-existent paths inside TI.
+    Relative symlinks would also work but the per-session data is already
+    capped by the load_csv_multiple upstream guardrails, so a plain copy is
+    the simplest robust option.
     """
     import shutil
     datasets_root = os.environ.get(
@@ -52,12 +57,7 @@ def _build_multi_csv_selection_dir(session_id: str, file_paths: List[str]) -> st
                 os.remove(dest)
             except OSError:
                 pass
-        try:
-            os.symlink(os.path.abspath(fp), dest)
-        except (OSError, NotImplementedError):
-            # Windows without symlink privilege — fall back to a copy so the
-            # feature works everywhere. Cost: disk space; benefit: robust.
-            shutil.copy2(fp, dest)
+        shutil.copy2(fp, dest)
     return selection_dir
 
 
