@@ -990,8 +990,9 @@ def _prepare_classification_dataset_dir(df, dataset_dir):
     splits = ('train', 'val', 'test')
     split_ratios = (0.6, 0.3, 0.1)
 
-    # Per-class breakdown
+    # Per-class breakdown + per-split file lists for the TI annotation index
     class_summary = []
+    per_split_files = {'train': [], 'val': [], 'test': []}
     total_files = 0
 
     for cls_label, cls_df in df.groupby(label_col, sort=False):
@@ -1060,6 +1061,8 @@ def _prepare_classification_dataset_dir(df, dataset_dir):
                     continue
                 seg_path = os.path.join(split_dir, f'segment_{local_i:04d}.csv')
                 chunk.to_csv(seg_path, index=False, header=False)
+                # Track relative path (<class>/<segment>) for the annotation index
+                per_split_files[split_name].append(f'{cls_name}/segment_{local_i:04d}.csv')
                 total_files += 1
             cursor += n
 
@@ -1080,6 +1083,19 @@ def _prepare_classification_dataset_dir(df, dataset_dir):
             f"or switch to anomaly detection for one-class problems."
         )
 
+    # TI's tinyml-tinyverse data loader expects annotation index files that list
+    # each split's segments as paths relative to the split directory. Without
+    # these, TI logs "Loading training data" and silently bails. File names
+    # match the *train*_list.txt / *val*_list.txt / *test*_list.txt glob TI uses
+    # and the annotation_prefix ("instances") from the config.
+    annotations_dir = os.path.join(dataset_dir, 'dataset', 'annotations')
+    os.makedirs(annotations_dir, exist_ok=True)
+    for split_name in splits:
+        list_path = os.path.join(annotations_dir, f'instances_{split_name}_list.txt')
+        with open(list_path, 'w') as f:
+            for rel in per_split_files[split_name]:
+                f.write(f'{rel}\n')
+
     print(
         f"[TI Dataset] Classification: label='{label_col}', sensors={sensor_cols}, "
         f"{len(class_summary)} classes, {total_files} total segment files",
@@ -1091,6 +1107,13 @@ def _prepare_classification_dataset_dir(df, dataset_dir):
             f"(train={counts['train']}, val={counts['val']}, test={counts['test']})",
             flush=True,
         )
+    print(
+        f"[TI Dataset] Wrote annotation indexes: "
+        f"train={len(per_split_files['train'])} files, "
+        f"val={len(per_split_files['val'])} files, "
+        f"test={len(per_split_files['test'])} files",
+        flush=True,
+    )
 
     return dataset_dir
 
