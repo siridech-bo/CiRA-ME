@@ -417,8 +417,9 @@ def train_model_stream():
             r'evaluate.*?R2-Score\s+([-\d.inf]+)',
             _re.IGNORECASE
         )
+        # BestEpoch metric names: MSE/R2-Score for regression, Acc@1/F1-Score for classification
         best_pattern = _re.compile(
-            r'BestEpoch.*?(MSE|R2-Score|Accuracy)\s+([-\d.inf]+)',
+            r'BestEpoch.*?(MSE|R2-Score|Acc@1|F1-Score)\s+([-\d.inf]+)',
             _re.IGNORECASE
         )
         phase_pattern = _re.compile(r'(FloatTrain|QuantTrain)', _re.IGNORECASE)
@@ -1383,14 +1384,33 @@ def _parse_ti_training_metrics(logs):
         if m:
             metrics['trainable_params'] = int(m.group(1).replace(',', ''))
 
-        # Accuracy from BestEpoch (for classification)
-        m = re.search(r'BestEpoch.*Accuracy\s+([-\d.]+)', line)
+        # Accuracy from BestEpoch (for classification).
+        # TI uses "Acc@1 25.781" (top-1 accuracy in percent), not "Accuracy N".
+        m = re.search(r'BestEpoch.*Acc@1\s+([-\d.]+)', line)
         if m:
             acc = float(m.group(1))
             if 'QuantTrain' in line:
                 metrics['accuracy'] = acc / 100.0 if acc > 1 else acc
             elif 'FloatTrain' in line and 'accuracy' not in metrics:
                 metrics['accuracy'] = acc / 100.0 if acc > 1 else acc
+
+        # F1-Score from BestEpoch (already 0..1 in TI's output)
+        m = re.search(r'BestEpoch.*F1-Score\s+([-\d.]+)', line)
+        if m:
+            f1 = float(m.group(1))
+            if 'QuantTrain' in line:
+                metrics['f1'] = f1
+            elif 'FloatTrain' in line and 'f1' not in metrics:
+                metrics['f1'] = f1
+
+        # AU-ROC from BestEpoch (also 0..1)
+        m = re.search(r'BestEpoch.*AUC ROC Score\s+([-\d.]+)', line)
+        if m:
+            auc = float(m.group(1))
+            if 'QuantTrain' in line:
+                metrics['roc_auc'] = auc
+            elif 'FloatTrain' in line and 'roc_auc' not in metrics:
+                metrics['roc_auc'] = auc
 
     # Compute MAE estimate from RMSE
     if 'rmse' in metrics:
