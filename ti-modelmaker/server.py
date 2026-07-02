@@ -32,6 +32,29 @@ os.makedirs(DATASETS_DIR, exist_ok=True)
 _train_lock = threading.Lock()
 
 
+CCS_TEMPLATES_DIR = '/app/ccs_templates/common'
+
+
+@app.route('/ccs-templates', methods=['GET'])
+def get_ccs_templates():
+    """Return the CCS project template files (firmware skeleton, serial test
+    tool) as a JSON dict of {relative_path: file_contents}. Used by the
+    backend when packaging a TI MCU deployment zip so the customer gets a
+    complete CCS-ready folder, not just the raw ONNX.
+    """
+    files = {}
+    if os.path.isdir(CCS_TEMPLATES_DIR):
+        for name in os.listdir(CCS_TEMPLATES_DIR):
+            full = os.path.join(CCS_TEMPLATES_DIR, name)
+            if os.path.isfile(full):
+                try:
+                    with open(full, 'r', encoding='utf-8') as f:
+                        files[name] = f.read()
+                except (OSError, UnicodeDecodeError):
+                    continue
+    return jsonify({'files': files, 'count': len(files)})
+
+
 @app.route('/health')
 def health():
     """Health check."""

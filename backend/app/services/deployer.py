@@ -1167,9 +1167,13 @@ int main(int argc, char* argv[]) {
         Includes: CSV loading, windowing, normalization, feature extraction,
         feature selection, scaling, and model prediction.
         """
-        norm = pipeline_config.get('normalization', {})
-        wc = pipeline_config.get('windowing', {})
-        feat_config = pipeline_config.get('feature_extraction', {})
+        # dict.get(key, default) returns None (not default) when the value at
+        # `key` is None. TI NN models explicitly persist feature_extraction as
+        # null (no statistical feature step), so we coalesce with `or {}` to
+        # avoid the .get() calls downstream crashing on NoneType.
+        norm = pipeline_config.get('normalization') or {}
+        wc = pipeline_config.get('windowing') or {}
+        feat_config = pipeline_config.get('feature_extraction') or {}
         sel_config = pipeline_config.get('feature_selection')
         approach = pipeline_config.get('training_approach', 'ml')
 

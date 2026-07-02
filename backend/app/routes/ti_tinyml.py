@@ -287,9 +287,24 @@ def _export_ti_nn_onnx_package(onnx_path, algorithm, mode, metrics, saved):
     shutil.copy2(onnx_path, dest_onnx)
     onnx_size_kb = round(os.path.getsize(dest_onnx) / 1024, 1)
 
+    # Pull the CCS project templates (firmware skeleton, serial test tool) from
+    # the TI container so the zip is a complete CCS-ready package, not just
+    # the raw ONNX. If TI is unavailable we ship without them — the ONNX and
+    # README are still useful on their own.
+    ccs_templates = {}
+    try:
+        ti = TIIntegration()
+        _resp = requests.get(f'{ti.base_url}/ccs-templates', timeout=5)
+        if _resp.ok:
+            ccs_templates = (_resp.json() or {}).get('files', {}) or {}
+    except Exception as _exc:
+        logger.warning(f"Could not fetch CCS templates from TI container: {_exc}")
+
     zip_path = os.path.join(tmp_dir, f'ti_mcu_{safe_name}.zip')
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
         zf.write(dest_onnx, 'model.onnx')
+        for _name, _content in ccs_templates.items():
+            zf.writestr(_name, _content)
         zf.writestr('model_info.json', _json_mod.dumps({
             'model_name': algorithm,
             'model_type': 'ti_nn_onnx',
@@ -300,21 +315,33 @@ def _export_ti_nn_onnx_package(onnx_path, algorithm, mode, metrics, saved):
                            'TI MCU NN Compiler in Code Composer Studio to '
                            'convert model.onnx into C for the target MCU.',
         }, indent=2))
+        _template_list = '\n'.join(
+            f'  {n:20s} CCS project template'
+            for n in sorted(ccs_templates)
+        )
+        if _template_list:
+            _template_section = f'\nCCS templates included:\n{_template_list}\n'
+        else:
+            _template_section = ''
         zf.writestr('README.txt',
             f'CiRA ME - TI MCU Package (TI NN Model)\n'
             f'======================================\n\n'
             f'Model:     {algorithm}\n'
             f'Mode:      {mode}\n'
             f'ONNX size: {onnx_size_kb} KB\n\n'
-            f'Files:\n'
+            f'Files in this zip:\n'
             f'  model.onnx       ONNX model exported by tinyml-modelmaker\n'
-            f'  model_info.json  Metrics + metadata from the training run\n\n'
+            f'  model_info.json  Metrics + metadata from the training run\n'
+            f'{_template_section}\n'
             f'Deployment to TMS320:\n'
             f'  1. Open TI Code Composer Studio.\n'
             f'  2. Use TI MCU NN Compiler to convert model.onnx into C code\n'
             f'     targeting your specific device (F28003, F28379D, etc.).\n'
-            f'  3. Include the generated C files in your CCS project.\n'
-            f'  4. Call the inference function per the TI NN Compiler docs.\n')
+            f'     This produces model_weights.h, model_config.h, and model.h.\n'
+            f'  3. Add cira_main.c (if included above) as your project entry.\n'
+            f'  4. Wire the generated inference call in cira_main.c\'s loop.\n'
+            f'  5. Build and flash. Use cira_serial_test.py from your PC to\n'
+            f'     stream test frames over UART and verify predictions.\n')
 
     return send_file(zip_path, as_attachment=True,
                      download_name=f'ti_mcu_{safe_name}.zip')

@@ -276,12 +276,41 @@ def generate_package(model_id):
     if not saved:
         return jsonify({'error': 'Model not found'}), 404
 
-    pipeline_config = saved.get('pipeline_config', {})
+    # dict.get(key, default) returns None when the key exists but the value is
+    # None (e.g. TI NN saved models with pipeline_config=null in the DB).
+    # Coalesce so the downstream .get() calls don't crash.
+    pipeline_config = saved.get('pipeline_config') or {}
     if not pipeline_config.get('normalization'):
         return jsonify({
             'error': 'Model missing pipeline config. '
                      'Re-save the model from a training session to enable package generation.'
         }), 400
+
+    # TI NN saved models (CLS_*, REGR_*, AE_* from tinyml-modelmaker) live on
+    # disk as PyTorch-exported ONNX, not sklearn pickles. Deployer's Jetson-
+    # style Python inference package would wrap them as `model.pkl` and produce
+    # an inference.py that expects sklearn — which fails at runtime. Delegate
+    # instead to the TI MCU packager, which ships the ONNX + CCS instructions.
+    import os as _os
+    model_path = saved.get('model_path') or ''
+    if model_path and _os.path.exists(model_path):
+        try:
+            with open(model_path, 'rb') as _f:
+                _magic = _f.read(4)
+        except OSError:
+            _magic = b''
+        if _magic.startswith(b'\x08'):  # ONNX protobuf tag for ir_version
+            from .ti_tinyml import _export_ti_nn_onnx_package
+            import json as _jm
+            metrics_raw = saved.get('metrics') or {}
+            metrics = _jm.loads(metrics_raw) if isinstance(metrics_raw, str) else metrics_raw
+            return _export_ti_nn_onnx_package(
+                model_path,
+                saved.get('algorithm', 'model'),
+                saved.get('mode', 'classification'),
+                metrics,
+                saved,
+            )
 
     try:
         deployer = Deployer()
