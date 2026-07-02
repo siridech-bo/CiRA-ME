@@ -809,6 +809,62 @@ def _get_traditional_ml_models(task_type):
     return {}
 
 
+def _load_csvs_from_directory(dir_path, is_classification):
+    """Load and concatenate all CSVs found in a directory.
+
+    Multi-file ingest (Select All / csv-multiple) sends the parent directory as
+    dataset_path. This walks it recursively, reads every .csv, and returns one
+    combined DataFrame.
+
+    For classification, if none of the CSVs contain a label column we treat the
+    filename stem as the class label (Edge Impulse convention where each file
+    is one recording of a single gesture, e.g. `idle.1.cbor..._converted.csv`).
+    The label is the token before the first '.' in the filename to strip common
+    Edge Impulse suffixes like `.cbor.<hash>_converted`.
+    """
+    import glob as _glob
+    import pandas as pd
+
+    csv_files = sorted(_glob.glob(os.path.join(dir_path, '**', '*.csv'), recursive=True))
+    if not csv_files:
+        csv_files = sorted(_glob.glob(os.path.join(dir_path, '*.csv')))
+    if not csv_files:
+        raise ValueError(f"No CSV files found under directory: {dir_path}")
+
+    label_candidates = {'label', 'class', 'target', 'y', 'category', 'labels'}
+    dfs = []
+    per_file = []
+
+    for fp in csv_files:
+        try:
+            df = pd.read_csv(fp)
+        except Exception as e:
+            print(f"[TI Dataset] Skipping unreadable file {os.path.basename(fp)}: {e}", flush=True)
+            continue
+        if len(df) == 0:
+            continue
+        if is_classification:
+            has_label = any(c.lower() in label_candidates for c in df.columns)
+            if not has_label:
+                stem = os.path.splitext(os.path.basename(fp))[0]
+                # Strip Edge Impulse-style dotted suffixes: keep only the label token
+                label = stem.split('.')[0]
+                df['label'] = label
+        dfs.append(df)
+        per_file.append((os.path.basename(fp), len(df)))
+
+    if not dfs:
+        raise ValueError(f"No readable non-empty CSVs under directory: {dir_path}")
+
+    print(f"[TI Dataset] Combined {len(dfs)} CSVs from {dir_path}:", flush=True)
+    for name, n in per_file[:10]:  # cap the log to first 10
+        print(f"[TI Dataset]   {name}: {n} rows", flush=True)
+    if len(per_file) > 10:
+        print(f"[TI Dataset]   ... and {len(per_file) - 10} more files", flush=True)
+
+    return pd.concat(dfs, ignore_index=True)
+
+
 def _prepare_dataset_dir(csv_path, project_dir, frame_size=128, task_type=None):
     """Prepare dataset directory structure expected by TI modelmaker.
 
@@ -834,17 +890,25 @@ def _prepare_dataset_dir(csv_path, project_dir, frame_size=128, task_type=None):
 
     dataset_dir = os.path.join(project_dir, 'dataset')
 
-    # Read the CSV once
-    df = pd.read_csv(csv_path)
+    is_classification = (task_type or '').lower() in (
+        'timeseries_classification', 'generic_timeseries_classification'
+    )
+
+    # Load the raw data. csv_path can be either a single CSV file (single-file
+    # ingest) OR a directory containing multiple CSVs (multi-file ingest via
+    # /api/data/ingest/csv-multiple). For classification, a directory of CSVs
+    # without a label column is treated as one-file-per-class (Edge Impulse
+    # convention) — the filename stem becomes the class label.
+    if os.path.isdir(csv_path):
+        df = _load_csvs_from_directory(csv_path, is_classification)
+        print(f"[TI Dataset] Loaded {len(df)} rows from directory {csv_path}", flush=True)
+    else:
+        df = pd.read_csv(csv_path)
 
     # Remove time/timestamp/index columns (never useful as features or targets)
     cols_to_keep = [c for c in df.columns if 'time' not in c.lower()
                     and 'date' not in c.lower() and 'index' not in c.lower()]
     df = df[cols_to_keep]
-
-    is_classification = (task_type or '').lower() in (
-        'timeseries_classification', 'generic_timeseries_classification'
-    )
 
     if is_classification:
         return _prepare_classification_dataset_dir(df, dataset_dir)
@@ -1054,20 +1118,33 @@ def _build_config(task_type, model_name, target_device, dataset_path,
 
     frame_size = overrides.get('frame_size', 128)
 
-    # Prepare dataset directory if input is a file
-    if os.path.isfile(dataset_path):
+    # Prepare dataset directory. We run our own prep for both file and directory
+    # inputs so the TI subprocess always gets the layout it expects. Only skip
+    # prep if the caller pre-built a project-style dataset dir (identified by the
+    # presence of a `dataset/` subfolder — the shape our own prep would produce).
+    if os.path.isdir(dataset_path) and os.path.isdir(os.path.join(dataset_path, 'dataset')):
+        dataset_dir = dataset_path
+    elif os.path.isfile(dataset_path) or os.path.isdir(dataset_path):
         dataset_dir = _prepare_dataset_dir(
             dataset_path, project_dir, frame_size=frame_size, task_type=task_type
         )
     else:
-        dataset_dir = dataset_path
+        raise ValueError(f"dataset_path is neither a file nor a directory: {dataset_path}")
 
-    # Detect number of variables from dataset
+    # Detect number of variables from dataset (peek at a sample CSV)
     n_variables = 1
     try:
         import pandas as pd
         import numpy as np
-        df = pd.read_csv(dataset_path, nrows=5)
+        sample_csv = dataset_path
+        if os.path.isdir(dataset_path):
+            # Grab the first CSV under the directory (recursive) as a schema sample.
+            import glob as _glob
+            csv_matches = sorted(_glob.glob(os.path.join(dataset_path, '**', '*.csv'), recursive=True))
+            csv_matches = csv_matches or sorted(_glob.glob(os.path.join(dataset_path, '*.csv')))
+            if csv_matches:
+                sample_csv = csv_matches[0]
+        df = pd.read_csv(sample_csv, nrows=5)
         numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
         exclude_patterns = ['time', 'timestamp', 'date', 'index', 'id', 'label', 'target', 'class']
         sensor_cols = [c for c in numeric_cols if not any(p in c.lower() for p in exclude_patterns)]
