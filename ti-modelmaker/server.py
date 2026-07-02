@@ -7,6 +7,7 @@ import os
 import json
 import uuid
 import shutil
+import threading
 import traceback
 from pathlib import Path
 from flask import Flask, request, jsonify, send_file
@@ -19,6 +20,16 @@ PROJECTS_DIR = '/app/data/projects'
 DATASETS_DIR = '/app/data/datasets'
 os.makedirs(PROJECTS_DIR, exist_ok=True)
 os.makedirs(DATASETS_DIR, exist_ok=True)
+
+# Single-run lock: Flask's dev server is threaded, so two clicks of Train
+# in the UI (or a UI retry on a slow first request) could kick off two
+# concurrent training subprocesses. Two subprocess.run calls in the same
+# container fight over CPU/memory and can stall the healthcheck endpoint
+# long enough for Docker to restart the container mid-training — the
+# customer then sees "Connection refused" with no useful error.
+# Serialize training requests instead. Non-blocking acquire — if another
+# training is in flight, return 429 immediately so the UI can display it.
+_train_lock = threading.Lock()
 
 
 @app.route('/health')
@@ -195,6 +206,22 @@ def list_models():
 @app.route('/train', methods=['POST'])
 def train_model():
     """Train one or more models."""
+    # Reject concurrent training runs early. Running two subprocess.run
+    # invocations in the same 8 GB container thrashes the healthcheck
+    # endpoint and gets the container force-restarted by Docker.
+    if not _train_lock.acquire(blocking=False):
+        return jsonify({
+            'error': 'Another training run is already in progress. Wait for it '
+                     'to finish (watch the row status) before starting a new one.',
+        }), 429
+
+    try:
+        return _train_model_locked()
+    finally:
+        _train_lock.release()
+
+
+def _train_model_locked():
     data = request.get_json()
     if not data:
         return jsonify({'error': 'No data provided'}), 400
@@ -836,6 +863,34 @@ def _load_csvs_from_directory(dir_path, is_classification):
         csv_files = sorted(_glob.glob(os.path.join(dir_path, '**', '*.csv'), recursive=True))
     if not csv_files:
         raise ValueError(f"No CSV files found under directory: {dir_path}")
+
+    # Guardrail: a broadly-scoped folder like `datasets/shared/` may contain many
+    # unrelated CSVs from different customers/projects. Combining them all into
+    # one DataFrame blocks Flask's dev server long enough for Docker's healthcheck
+    # to fire and restart the container mid-request, which the caller sees as
+    # "Connection refused" — with no useful error to explain what happened.
+    # Fail fast with a clear, actionable message instead.
+    MAX_FILES = 30
+    MAX_TOTAL_BYTES = 200 * 1024 * 1024  # 200 MB
+    if len(csv_files) > MAX_FILES:
+        raise ValueError(
+            f"Directory contains {len(csv_files)} CSV files — too many to combine "
+            f"safely (limit: {MAX_FILES}). Pick a more specific subfolder that "
+            f"only holds the CSVs for this training run. Folder: {dir_path}"
+        )
+    total_bytes = 0
+    for fp in csv_files:
+        try:
+            total_bytes += os.path.getsize(fp)
+        except OSError:
+            pass
+    if total_bytes > MAX_TOTAL_BYTES:
+        mb = total_bytes / (1024 * 1024)
+        raise ValueError(
+            f"Directory holds ~{mb:.0f} MB of CSVs across {len(csv_files)} files — "
+            f"too large to combine safely (limit: {MAX_TOTAL_BYTES // (1024*1024)} MB). "
+            f"Pick a more specific subfolder. Folder: {dir_path}"
+        )
 
     label_candidates = {'label', 'class', 'target', 'y', 'category', 'labels'}
     dfs = []
