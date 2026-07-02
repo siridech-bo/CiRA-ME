@@ -563,6 +563,13 @@
                     <div class="text-caption text-medium-emphasis">
                       CCS-ready project files for TMS320 deployment
                     </div>
+                    <div
+                      v-if="modelSource === 'session'"
+                      class="text-caption"
+                      style="color: #f59e0b;"
+                    >
+                      Requires a saved benchmark — Save from Training page first
+                    </div>
                   </div>
                   <v-btn
                     icon
@@ -1796,7 +1803,10 @@ async function exportOnly() {
     // TI MCU: export saved model as ONNX/C code package
     if (exportFormat.value === 'ti_mcu') {
       if (!selectedSavedModelId.value) {
-        notificationStore.showError('TI MCU export requires a saved model')
+        const msg = modelSource.value === 'session'
+          ? 'TI MCU package needs a saved benchmark. Go to the Training page, click "Save Model as Benchmark" on this model, then come back to Deploy and pick it under "Saved Benchmark Model".'
+          : 'Pick a saved benchmark model above before exporting.'
+        notificationStore.showError(msg)
         return
       }
       try {
@@ -1822,7 +1832,10 @@ async function exportOnly() {
     // CiRA CLAW: download zip with model.onnx + manifest
     if (exportFormat.value === 'cira_claw') {
       if (!selectedSavedModelId.value) {
-        notificationStore.showError('CiRA CLAW export requires a saved model')
+        const msg = modelSource.value === 'session'
+          ? 'CiRA CLAW package needs a saved benchmark. Go to the Training page, click "Save Model as Benchmark" on this model, then come back to Deploy and pick it under "Saved Benchmark Model".'
+          : 'Pick a saved benchmark model above before exporting.'
+        notificationStore.showError(msg)
         return
       }
       const response = await api.post(
