@@ -29,6 +29,38 @@ _SESSION_TTL_SECONDS = 2 * 60 * 60  # 2 hours
 _MAX_SESSIONS = 50
 
 
+def _build_multi_csv_selection_dir(session_id: str, file_paths: List[str]) -> str:
+    """Create a per-session directory containing symlinks (or copies) to just
+    the CSVs the user selected, and return its absolute path.
+
+    Lives under DATASETS_ROOT_PATH/.multi_csv_selections/<session_id>/ so
+    every container that bind-mounts the datasets root can see it (backend,
+    TI ModelMaker). Prefers symlinks; falls back to copy on filesystems /
+    platforms that reject symlink creation without elevation (e.g. Windows).
+    """
+    import shutil
+    datasets_root = os.environ.get(
+        'DATASETS_ROOT_PATH',
+        os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'datasets')
+    )
+    selection_dir = os.path.join(datasets_root, '.multi_csv_selections', session_id)
+    os.makedirs(selection_dir, exist_ok=True)
+    for fp in file_paths:
+        dest = os.path.join(selection_dir, os.path.basename(fp))
+        if os.path.lexists(dest):
+            try:
+                os.remove(dest)
+            except OSError:
+                pass
+        try:
+            os.symlink(os.path.abspath(fp), dest)
+        except (OSError, NotImplementedError):
+            # Windows without symlink privilege — fall back to a copy so the
+            # feature works everywhere. Cost: disk space; benefit: robust.
+            shutil.copy2(fp, dest)
+    return selection_dir
+
+
 class DataLoader:
     """Service for loading data from various formats."""
 
@@ -233,9 +265,20 @@ class DataLoader:
         # Store session
         session_id = self._generate_session_id()
         all_columns = combined.columns.tolist()
+
+        # Build a session-scoped directory containing symlinks (or copies as
+        # fallback) to only the selected files. Downstream consumers — TI
+        # training, feature extraction, pipeline replay — read `file_path` as
+        # a directory and glob for CSVs. Pointing them at the parent folder
+        # (as we used to) meant a "Select 2 files" click actually shipped the
+        # whole shared/ directory to TI. This dir contains exactly the user's
+        # selection, and lives under the datasets root so it's visible to
+        # every container that mounts it.
+        selection_dir = _build_multi_csv_selection_dir(session_id, file_paths)
+
         metadata = {
             'format': 'csv',
-            'file_path': os.path.dirname(file_paths[0]),
+            'file_path': selection_dir,
             'file_paths': file_paths,
             'is_multi_csv': True,
             'total_rows': len(combined),
