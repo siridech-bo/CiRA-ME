@@ -942,42 +942,55 @@ def _prepare_classification_dataset_dir(df, dataset_dir):
         if n_rows == 0:
             continue
 
-        # Chunk the rows into ~10 files so amongst_files split has enough granularity
-        n_chunks = min(10, max(3, n_rows // 500))
+        # Chunk into more, smaller files so amongst_files splitter has enough
+        # granularity to give every split at least one file for every class.
+        # Aim for >= 6 chunks per class whenever possible.
+        n_chunks = max(6, min(20, n_rows // 50))
         n_chunks = min(n_chunks, n_rows)  # Never more chunks than rows
-        chunk_size = max(1, n_rows // n_chunks)
 
-        # Compute file-count split per class
-        n_train = max(1, int(round(n_chunks * split_ratios[0])))
-        n_val = max(1, int(round(n_chunks * split_ratios[1]))) if n_chunks >= 3 else 0
-        n_test = max(1, n_chunks - n_train - n_val) if n_chunks - n_train - n_val > 0 else 0
-        # Adjust so counts sum to n_chunks and every split has at least one file
-        # when we have enough chunks to spare
-        counts = {'train': n_train, 'val': n_val, 'test': n_test}
-        assigned = counts['train'] + counts['val'] + counts['test']
-        # Trim from train if we overshot
-        while assigned > n_chunks and counts['train'] > 1:
-            counts['train'] -= 1
-            assigned -= 1
-        # Distribute leftover chunks (if any) to train first, then val
-        leftover = n_chunks - assigned
-        counts['train'] += max(0, leftover)
+        # Base chunk size + remainder distribution so no rows are dropped
+        chunk_size = max(1, n_rows // n_chunks)
+        remainder = n_rows - chunk_size * n_chunks
+
+        # File-count split per class using floor for train/val and the rest for test.
+        # Guarantees every split gets at least one file when n_chunks >= 3.
+        counts = {'train': 0, 'val': 0, 'test': 0}
+        if n_chunks >= 3:
+            counts['train'] = max(1, int(n_chunks * split_ratios[0]))
+            counts['val'] = max(1, int(n_chunks * split_ratios[1]))
+            counts['test'] = max(1, n_chunks - counts['train'] - counts['val'])
+            # If we overshot (rare with the max(1,...) guards), trim from train.
+            while sum(counts.values()) > n_chunks and counts['train'] > 1:
+                counts['train'] -= 1
+            # Give any leftover chunks to train (largest split).
+            leftover = n_chunks - sum(counts.values())
+            counts['train'] += max(0, leftover)
+        elif n_chunks == 2:
+            counts['train'], counts['val'], counts['test'] = 1, 1, 0
+        else:  # n_chunks == 1
+            counts['train'], counts['val'], counts['test'] = 1, 0, 0
 
         # Ensure output dirs exist for every split, even if empty (TI reads them)
         for split_name in splits:
             os.makedirs(os.path.join(dataset_dir, 'dataset', split_name, cls_name), exist_ok=True)
 
-        # Write chunks: train first, then val, then test — preserves temporal order
-        chunk_starts = [i * chunk_size for i in range(n_chunks)]
+        # Build chunk boundaries. The first `remainder` chunks are one row larger
+        # so every row lands in exactly one chunk (no data loss at the tail).
+        chunk_boundaries = [0]
+        for i in range(n_chunks):
+            step = chunk_size + (1 if i < remainder else 0)
+            chunk_boundaries.append(chunk_boundaries[-1] + step)
+
+        # Write chunks: train first, then val, then test — preserves temporal order.
         cursor = 0
         for split_name in splits:
             n = counts[split_name]
             split_dir = os.path.join(dataset_dir, 'dataset', split_name, cls_name)
             for local_i, chunk_idx in enumerate(range(cursor, cursor + n)):
-                if chunk_idx >= len(chunk_starts):
+                if chunk_idx >= n_chunks:
                     break
-                start = chunk_starts[chunk_idx]
-                end = chunk_starts[chunk_idx + 1] if chunk_idx + 1 < len(chunk_starts) else n_rows
+                start = chunk_boundaries[chunk_idx]
+                end = chunk_boundaries[chunk_idx + 1]
                 chunk = cls_sensor_df.iloc[start:end]
                 if len(chunk) == 0:
                     continue
@@ -990,6 +1003,18 @@ def _prepare_classification_dataset_dir(df, dataset_dir):
 
     if not class_summary:
         raise ValueError(f"No usable rows found after grouping by label '{label_col}'")
+
+    # Classification requires at least 2 classes to be a meaningful problem.
+    # Fail fast with a clear error rather than letting the TI subprocess hang
+    # on a degenerate single-class dataset.
+    if len(class_summary) < 2:
+        only_class = class_summary[0][0]
+        raise ValueError(
+            f"Classification requires at least 2 distinct classes but the dataset "
+            f"has only 1 (label column '{label_col}', class '{only_class}', "
+            f"{class_summary[0][1]} rows). Upload a CSV containing multiple labels, "
+            f"or switch to anomaly detection for one-class problems."
+        )
 
     print(
         f"[TI Dataset] Classification: label='{label_col}', sensors={sensor_cols}, "
