@@ -554,7 +554,7 @@
               </tr>
             </thead>
             <tbody>
-              <tr v-for="i in Math.min(result.num_windows || 0, 100)" :key="i">
+              <tr v-for="i in Math.min(result.num_windows || 0, tableMaxRows)" :key="i">
                 <td>{{ i }}</td>
                 <td v-if="result.actual" style="color: #22d3ee;">{{ result.actual[i-1] ?? '-' }}</td>
                 <td v-for="(m, eid) in result.models" :key="'td'+eid+i"
@@ -656,7 +656,7 @@
             <table class="result-table">
               <thead><tr><th>#</th><th>Prediction</th></tr></thead>
               <tbody>
-                <tr v-for="(val, i) in (result.predictions || []).slice(0, 100)" :key="i">
+                <tr v-for="(val, i) in (result.predictions || []).slice(0, tableMaxRows)" :key="i">
                   <td>{{ i + 1 }}</td>
                   <td :style="{ color: modeColor }">{{ typeof val === 'number' ? val.toFixed(4) : val }}</td>
                 </tr>
@@ -677,7 +677,7 @@
             <table class="result-table">
               <thead><tr><th>#</th><th>Label</th><th>Confidence</th></tr></thead>
               <tbody>
-                <tr v-for="(val, i) in (result.predictions_full || result.predictions || []).slice(0, 100)" :key="i">
+                <tr v-for="(val, i) in (result.predictions_full || result.predictions || []).slice(0, tableMaxRows)" :key="i">
                   <td>{{ i + 1 }}</td>
                   <td :style="{ color: modeColor }">{{ val.label || val }}</td>
                   <td>{{ val.confidence ? (val.confidence * 100).toFixed(1) + '%' : '-' }}</td>
@@ -707,7 +707,7 @@
             <table class="result-table">
               <thead><tr><th>#</th><th>Label</th><th>Score</th></tr></thead>
               <tbody>
-                <tr v-for="(val, i) in (result.predictions_full || result.predictions || []).slice(0, 100)" :key="i">
+                <tr v-for="(val, i) in (result.predictions_full || result.predictions || []).slice(0, tableMaxRows)" :key="i">
                   <td>{{ i + 1 }}</td>
                   <td :style="{ color: (val.label || val) === 'anomaly' ? '#f87171' : '#34d399' }">
                     {{ val.label || val }}
@@ -852,6 +852,14 @@ const parsedNodes = computed(() => {
 
 const appMode = computed(() => {
   return appData.value.mode || 'regression'
+})
+
+// Max rows to render in result tables; falls back to 100 for backwards compatibility
+// (older apps had no output.table node config or set max_rows to a smaller default).
+const tableMaxRows = computed(() => {
+  const tableNode = parsedNodes.value.find(n => n.type === 'output.table')
+  const configured = Number(tableNode?.config?.max_rows)
+  return Number.isFinite(configured) && configured > 0 ? configured : 100
 })
 
 const modeColor = computed(() => MODE_COLORS[appMode.value] || '#94a3b8')

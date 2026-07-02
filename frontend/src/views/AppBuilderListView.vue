@@ -394,7 +394,7 @@ const TEMPLATES = [
       { id: 'n2', type: 'transform.normalize', config: { method: 'minmax' } },
       { id: 'n3', type: 'transform.window', config: { window_size: 128, step: 64 } },
       { id: 'n4', type: 'transform.feature_extract', config: { features: [] } },
-      { id: 'n6', type: 'output.table', config: { max_rows: 50, show_confidence: true } },
+      { id: 'n6', type: 'output.table', config: { max_rows: 100, show_confidence: true } },
     ],
   },
   // ── MQTT Live Stream Templates ──
@@ -440,7 +440,7 @@ const TEMPLATES = [
       { id: 'n2', type: 'transform.normalize', config: { method: 'minmax' } },
       { id: 'n3', type: 'transform.window', config: { window_size: 128, step: 64 } },
       { id: 'n4', type: 'transform.feature_extract', config: { features: [] } },
-      { id: 'n6', type: 'output.table', config: { max_rows: 50, show_confidence: true } },
+      { id: 'n6', type: 'output.table', config: { max_rows: 100, show_confidence: true } },
     ],
   },
   // ── Recording Template ──
@@ -486,7 +486,7 @@ const TEMPLATES = [
       { id: 'n3', type: 'transform.window', config: { window_size: 128, step: 64 } },
       { id: 'n4', type: 'transform.feature_extract', config: { features: [] } },
       { id: 'n6', type: 'output.multi_model_compare', config: { mode: 'classification', endpoint_ids: [], target_column: 'label', show_chart: false, show_metrics: true } },
-      { id: 'n7', type: 'output.table', config: { max_rows: 50, show_confidence: true } },
+      { id: 'n7', type: 'output.table', config: { max_rows: 100, show_confidence: true } },
     ],
   },
   {
@@ -518,7 +518,7 @@ const TEMPLATES = [
       { id: 'n3', type: 'transform.window', config: { window_size: 128, step: 64 } },
       { id: 'n4', type: 'transform.feature_extract', config: { features: [] } },
       { id: 'n6', type: 'output.multi_model_compare', config: { mode: 'classification', endpoint_ids: [], target_column: 'label', show_chart: false, show_metrics: true } },
-      { id: 'n7', type: 'output.table', config: { max_rows: 50, show_confidence: true } },
+      { id: 'n7', type: 'output.table', config: { max_rows: 100, show_confidence: true } },
     ],
   },
   // ── Blank ──
