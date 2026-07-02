@@ -435,9 +435,13 @@ def run_app(slug):
                     target_col = node.get('config', {}).get('target_column')
                     if target_col:
                         break
-            # Check model's pipeline_config for target_column and dataset_labels
-            # Collect from single model nodes AND multi-model compare endpoints
-            dataset_labels = None
+            # Check model's pipeline_config for target_column and dataset_labels.
+            # Collect from single model nodes AND multi-model compare endpoints.
+            # NOTE: dataset_labels may already be set by the pre-fetch loop above;
+            # only overwrite if we find a value here. Iterate ALL endpoints and only
+            # break once we have both target_col and labels — otherwise a multi-model
+            # app whose first endpoint lacks dataset_info.labels would silently skip
+            # label decoding and produce 0% accuracy against integer-encoded targets.
             all_endpoint_ids = []
             for node in ordered_nodes:
                 ntype = node.get('type', '')
@@ -448,20 +452,23 @@ def run_app(slug):
                         all_endpoint_ids.append(eidStr.split(':')[0])
             for eid in all_endpoint_ids:
                 ep = MeLabEndpoint.get_by_id(eid)
-                if ep:
-                    saved = SavedModel.get_by_id(ep.get('saved_model_id'))
-                    if saved:
-                        pc = saved.get('pipeline_config', {})
-                        if isinstance(pc, str):
-                            pc = json.loads(pc) if pc else {}
-                        if not target_col:
-                            target_col = pc.get('target_column')
-                        # Always get dataset labels for integer label decoding
-                        di = saved.get('dataset_info', {})
-                        if isinstance(di, str):
-                            di = json.loads(di) if di else {}
-                        if di.get('labels'):
-                            dataset_labels = sorted([str(l) for l in di['labels']])
+                if not ep:
+                    continue
+                saved = SavedModel.get_by_id(ep.get('saved_model_id'))
+                if not saved:
+                    continue
+                pc = saved.get('pipeline_config', {})
+                if isinstance(pc, str):
+                    pc = json.loads(pc) if pc else {}
+                if not target_col:
+                    target_col = pc.get('target_column')
+                if not dataset_labels:
+                    di = saved.get('dataset_info', {})
+                    if isinstance(di, str):
+                        di = json.loads(di) if di else {}
+                    if di.get('labels'):
+                        dataset_labels = sorted([str(l) for l in di['labels']])
+                if target_col and dataset_labels:
                     break
 
             if target_col and target_col in current_data.columns:
