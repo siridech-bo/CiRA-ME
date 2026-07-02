@@ -49,7 +49,9 @@ def list_endpoints():
     """List all ME-LAB endpoints for current user."""
     endpoints = MeLabEndpoint.get_all(request.current_user['id'])
 
-    # Enrich with target_column from saved model's pipeline_config
+    # Enrich with target_column, no_windowing, and is_dl from saved model's pipeline_config.
+    # is_dl signals downstream (App Builder pipeline) to skip feature extraction —
+    # DL models like TimesNet operate on raw windowed data, not statistical features.
     for ep in endpoints:
         try:
             saved = SavedModel.get_by_id(ep.get('saved_model_id'))
@@ -60,9 +62,13 @@ def list_endpoints():
                     pc = json.loads(pc) if pc else {}
                 ep['target_column'] = pc.get('target_column')
                 ep['no_windowing'] = bool(pc.get('no_windowing'))
+                alg = (saved.get('algorithm') or ep.get('algorithm') or '').lower()
+                approach = (pc.get('training_approach') or '').lower()
+                ep['is_dl'] = approach == 'dl' or alg.startswith('timesnet')
         except Exception:
             ep['target_column'] = None
             ep['no_windowing'] = False
+            ep['is_dl'] = False
 
     return jsonify(endpoints)
 

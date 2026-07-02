@@ -360,8 +360,9 @@ def run_app(slug):
         actual_values = None  # Ground truth for comparison
         dataset_labels = None  # For integer label decoding
         is_raw_mode_model = False  # Whether model was trained without windowing
+        is_dl_model = False  # Whether model is deep learning (TimesNet) — skip feature extraction
 
-        # Pre-fetch dataset_labels and raw mode flag from any endpoint in the pipeline
+        # Pre-fetch dataset_labels, raw mode flag, and DL flag from any endpoint in the pipeline
         for node in ordered_nodes:
             _nt = node.get('type', '')
             _eids = []
@@ -381,13 +382,18 @@ def run_app(slug):
                         if _pc.get('no_windowing'):
                             is_raw_mode_model = True
                             print(f"[AppBuilder] Detected no_windowing=True for endpoint {_eid}", flush=True)
+                        _alg = (_saved.get('algorithm') or '').lower()
+                        _approach = (_pc.get('training_approach') or '').lower()
+                        if _approach == 'dl' or _alg.startswith('timesnet'):
+                            is_dl_model = True
+                            print(f"[AppBuilder] Detected DL model for endpoint {_eid} (algorithm={_alg}, approach={_approach})", flush=True)
                         _di = _saved.get('dataset_info', {})
                         if isinstance(_di, str):
                             _di = json.loads(_di) if _di else {}
                         if _di.get('labels'):
                             dataset_labels = sorted([str(l) for l in _di['labels']])
                         break
-            if dataset_labels or is_raw_mode_model:
+            if dataset_labels or is_raw_mode_model or is_dl_model:
                 break
 
         # If input is a DataFrame, remember column names and extract target
@@ -516,6 +522,13 @@ def run_app(slug):
             elif is_raw_mode_model and ntype in ('transform.window', 'transform.feature_extract'):
                 # Skip windowing and feature extraction for raw mode models
                 # (normalization is still applied — model was trained on normalized data)
+                continue
+
+            elif is_dl_model and ntype == 'transform.feature_extract':
+                # DL models (TimesNet) consume the raw windowed tensor and learn features
+                # internally. Skip statistical feature extraction so the model receives the
+                # window shape it was trained on.
+                logger.info(f"[AppBuilder] DL model detected — skipping feature_extract")
                 continue
 
             elif ntype == 'transform.window':

@@ -853,6 +853,7 @@ const capabilities = computed(() => {
         feature_names: e.feature_names || [],
         target_column: e.target_column || null,
         no_windowing: e.no_windowing || false,
+        is_dl: e.is_dl || false,
         endpoint_id: e.id,
         inputs: ['features'],
         outputs: [meta.output],
@@ -900,6 +901,9 @@ const validationErrors = computed(() => {
     if (!node.type.startsWith('model.endpoint.')) return
     const cap = capabilities.value[node.type]
     if (!cap) return
+    // DL models (TimesNet) consume raw windowed data — no Feature Extract needed.
+    // Raw-mode models likewise skip windowing and feature extraction.
+    if (cap.is_dl || cap.no_windowing) return
     const featNode = nodes.value.slice(0, i).reverse()
       .find(n => n.type === 'transform.feature_extract')
     if (!featNode) {
