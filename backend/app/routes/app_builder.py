@@ -1207,27 +1207,59 @@ def _apply_feature_extraction(data, params):
         from ..services.feature_extractor import FeatureExtractor
         extractor = FeatureExtractor()
 
-        if data.ndim == 3 and column_names:
+        if data.ndim != 3:
+            logger.warning(f"[AppBuilder] Skipping CiRA extractor: data is {data.ndim}D, expected 3D windowed. Falling back to generic.")
+        elif not column_names:
+            logger.warning(f"[AppBuilder] Skipping CiRA extractor: no column_names available and none derivable from feature names. Falling back to generic.")
+        else:
             n_channels = data.shape[2]
             sensor_cols = [c for c in column_names if c not in ('timestamp', 'label', 'class', 'target')]
             if len(sensor_cols) > n_channels:
                 sensor_cols = sensor_cols[:n_channels]
 
-            if len(sensor_cols) == n_channels:
+            if len(sensor_cols) != n_channels:
+                logger.warning(
+                    f"[AppBuilder] Skipping CiRA extractor: sensor column count {len(sensor_cols)} "
+                    f"({sensor_cols}) does not match window channel count {n_channels}. "
+                    f"Falling back to generic — predictions likely wrong."
+                )
+            else:
                 # Use extract_from_windows_direct — produces ALL DSP features
                 result_df = extractor.extract_from_windows_direct(data, sensor_cols)
                 logger.info(f"[AppBuilder] Extracted {result_df.shape[1]} features from {data.shape[0]} windows")
 
                 # Select only the features the model needs (in order)
                 selected = []
+                missing = []
                 for fname in feature_names:
                     if fname in result_df.columns:
                         selected.append(result_df[fname].values)
                     else:
-                        logger.warning(f"[AppBuilder] Feature '{fname}' not found in extracted features")
+                        missing.append(fname)
                         selected.append(np.zeros(len(result_df)))
 
+                if missing:
+                    # Loud warning + surface the mismatch to the caller so the model
+                    # doesn't silently receive zeros for expected features.
+                    logger.warning(
+                        f"[AppBuilder] {len(missing)}/{len(feature_names)} requested features "
+                        f"not produced by extractor. Missing (first 5): {missing[:5]}. "
+                        f"Available (first 5): {list(result_df.columns)[:5]}. "
+                        f"Model will receive zeros for missing features — predictions may be wrong."
+                    )
+                    if len(missing) == len(feature_names):
+                        raise ValueError(
+                            f"None of the {len(feature_names)} requested features were produced by "
+                            f"the extractor. Check that the Feature Extract config matches the model's "
+                            f"trained feature names (available in the endpoint's 'Expects' panel). "
+                            f"Sample requested: {feature_names[:3]}. "
+                            f"Sample produced: {list(result_df.columns)[:3]}"
+                        )
+
                 return np.column_stack(selected) if selected else result_df.values
+    except ValueError:
+        # Preserve the clear feature-mismatch error we raise above; don't fall back silently.
+        raise
     except Exception as e:
         logger.warning(f"CiRA ME feature extractor failed: {e}, falling back to generic")
 
