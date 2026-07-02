@@ -809,39 +809,58 @@ def _get_traditional_ml_models(task_type):
     return {}
 
 
-def _prepare_dataset_dir(csv_path, project_dir, frame_size=128):
+def _prepare_dataset_dir(csv_path, project_dir, frame_size=128, task_type=None):
     """Prepare dataset directory structure expected by TI modelmaker.
 
-    TI expects input_data_path to be a DIRECTORY containing multiple CSV files
-    (one per sample/segment). Each CSV has NO header, numeric columns only,
-    with the last column as the target for regression.
+    TI expects input_data_path to be a DIRECTORY containing headerless CSV
+    segments. The exact layout depends on the task type:
 
-    We split the single large CSV into multiple segment files.
+    Regression (generic_timeseries_regression):
+        input_data_path/dataset/files/segment_XXXX.csv
+        Each file has numeric-only columns, the last column is the target y.
+
+    Classification (generic_timeseries_classification):
+        input_data_path/dataset/train/<class_label>/segment_XXXX.csv
+        input_data_path/dataset/val/<class_label>/segment_XXXX.csv
+        input_data_path/dataset/test/<class_label>/segment_XXXX.csv
+        Each file has sensor-only numeric columns (label determined by
+        the parent folder name). Files are split across train/val/test
+        via TI's "amongst_files" strategy (60/30/10 by count).
+
+    Anomaly detection: falls back to regression-style flat layout for now.
     """
     import pandas as pd
     import numpy as np
 
     dataset_dir = os.path.join(project_dir, 'dataset')
-    files_dir = os.path.join(dataset_dir, 'files')
-    os.makedirs(files_dir, exist_ok=True)
 
-    # Read the CSV
+    # Read the CSV once
     df = pd.read_csv(csv_path)
 
-    # Remove time/timestamp columns
+    # Remove time/timestamp/index columns (never useful as features or targets)
     cols_to_keep = [c for c in df.columns if 'time' not in c.lower()
                     and 'date' not in c.lower() and 'index' not in c.lower()]
     df = df[cols_to_keep]
 
-    # Keep only numeric columns
+    is_classification = (task_type or '').lower() in (
+        'timeseries_classification', 'generic_timeseries_classification'
+    )
+
+    if is_classification:
+        return _prepare_classification_dataset_dir(df, dataset_dir)
+
+    # Regression / anomaly: keep the historical flat layout with target as last column.
     df = df.select_dtypes(include=[np.number])
 
     if len(df) == 0:
         raise ValueError("No numeric data found in CSV")
 
-    # TI's SimpleWindow transform handles windowing internally,
-    # so we provide larger chunks (not tiny segments).
-    # Split into ~10 files for proper train/val/test splitting.
+    files_dir = os.path.join(dataset_dir, 'files')
+    os.makedirs(files_dir, exist_ok=True)
+
+    # TI's SimpleWindow transform handles windowing internally, so we provide
+    # larger chunks (not tiny segments). Split into ~10 files so TI can build
+    # a proper train/val/test split across whole files.
     n_segments = min(10, max(3, len(df) // 500))
     segment_size = len(df) // n_segments
 
@@ -854,8 +873,135 @@ def _prepare_dataset_dir(csv_path, project_dir, frame_size=128):
         seg_path = os.path.join(files_dir, f'segment_{i:04d}.csv')
         segment.to_csv(seg_path, index=False, header=False)
 
-    print(f"[TI Dataset] Split {len(df)} rows into {n_segments} segments "
-          f"of ~{segment_size} rows each in {files_dir}")
+    print(f"[TI Dataset] Regression: Split {len(df)} rows into {n_segments} segments "
+          f"of ~{segment_size} rows each in {files_dir}", flush=True)
+
+    return dataset_dir
+
+
+def _prepare_classification_dataset_dir(df, dataset_dir):
+    """Build the per-class train/val/test folder hierarchy that TI's
+    generic_timeseries_classification pipeline expects (data_dir='classes').
+
+    Detects the label column by name (label/class/target/y/category) or
+    falls back to the last integer column with < 100 unique values. Sensor
+    columns are all numeric columns minus the label. Each class's rows are
+    split into ~10 file-level chunks, then distributed across train/val/test
+    with a 60/30/10 ratio so TI's amongst_files splitter has enough files.
+    """
+    import os
+    import pandas as pd
+    import numpy as np
+
+    # Detect label column: prefer by name, else last low-cardinality integer col
+    label_candidates = {'label', 'class', 'target', 'y', 'category', 'labels'}
+    label_col = None
+    for c in df.columns:
+        if c.lower() in label_candidates:
+            label_col = c
+            break
+    if label_col is None:
+        for c in reversed(df.columns.tolist()):
+            col = df[c]
+            if col.dtype.kind in ('i', 'u', 'O') and col.nunique() < 100:
+                label_col = c
+                break
+    if label_col is None:
+        raise ValueError(
+            "Classification requires a label column but none could be detected. "
+            f"Available columns: {list(df.columns)}. Rename the target column to "
+            "'label', 'class', or 'target', or ensure it is an integer/string with "
+            "fewer than 100 unique values."
+        )
+
+    # Sensor columns = numeric columns excluding label
+    numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    sensor_cols = [c for c in numeric_cols if c != label_col]
+    if not sensor_cols:
+        raise ValueError(
+            f"No numeric sensor columns found after excluding label '{label_col}'. "
+            f"Columns present: {list(df.columns)}"
+        )
+
+    splits = ('train', 'val', 'test')
+    split_ratios = (0.6, 0.3, 0.1)
+
+    # Per-class breakdown
+    class_summary = []
+    total_files = 0
+
+    for cls_label, cls_df in df.groupby(label_col, sort=False):
+        # Sanitize class name for the filesystem
+        cls_name = str(cls_label).strip()
+        cls_name = ''.join(c if c.isalnum() or c in ('-', '_') else '_' for c in cls_name)
+        if not cls_name:
+            cls_name = f'class_{len(class_summary)}'
+
+        cls_sensor_df = cls_df[sensor_cols].reset_index(drop=True)
+        n_rows = len(cls_sensor_df)
+        if n_rows == 0:
+            continue
+
+        # Chunk the rows into ~10 files so amongst_files split has enough granularity
+        n_chunks = min(10, max(3, n_rows // 500))
+        n_chunks = min(n_chunks, n_rows)  # Never more chunks than rows
+        chunk_size = max(1, n_rows // n_chunks)
+
+        # Compute file-count split per class
+        n_train = max(1, int(round(n_chunks * split_ratios[0])))
+        n_val = max(1, int(round(n_chunks * split_ratios[1]))) if n_chunks >= 3 else 0
+        n_test = max(1, n_chunks - n_train - n_val) if n_chunks - n_train - n_val > 0 else 0
+        # Adjust so counts sum to n_chunks and every split has at least one file
+        # when we have enough chunks to spare
+        counts = {'train': n_train, 'val': n_val, 'test': n_test}
+        assigned = counts['train'] + counts['val'] + counts['test']
+        # Trim from train if we overshot
+        while assigned > n_chunks and counts['train'] > 1:
+            counts['train'] -= 1
+            assigned -= 1
+        # Distribute leftover chunks (if any) to train first, then val
+        leftover = n_chunks - assigned
+        counts['train'] += max(0, leftover)
+
+        # Ensure output dirs exist for every split, even if empty (TI reads them)
+        for split_name in splits:
+            os.makedirs(os.path.join(dataset_dir, 'dataset', split_name, cls_name), exist_ok=True)
+
+        # Write chunks: train first, then val, then test — preserves temporal order
+        chunk_starts = [i * chunk_size for i in range(n_chunks)]
+        cursor = 0
+        for split_name in splits:
+            n = counts[split_name]
+            split_dir = os.path.join(dataset_dir, 'dataset', split_name, cls_name)
+            for local_i, chunk_idx in enumerate(range(cursor, cursor + n)):
+                if chunk_idx >= len(chunk_starts):
+                    break
+                start = chunk_starts[chunk_idx]
+                end = chunk_starts[chunk_idx + 1] if chunk_idx + 1 < len(chunk_starts) else n_rows
+                chunk = cls_sensor_df.iloc[start:end]
+                if len(chunk) == 0:
+                    continue
+                seg_path = os.path.join(split_dir, f'segment_{local_i:04d}.csv')
+                chunk.to_csv(seg_path, index=False, header=False)
+                total_files += 1
+            cursor += n
+
+        class_summary.append((cls_name, n_rows, n_chunks, counts))
+
+    if not class_summary:
+        raise ValueError(f"No usable rows found after grouping by label '{label_col}'")
+
+    print(
+        f"[TI Dataset] Classification: label='{label_col}', sensors={sensor_cols}, "
+        f"{len(class_summary)} classes, {total_files} total segment files",
+        flush=True,
+    )
+    for name, rows, chunks, counts in class_summary:
+        print(
+            f"[TI Dataset]   class '{name}': {rows} rows -> {chunks} chunks "
+            f"(train={counts['train']}, val={counts['val']}, test={counts['test']})",
+            flush=True,
+        )
 
     return dataset_dir
 
@@ -885,7 +1031,9 @@ def _build_config(task_type, model_name, target_device, dataset_path,
 
     # Prepare dataset directory if input is a file
     if os.path.isfile(dataset_path):
-        dataset_dir = _prepare_dataset_dir(dataset_path, project_dir, frame_size=frame_size)
+        dataset_dir = _prepare_dataset_dir(
+            dataset_path, project_dir, frame_size=frame_size, task_type=task_type
+        )
     else:
         dataset_dir = dataset_path
 
