@@ -274,6 +274,7 @@ def _export_ti_nn_onnx_package(onnx_path, algorithm, mode, metrics, saved):
     Code Composer Studio and runs the TI MCU NN Compiler over it to produce
     the target-specific C code.
     """
+    import os
     import tempfile
     import shutil
     import zipfile
