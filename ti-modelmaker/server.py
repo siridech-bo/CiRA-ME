@@ -872,16 +872,19 @@ def _prepare_dataset_dir(csv_path, project_dir, frame_size=128, task_type=None):
     segments. The exact layout depends on the task type:
 
     Regression (generic_timeseries_regression):
-        input_data_path/dataset/files/segment_XXXX.csv
+        input_data_path/files/segment_XXXX.csv
         Each file has numeric-only columns, the last column is the target y.
 
     Classification (generic_timeseries_classification):
-        input_data_path/dataset/train/<class_label>/segment_XXXX.csv
-        input_data_path/dataset/val/<class_label>/segment_XXXX.csv
-        input_data_path/dataset/test/<class_label>/segment_XXXX.csv
-        Each file has sensor-only numeric columns (label determined by
-        the parent folder name). Files are split across train/val/test
-        via TI's "amongst_files" strategy (60/30/10 by count).
+        input_data_path/classes/<class_label>/segment_XXXX.csv
+        input_data_path/annotations/instances_train_list.txt
+        input_data_path/annotations/instances_val_list.txt
+        input_data_path/annotations/instances_test_list.txt
+        Each segment CSV has sensor-only numeric columns. Class is inferred
+        from the parent folder name. The _list.txt annotation files enumerate
+        which segments belong to each split (paths relative to classes/),
+        overriding TI's own amongst_files splitter so allocation is
+        deterministic and always includes a non-empty test set.
 
     Anomaly detection: falls back to regression-style flat layout for now.
     """
@@ -1035,9 +1038,12 @@ def _prepare_classification_dataset_dir(df, dataset_dir):
         else:  # n_chunks == 1
             counts['train'], counts['val'], counts['test'] = 1, 0, 0
 
-        # Ensure output dirs exist for every split, even if empty (TI reads them)
-        for split_name in splits:
-            os.makedirs(os.path.join(dataset_dir, 'dataset', split_name, cls_name), exist_ok=True)
+        # Every segment for a class lives in one place: dataset_dir/classes/<class>/.
+        # TI splits at the annotation-index level (not the filesystem), so we
+        # write all files here and hand out the train/val/test allocation via
+        # instances_{split}_list.txt files below.
+        classes_dir = os.path.join(dataset_dir, 'classes', cls_name)
+        os.makedirs(classes_dir, exist_ok=True)
 
         # Build chunk boundaries. The first `remainder` chunks are one row larger
         # so every row lands in exactly one chunk (no data loss at the tail).
@@ -1046,12 +1052,12 @@ def _prepare_classification_dataset_dir(df, dataset_dir):
             step = chunk_size + (1 if i < remainder else 0)
             chunk_boundaries.append(chunk_boundaries[-1] + step)
 
-        # Write chunks: train first, then val, then test — preserves temporal order.
+        # Write chunks with a stable name; track which split each one belongs to.
+        # Split assignment follows temporal order: train first, then val, then test.
         cursor = 0
         for split_name in splits:
             n = counts[split_name]
-            split_dir = os.path.join(dataset_dir, 'dataset', split_name, cls_name)
-            for local_i, chunk_idx in enumerate(range(cursor, cursor + n)):
+            for chunk_idx in range(cursor, cursor + n):
                 if chunk_idx >= n_chunks:
                     break
                 start = chunk_boundaries[chunk_idx]
@@ -1059,10 +1065,10 @@ def _prepare_classification_dataset_dir(df, dataset_dir):
                 chunk = cls_sensor_df.iloc[start:end]
                 if len(chunk) == 0:
                     continue
-                seg_path = os.path.join(split_dir, f'segment_{local_i:04d}.csv')
-                chunk.to_csv(seg_path, index=False, header=False)
-                # Track relative path (<class>/<segment>) for the annotation index
-                per_split_files[split_name].append(f'{cls_name}/segment_{local_i:04d}.csv')
+                seg_name = f'segment_{chunk_idx:04d}.csv'
+                chunk.to_csv(os.path.join(classes_dir, seg_name), index=False, header=False)
+                # Path relative to the classes/ root — what TI's loader expects.
+                per_split_files[split_name].append(f'{cls_name}/{seg_name}')
                 total_files += 1
             cursor += n
 
@@ -1083,12 +1089,14 @@ def _prepare_classification_dataset_dir(df, dataset_dir):
             f"or switch to anomaly detection for one-class problems."
         )
 
-    # TI's tinyml-tinyverse data loader expects annotation index files that list
-    # each split's segments as paths relative to the split directory. Without
-    # these, TI logs "Loading training data" and silently bails. File names
-    # match the *train*_list.txt / *val*_list.txt / *test*_list.txt glob TI uses
-    # and the annotation_prefix ("instances") from the config.
-    annotations_dir = os.path.join(dataset_dir, 'dataset', 'annotations')
+    # TI expects the annotation index files at input_data_path/annotations/
+    # (which is our dataset_dir/annotations/, NOT dataset_dir/dataset/annotations/).
+    # If we write them one level too deep, TI's dataset handler doesn't find
+    # them, decides it needs to build its own splits, wipes dataset_path/
+    # annotations/ and falls over because our physical class dirs aren't in
+    # the layout its splitter expects. Documented structure per
+    # ai_modules/timeseries/descriptions.py: input_data_path/{classes,annotations}.
+    annotations_dir = os.path.join(dataset_dir, 'annotations')
     os.makedirs(annotations_dir, exist_ok=True)
     for split_name in splits:
         list_path = os.path.join(annotations_dir, f'instances_{split_name}_list.txt')
