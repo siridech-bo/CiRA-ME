@@ -30,8 +30,9 @@ services:
       # Persistent data volumes
       - backend-data:/app/data
       - backend-models:/app/models
-      # Shared folder - put datasets here for customers to access
-      - ./shared:/app/datasets/shared
+      # Datasets folder - includes shared/ AND all user private folders
+      # Mounting the entire datasets root ensures user-uploaded data persists across updates
+      - ./datasets:/app/datasets
 
     ports:
       # Expose backend port (optional - frontend proxies through nginx)
@@ -110,8 +111,8 @@ services:
     restart: unless-stopped
 
     volumes:
-      # Share datasets with backend
-      - ./shared:/app/data/datasets/shared
+      # Mount full datasets folder so TI ModelMaker can access shared + user private folders
+      - ./datasets:/app/data/datasets
       - ti-projects:/app/data/projects
 
     ports:

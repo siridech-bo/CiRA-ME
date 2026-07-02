@@ -5,6 +5,7 @@ API endpoints for TI ModelMaker integration.
 
 import math
 import logging
+import requests
 from flask import Blueprint, request, jsonify, Response
 from ..auth import login_required
 from ..services.ti_integration import TIIntegration
@@ -87,7 +88,7 @@ def ti_train():
 
     # Map dataset path for TI container
     ti_dataset_path = dataset_path.replace(
-        '/app/datasets/shared', '/app/data/datasets/shared'
+        '/app/datasets', '/app/data/datasets'
     )
 
     try:
@@ -104,6 +105,17 @@ def ti_train():
 
         return jsonify(result)
 
+    except requests.HTTPError as e:
+        # Surface the TI container's actual error message
+        ti_error = None
+        if e.response is not None:
+            try:
+                ti_error = e.response.json().get('error')
+            except Exception:
+                ti_error = e.response.text
+        msg = ti_error or str(e)
+        logger.error(f"TI training failed: {msg}")
+        return jsonify({'error': f'TI training failed: {msg}'}), 500
     except Exception as e:
         logger.error(f"TI training error: {e}")
         return jsonify({'error': str(e)}), 500
@@ -127,7 +139,7 @@ def ti_train_stream():
         return jsonify({'error': 'model_name and dataset_path required'}), 400
 
     ti_dataset_path = dataset_path.replace(
-        '/app/datasets/shared', '/app/data/datasets/shared'
+        '/app/datasets', '/app/data/datasets'
     )
 
     ti = TIIntegration()
@@ -136,6 +148,7 @@ def ti_train_stream():
     import requests as req
 
     def generate():
+        import json
         try:
             resp = req.post(
                 f'{ti.base_url}/train-stream',
@@ -149,11 +162,17 @@ def ti_train_stream():
                 stream=True,
                 timeout=660,
             )
+            if not resp.ok:
+                try:
+                    ti_error = resp.json().get('error', resp.text)
+                except Exception:
+                    ti_error = resp.text
+                yield f"data: {json.dumps({'type': 'error', 'message': f'TI training failed: {ti_error}'})}\n\n"
+                return
             for line in resp.iter_lines(decode_unicode=True):
                 if line:
                     yield line + '\n\n'
         except Exception as e:
-            import json
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
 
     return Response(
