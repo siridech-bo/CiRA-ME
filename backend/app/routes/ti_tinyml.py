@@ -265,6 +265,60 @@ def ti_train_ml_with_features():
         return jsonify({'error': str(e)}), 400
 
 
+def _export_ti_nn_onnx_package(onnx_path, algorithm, mode, metrics, saved):
+    """Package a native ONNX model (TI NN training output) into a TI MCU zip.
+
+    TI NN models (REGR_*, CLS_*, AE_* from tinyml-modelmaker) are saved
+    directly as PyTorch-exported ONNX, so no sklearn-to-ONNX conversion or
+    emlearn C generation applies. The customer takes the packaged ONNX into
+    Code Composer Studio and runs the TI MCU NN Compiler over it to produce
+    the target-specific C code.
+    """
+    import tempfile
+    import shutil
+    import zipfile
+    import json as _json_mod
+    from flask import send_file
+
+    tmp_dir = tempfile.mkdtemp()
+    safe_name = algorithm.lower().replace(' ', '_').replace('-', '_') or 'ti_nn_model'
+    dest_onnx = os.path.join(tmp_dir, 'model.onnx')
+    shutil.copy2(onnx_path, dest_onnx)
+    onnx_size_kb = round(os.path.getsize(dest_onnx) / 1024, 1)
+
+    zip_path = os.path.join(tmp_dir, f'ti_mcu_{safe_name}.zip')
+    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+        zf.write(dest_onnx, 'model.onnx')
+        zf.writestr('model_info.json', _json_mod.dumps({
+            'model_name': algorithm,
+            'model_type': 'ti_nn_onnx',
+            'mode': mode,
+            'metrics': metrics,
+            'onnx_size_kb': onnx_size_kb,
+            'export_note': 'Native ONNX from TI tinyml-modelmaker. Use the '
+                           'TI MCU NN Compiler in Code Composer Studio to '
+                           'convert model.onnx into C for the target MCU.',
+        }, indent=2))
+        zf.writestr('README.txt',
+            f'CiRA ME - TI MCU Package (TI NN Model)\n'
+            f'======================================\n\n'
+            f'Model:     {algorithm}\n'
+            f'Mode:      {mode}\n'
+            f'ONNX size: {onnx_size_kb} KB\n\n'
+            f'Files:\n'
+            f'  model.onnx       ONNX model exported by tinyml-modelmaker\n'
+            f'  model_info.json  Metrics + metadata from the training run\n\n'
+            f'Deployment to TMS320:\n'
+            f'  1. Open TI Code Composer Studio.\n'
+            f'  2. Use TI MCU NN Compiler to convert model.onnx into C code\n'
+            f'     targeting your specific device (F28003, F28379D, etc.).\n'
+            f'  3. Include the generated C files in your CCS project.\n'
+            f'  4. Call the inference function per the TI NN Compiler docs.\n')
+
+    return send_file(zip_path, as_attachment=True,
+                     download_name=f'ti_mcu_{safe_name}.zip')
+
+
 @ti_bp.route('/export-saved/<int:model_id>', methods=['POST'])
 @login_required
 def ti_export_saved_model(model_id):
@@ -293,6 +347,26 @@ def ti_export_saved_model(model_id):
 
     # If model file exists, load and convert to ONNX
     if model_path and os.path.exists(model_path):
+        # Detect the file format. TI NN models (CLS_ResAdd_3k, REGR_*, etc.)
+        # are saved as PyTorch-exported ONNX by tinyml-modelmaker; traditional
+        # ML models (RF, XGBoost, DT) are saved as sklearn pickles. The two
+        # export flows are incompatible — /convert-to-c only speaks pickle
+        # and pickle.load blows up on ONNX bytes with an UnpicklingError,
+        # which surfaces as an opaque "TI MCU export failed" toast.
+        try:
+            with open(model_path, 'rb') as _f:
+                _magic = _f.read(4)
+        except OSError:
+            _magic = b''
+        # ONNX protobuf starts with 0x08 (varint tag, field 1 = ir_version).
+        # sklearn pickles start with 0x80 (PROTO opcode).
+        is_onnx = _magic.startswith(b'\x08')
+
+        if is_onnx:
+            return _export_ti_nn_onnx_package(
+                model_path, algorithm, mode, metrics, saved
+            )
+
         # Send pickle to TI container for emlearn C export
         try:
             ti = TIIntegration()
