@@ -4,7 +4,7 @@ Handles TSFresh and Custom DSP feature extraction
 """
 
 import logging
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, current_app
 from ..auth import login_required
 from ..services.feature_extractor import FeatureExtractor
 from ..services.llm_service import get_llm_service
@@ -416,8 +416,10 @@ def get_feature_preview():
         msg = str(e)
         if 'not found' in msg.lower():
             return jsonify({'error': msg, 'code': 'SESSION_NOT_FOUND'}), 404
+        current_app.logger.exception(f'[features/preview] ValueError: {e}')
         return jsonify({'error': msg}), 400
     except Exception as e:
+        current_app.logger.exception(f'[features/preview] unexpected: {e}')
         return jsonify({'error': str(e)}), 400
 
 

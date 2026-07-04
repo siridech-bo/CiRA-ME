@@ -1053,6 +1053,16 @@ class FeatureExtractor:
             unique_labels, counts = np.unique(labels, return_counts=True)
             label_counts = {str(label): int(count) for label, count in zip(unique_labels, counts)}
 
+        # Coerce numpy scalars (int64 / float64) to Python-native types so
+        # Flask's default JSON encoder can serialize them.
+        def _py(x):
+            if hasattr(x, 'item'):
+                try:
+                    return x.item()
+                except (ValueError, TypeError):
+                    return str(x)
+            return x
+
         return {
             'session_id': feature_session_id,
             'num_features': len(feature_names),
@@ -1061,7 +1071,7 @@ class FeatureExtractor:
             'feature_names': feature_names,
             'feature_stats': feature_stats,
             'preview': preview_df.to_dict(orient='records'),
-            'labels': list(np.unique(labels)) if labels is not None else None,
+            'labels': [_py(l) for l in np.unique(labels)] if labels is not None else None,
             'label_counts': label_counts
         }
 
