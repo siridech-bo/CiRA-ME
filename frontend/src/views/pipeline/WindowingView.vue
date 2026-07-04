@@ -764,8 +764,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, reactive, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { ref, computed, reactive, watch, onMounted } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
 import { usePipelineStore } from '@/stores/pipeline'
 import { useNotificationStore } from '@/stores/notification'
 import PipelineStepper from '@/components/PipelineStepper.vue'
@@ -786,6 +786,7 @@ import api from '@/services/api'
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend)
 
 const router = useRouter()
+const route = useRoute()
 const pipelineStore = usePipelineStore()
 const notificationStore = useNotificationStore()
 
@@ -1324,6 +1325,54 @@ async function applyWindowing() {
 
   loading.value = false
 }
+
+onMounted(async () => {
+  // Adopt project from URL first — triggers /hydrate which repopulates
+  // pipelineStore.dataSession + windowingConfig from persisted state.
+  const qpid = route.query.project_id
+  if (qpid && !pipelineStore.projectId) {
+    const idNum = Array.isArray(qpid) ? Number(qpid[0]) : Number(qpid)
+    if (!Number.isNaN(idNum)) {
+      await pipelineStore.setActiveProject(idNum)
+    }
+  }
+
+  // Refresh the local form config from the (possibly-just-hydrated) store.
+  Object.assign(windowingConfig, {
+    window_size: pipelineStore.windowingConfig.window_size,
+    stride: pipelineStore.windowingConfig.stride,
+    label_method: pipelineStore.windowingConfig.label_method,
+    test_ratio: pipelineStore.windowingConfig.test_ratio,
+    split_strategy: pipelineStore.windowingConfig.split_strategy || 'temporal_end',
+    no_windowing: pipelineStore.windowingConfig.no_windowing || false,
+    normalization_method: pipelineStore.windowingConfig.normalization_method || 'min_max',
+  })
+
+  // If a windowed session is already in the store (user came from Features
+  // going back, or a previous tab-switch in the same session), mirror it in.
+  if (pipelineStore.windowedSession && !windowedResult.value) {
+    windowedResult.value = pipelineStore.windowedSession
+    return
+  }
+
+  // Project resume: dataSession is populated from /hydrate but the
+  // ephemeral windowed session is gone (LRU-wiped by restart). Silently
+  // re-apply windowing with the persisted config so Continue enables
+  // without the user having to click Apply again.
+  if (
+    qpid &&
+    pipelineStore.dataSession &&
+    !pipelineStore.windowedSession &&
+    !windowedResult.value
+  ) {
+    loading.value = true
+    const result = await pipelineStore.applyWindowing()
+    if (result.success) {
+      windowedResult.value = result.data
+    }
+    loading.value = false
+  }
+})
 </script>
 
 <style scoped lang="scss">
