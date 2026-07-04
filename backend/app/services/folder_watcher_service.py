@@ -77,6 +77,24 @@ class _WatcherWorker(threading.Thread):
         os.makedirs(output_dir, exist_ok=True)
         error_dir = os.path.join(input_dir, '_error')
 
+        # Endpoint-level health check — done once per tick, before any files.
+        # A paused/deleted endpoint would cause every single file to fail with
+        # the same error and pile up in _error/. Raising here bubbles to the
+        # tick-level except handler in run(), which flips the watcher status
+        # to 'error' with an actionable message so the user sees the problem
+        # instead of just watching their input folder empty itself into _error/.
+        endpoint = MeLabEndpoint.get_by_id(watcher['endpoint_id'])
+        if not endpoint:
+            raise RuntimeError(
+                f"endpoint {watcher['endpoint_id']} was deleted — stop this watcher"
+            )
+        if endpoint.get('status') != 'active':
+            raise RuntimeError(
+                f"endpoint {watcher['endpoint_id']} is {endpoint.get('status')}, "
+                f"not active — cannot predict. Reactivate it in ME-LAB, or "
+                f"point this watcher at a different endpoint."
+            )
+
         # Gather candidate files
         pattern = os.path.join(input_dir, watcher.get('file_glob') or '*.txt')
         candidates = sorted(glob.glob(pattern))
