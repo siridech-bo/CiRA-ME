@@ -418,6 +418,56 @@ need — we haven't foreclosed any bigger version.
 
 ---
 
+## Customer communication drafts
+
+Prepared messages ready to send when a round of work ships. Kept here so
+we can adjust wording, translate, or resend later without rebuilding
+context. Each entry lists the intended audience and status
+(**draft** / **sent** — add date + channel when sent).
+
+### 2026-07-04 — F1 / F2 / F4 shipped (Thai, draft)
+
+**Audience:** primary customer (KMITL / factory workshop stakeholders)
+**Channel:** email
+**Status:** draft — awaiting owner to review + send
+**Related commits:** `1ea12a3` (F1), `141f70e` (F2), `fe0c8f8` (F4)
+
+---
+
+**Subject:** CiRA ME — feature requests from June/July: all shipped ✅
+
+เรียนคุณลูกค้า,
+
+ขอเรียนแจ้งว่าฟีเจอร์ทั้งสามอย่างที่คุณลูกค้าขอมาในเดือน June และ July ตอนนี้ deploy ขึ้น production เรียบร้อยแล้วครับ สรุปให้ครับ:
+
+**1) Folder Watcher + Auto-Prediction (from July 2)**
+กำหนดโฟลเดอร์ Input ให้ระบบ scan ทุก N วินาที นำแต่ละไฟล์ผ่านโมเดล ME-LAB เขียน output CSV เข้าโฟลเดอร์ Output แล้วลบไฟล์ต้นทาง — ตรงตามรูปที่คุณลูกค้าส่งมาเลย ทำงานเป็น background daemon กันเครื่อง shutdown กลางทาง (input จะไม่หายถ้า process ถูก kill กลางไฟล์) รองรับทั้ง CSV ที่มี header และไม่มี header (auto-detect + override ได้)
+
+ที่เมนู **Folder Watcher** มีปุ่ม "View Files" ให้เปิด popup ดู Input queue / Output CSV / Error files ได้จาก browser ตรงๆ ไม่ต้องเข้า filesystem
+
+**2) Multi-Dataset Wizard (from July 2)**
+Wizard 3 ขั้นตอนสำหรับเปรียบเทียบโมเดลกับ datasets ทีละหลายๆ ตัว — เลือกโมเดล → เลือก dataset (upload หรือเลือกจาก datasets/) → ได้ matrix สรุปคะแนน + confidence + latency + ขนาดโมเดลต่อ cell ช่วยให้ลูกค้าเลือกโมเดลที่เล็กที่สุดที่ผ่าน bar confidence สำหรับ deploy บน edge
+
+รองรับ classification / regression / anomaly (ต้องเลือกโหมดเดียวต่อ run) และ export ผลเป็น CSV ได้ทั้ง aggregated และ per-row เมนู **Multi-Dataset Wizard**
+
+**3) Project Status view (from June 23)**
+เมนู **Projects** ใหม่ แสดง pipeline progress ของทุก project (Data → Windowing → Features → Training → Deploy) ในตารางเดียว badge สีเขียว/เหลือง/เทาบอก stage ที่เสร็จ/กำลังทำ/ยังไม่ได้ทำ Deploy badge เป็นตัวรวมทั้ง ME-LAB / App Builder / TI MCU / Jetson (hover ดูรายละเอียดได้)
+
+รวมทั้ง Feature Template ต่อ project — จัดลำดับ feature ได้และ payload column contract ของ ME-LAB / App Builder จะไม่ retrain แล้วเปลี่ยนอีก
+
+ระบบ auto-create project ให้เมื่อคุณลูกค้ากด Apply ที่ Windowing ครั้งแรก (ตั้งชื่อจากไฟล์ dataset + timestamp) ถ้าไม่อยากให้ auto ก็สร้างเองที่หน้า Projects ได้เลย และ Clone with new dataset ก็ทำได้ (แต่ต้อง retrain ใหม่นะครับ เพื่อไม่ให้ metric เก่าค้าง)
+
+**สิ่งที่ควรทราบ:**
+- Data ที่มีอยู่แล้วก่อน update นี้ ระบบจะสร้าง project ชื่อ "Legacy" ให้อัตโนมัติต่อ user เพื่อไม่ให้ resource เดิม (endpoint / apps / saved models) หายไปจากมุมมอง project
+- Folder Watcher ที่สร้างก่อน update นี้จะยังไม่ผูกกับ project ใดๆ (ทำงานปกติแต่ไม่ปรากฏใน Deploy breakdown) — Folder Watcher ที่สร้างใหม่หลังจากนี้จะผูกกับ project โดยอัตโนมัติผ่าน endpoint ที่เลือก
+
+รบกวนคุณลูกค้าลอง test ที่เว็บได้เลย ถ้ามีคำถามหรือพบ bug ส่งกลับมาที่ email นี้ได้เลยครับ
+
+ขอบพระคุณครับ,
+[ชื่อผู้ส่ง]
+
+---
+
 ## PROCESS — how to keep this file current
 
 At the end of any session that touched customer-visible behavior:
