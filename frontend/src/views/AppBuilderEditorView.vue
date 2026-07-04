@@ -252,11 +252,11 @@
                 <span class="config-model-key">Algorithm</span>
                 <span class="config-model-val">{{ selectedCap.algorithm }}</span>
               </div>
-              <div class="config-model-row">
+              <div v-if="!selectedCap.is_dl" class="config-model-row">
                 <span class="config-model-key">Required Features</span>
                 <span class="config-model-val">{{ selectedCap.feature_count }}</span>
               </div>
-              <div class="pt-2 border-t" style="border-color: #21262d;">
+              <div v-if="!selectedCap.is_dl" class="pt-2 border-t" style="border-color: #21262d;">
                 <div class="config-model-key mb-1">Expects</div>
                 <div class="d-flex flex-wrap" style="gap: 3px;">
                   <span
@@ -266,8 +266,18 @@
                   >{{ f }}</span>
                 </div>
               </div>
+              <div v-else class="pt-2 border-t" style="border-color: #21262d;">
+                <span class="feature-tag" style="background: rgba(14,165,233,0.15); color: #38bdf8;">
+                  Raw windowed data (no features)
+                </span>
+              </div>
 
+              <!-- Auto-configure Feature Extract button — hidden for DL
+                   models (they don't consume features) and redundant with
+                   the auto-population in getMultiselectOptions(), but kept
+                   for ML models as an explicit shortcut. -->
               <v-btn
+                v-if="!selectedCap.is_dl"
                 block
                 size="x-small"
                 variant="outlined"
@@ -414,20 +424,6 @@
                 <div class="multiselect-count">
                   {{ (getConfigVal(selectedNode, field) || []).length }} selected
                 </div>
-
-                <!-- Auto-configure button for multi-model endpoint selection -->
-                <v-btn
-                  v-if="selectedNode?.type === 'output.multi_model_compare' && field.key === 'endpoint_ids' && (getConfigVal(selectedNode, field) || []).length > 0"
-                  block
-                  size="x-small"
-                  variant="outlined"
-                  color="purple"
-                  class="mt-2"
-                  @click="autoConfigureFromMultiModel"
-                >
-                  <v-icon start size="12">mdi-auto-fix</v-icon>
-                  Auto-configure Feature Extract
-                </v-btn>
               </div>
             </div>
           </div>
@@ -774,35 +770,6 @@
 
   </div>
 
-  <!-- Confirmation: remove Feature Extract when switching to a DL endpoint -->
-  <v-dialog v-model="removeFeatureExtractDialog" max-width="520">
-    <v-card>
-      <v-card-title class="d-flex align-center">
-        <v-icon color="warning" class="mr-2">mdi-alert-circle-outline</v-icon>
-        Remove Feature Extract node?
-      </v-card-title>
-      <v-card-text class="pt-2">
-        <p class="mb-3">
-          The <strong>{{ dlSwitchModelName }}</strong> model operates on the raw
-          windowed signal and does not use extracted statistical features.
-        </p>
-        <p class="mb-0">
-          You can remove the Feature Extract node from the canvas so it matches the
-          actual runtime behaviour, or keep it &mdash; it will be skipped automatically
-          at prediction time either way.
-        </p>
-      </v-card-text>
-      <v-card-actions>
-        <v-spacer />
-        <v-btn variant="text" @click="removeFeatureExtractDialog = false">
-          Keep it
-        </v-btn>
-        <v-btn color="warning" variant="flat" @click="removeFeatureExtractFromPipeline">
-          Remove Feature Extract
-        </v-btn>
-      </v-card-actions>
-    </v-card>
-  </v-dialog>
 </template>
 
 <script setup>
@@ -1174,22 +1141,9 @@ function switchEndpoint(newEndpointId) {
     })
   }
 
-  // DL model (TimesNet): the pipeline runner will skip Feature Extract anyway, but
-  // if the user has an FE node still in the pipeline we prompt to remove it so the
-  // canvas matches the actual runtime behaviour. Keeping it is a valid choice.
-  if (newCap.is_dl && nodes.value.some(n => n.type === 'transform.feature_extract')) {
-    dlSwitchModelName.value = newCap.label || newCap.algorithm || 'this DL model'
-    removeFeatureExtractDialog.value = true
-  }
-}
-
-// Confirmation dialog state for removing Feature Extract when switching to a DL endpoint
-const removeFeatureExtractDialog = ref(false)
-const dlSwitchModelName = ref('')
-
-function removeFeatureExtractFromPipeline() {
-  nodes.value = nodes.value.filter(n => n.type !== 'transform.feature_extract')
-  removeFeatureExtractDialog.value = false
+  // DL model switch is now handled entirely by availableEndpoints filtering
+  // (see hasFeatureExtractNode) — DL endpoints don't appear in the picker
+  // while a Feature Extract node exists, so no dialog is needed here.
 }
 
 // MQTT topic discovery
@@ -1293,40 +1247,6 @@ function autoConfigureFeatures() {
       n.config.step = 1
     }
   })
-}
-
-function autoConfigureFromMultiModel() {
-  const multiNode = nodes.value.find(n => n.type === 'output.multi_model_compare')
-  if (!multiNode) return
-  const endpointIds = multiNode.config?.endpoint_ids || []
-  if (endpointIds.length === 0) return
-
-  for (const eidStr of endpointIds) {
-    const eid = eidStr.split(':')[0]
-    const cap = capabilities.value[`model.endpoint.${eid}`]
-    const ep = melabEndpoints.value.find(e => e.id === eid)
-    const featureNames = cap?.feature_names || ep?.feature_names || []
-    const targetCol = cap?.target_column || ep?.target_column || null
-
-    if (featureNames.length > 0) {
-      // Auto-fill Feature Extract
-      nodes.value.forEach(n => {
-        if (n.type === 'transform.feature_extract') {
-          n.config.features = [...featureNames]
-        }
-      })
-      // Auto-fill target column
-      if (targetCol && !multiNode.config.target_column) {
-        multiNode.config.target_column = targetCol
-      }
-      // For classification without target_column, set 'label' as default
-      const mode = cap?.mode || ep?.mode
-      if (mode === 'classification' && !multiNode.config.target_column) {
-        multiNode.config.target_column = 'label'
-      }
-      return
-    }
-  }
 }
 
 // ── Clipboard ────────────────────────────────────────────────────
