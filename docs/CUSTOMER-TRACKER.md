@@ -263,48 +263,24 @@ Discovered during this round while reading code, then confirmed done.
 
 Small items surfaced during other work. Fixes are known, scope is
 trivial, but they were out of scope for the session that discovered
-them.
+them. Tracked in their own file:
 
-### D1. App Builder Normalize node UI uses old literal names
-**Discovered:** 2026-07-04 (during F3 QA)
-**File:** [AppBuilderEditorView.vue:838](../frontend/src/views/AppBuilderEditorView.vue#L838),
-runner side at [app_builder.py:_apply_normalization](../backend/app/routes/app_builder.py)
-The Normalize node's UI schema uses `minmax`/`zscore`/`robust` (no
-underscore), while the F3 training-time literals are `min_max`/`z_score`/
-`robust`/`none`. The App Builder runner accepts BOTH conventions, so no
-functional bug, but the UX is inconsistent. Also, the node UI is missing
-the `none` option. Trivial fix: update the `configSchema.options` values
-+ the runner fallback to accept only the underscored names for
-consistency (breaking change for any published app hardcoding the old
-values — audit before touching).
+**→ [docs/FOLLOW-UPS.md](./FOLLOW-UPS.md)**
 
-### D2. `cira_claw_exporter.py:196` NoneType.get crash
-**Discovered:** 2026-07-04 (during F3 QA)
-**File:** [cira_claw_exporter.py:196](../backend/app/services/cira_claw_exporter.py#L196)
-Same pattern I fixed in `deployer.py` earlier: `sel.get('selected_features', [])`
-where `sel` is `None` because the DB has `pipeline_config.feature_selection: null`
-for TI NN and some ML models. Coalesce with `or {}`. Trivial one-line fix.
-
-### D3. `admin.py:451,458` stale `./shared` UI hint
-**Discovered:** 2026-06 (during TI REGR QA), still not fixed
-**File:** [admin.py:451, :458](../backend/app/routes/admin.py#L451)
-Cosmetic. Comment and `host_hint` UI string still say `./shared` after
-the May 2026 migration to `./datasets/`. Misleads admins in the Storage
-panel about where data lives on disk. Trivial fix.
+Currently 3 open (D1 normalize UI literals, D2 CLAW exporter NoneType,
+D3 stale `./shared` admin UI hint). Total effort: ~40 minutes.
 
 ---
 
-## Known unfinished / leftover (not customer requests but tracked)
+## Known future work (not customer-requested)
 
-- **TCN deep learning** — future work per memory. Smallest MCU DL
-  architecture, 5-15 KB INT8. Not started. Large effort.
-- **Web Serial API for MCU flashing** — future work per memory. Flash
-  from browser, no CCS needed. Not started. Large effort.
-- **ONNX Runtime Web (WASM)** — future work per memory. Edge inference
-  in browser. Not started. Medium effort.
-- **`admin.py:451,458` stale `./shared` UI hint** — QA nit from June
-  session, still not fixed. Cosmetic — misleads admins in Storage
-  panel about where data lives on disk. Trivial one-line fix.
+Larger initiatives not blocked, not queued — parked so we don't lose
+the context. Reassess at planning cycles.
+
+**→ [docs/FUTURE-WORK.md](./FUTURE-WORK.md)**
+
+Currently 3 items: FW1 TCN for MCU, FW2 Web Serial API for browser
+flashing, FW3 ONNX Runtime Web (WASM) for browser inference.
 
 ---
 
