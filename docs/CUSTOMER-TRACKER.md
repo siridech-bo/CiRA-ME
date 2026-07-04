@@ -65,8 +65,34 @@ is new.
 ---
 
 ### F3. Normalization method choice
-**Status:** 🔧 Partial (App Builder inference only, half-baked); main pipeline still hardcoded
+**Status:** ✅ Done | **Commits:** `b110fe3` | **Shipped:** 2026-07-04
 **Type:** feature | **Requested:** 2026-07-02
+
+**Summary of what shipped:** User picks `min_max` / `z_score` / `robust` /
+`none` at the Windowing step. Method + fitted params persist with the
+SavedModel and apply identically at every inference/export site
+(App Builder runner, ME-LAB endpoint, pipeline replay for ML+DL,
+deployer's generated Python inference scripts, CLAW exporter validation
+and manifest). Legacy min_max models keep predicting byte-identically.
+
+**Test evidence:** 10-subtest docker-exec suite green — persisted params
+shape per method, byte-identical legacy min_max math, App Builder +
+pipeline_replay inference for all four methods, deployer script
+generation parses valid Python for all four, CLAW exporter accepts all
+four and writes correct manifest.
+
+**Follow-up needed (out of F3 scope):** the App Builder Normalize NODE UI
+still uses the old `minmax`/`zscore`/`robust` literal names (without
+underscores), different from the training-time literals `min_max`/
+`z_score`/`robust`. The App Builder runner fallback handles both, so it's
+not a bug — just a UX inconsistency. Also: pre-existing
+`cira_claw_exporter.py:196` NoneType.get bug when `feature_selection` is
+null — same pattern I fixed in deployer earlier this month, unrelated to
+normalization but discovered while running F3 tests.
+
+<details>
+<summary>Original design + audit findings (kept for history)</summary>
+
 
 **Summary:** Currently min-max normalization is hardcoded at training time.
 Let the user pick min-max / z-score / robust / none at pipeline setup.
@@ -108,6 +134,8 @@ replay. A silent mismatch produces garbage predictions.
 
 **Effort:** ~1.5-2 days (previous estimate was low; the audit revealed
 more places need touching).
+
+</details>
 
 ---
 
