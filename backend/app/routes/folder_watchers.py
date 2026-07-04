@@ -209,3 +209,136 @@ def stop_watcher(watcher_id):
     folder_watcher_service.stop_watcher(watcher_id)
     watcher = FolderWatcher.get_by_id(watcher_id)
     return jsonify({'status': watcher.get('status'), 'watcher': _serialize(watcher)})
+
+
+# ---------------------------------------------------------------------------
+# File browsing — spare the user from having to shell in and ls the folders.
+# ---------------------------------------------------------------------------
+
+# Cap responses so a mis-configured watcher pointing at a huge folder can't
+# OOM the API. Files are listed newest-first; if there are more than the cap
+# the response includes total count so the UI can hint.
+_MAX_FILES_PER_FOLDER = 50
+# Preview cap: 200 KB is enough for a few thousand rows of a CSV; beyond that
+# we return only the head + a note.
+_PREVIEW_MAX_BYTES = 200 * 1024
+
+_VALID_KINDS = ('input', 'output', 'error')
+
+
+def _list_folder(dir_path: str, glob_pattern: str | None = None) -> tuple[list[dict], int]:
+    """List files in a folder as {name, size, mtime}. Returns (list, total_count)."""
+    import os
+    import glob as _glob
+    if not os.path.isdir(dir_path):
+        return [], 0
+    if glob_pattern:
+        matches = _glob.glob(os.path.join(dir_path, glob_pattern))
+    else:
+        matches = [os.path.join(dir_path, f) for f in os.listdir(dir_path)]
+    files = []
+    for p in matches:
+        if not os.path.isfile(p):
+            continue
+        try:
+            st = os.stat(p)
+        except OSError:
+            continue
+        files.append({
+            'name': os.path.basename(p),
+            'size': st.st_size,
+            'mtime': st.st_mtime,
+        })
+    total = len(files)
+    files.sort(key=lambda f: f['mtime'], reverse=True)
+    return files[:_MAX_FILES_PER_FOLDER], total
+
+
+@folder_watchers_bp.route('/<int:watcher_id>/files', methods=['GET'])
+@login_required
+def list_files(watcher_id):
+    """List files in this watcher's input / output / error folders.
+
+    Response: {input: {files: [...], total: N},
+               output: {...},
+               error:  {...}}
+    Each file: {name, size, mtime}. Sorted newest-first, capped at
+    _MAX_FILES_PER_FOLDER.
+    """
+    import os
+    watcher = _owned_or_404(watcher_id, request.current_user['id'])
+    if not watcher:
+        return jsonify({'error': 'Watcher not found'}), 404
+
+    input_dir = watcher['input_folder']
+    output_dir = watcher['output_folder']
+    error_dir = os.path.join(input_dir, '_error')
+
+    # Input pass through the watcher's glob so we don't advertise unrelated
+    # files sitting in the folder — matches the runtime's actual pick-up set.
+    input_files, input_total = _list_folder(input_dir, watcher.get('file_glob') or '*.txt')
+    output_files, output_total = _list_folder(output_dir)
+    error_files, error_total = _list_folder(error_dir)
+
+    return jsonify({
+        'input':  {'files': input_files,  'total': input_total,  'folder': input_dir},
+        'output': {'files': output_files, 'total': output_total, 'folder': output_dir},
+        'error':  {'files': error_files,  'total': error_total,  'folder': error_dir},
+    })
+
+
+@folder_watchers_bp.route('/<int:watcher_id>/files/<kind>/<path:filename>', methods=['GET'])
+@login_required
+def get_file_content(watcher_id, kind, filename):
+    """Read a specific file's content for preview. Response: {content, size,
+    truncated: bool}.
+
+    `kind` is one of `input`, `output`, `error`. `filename` is validated to
+    be a bare basename (no path traversal). Content is capped at
+    _PREVIEW_MAX_BYTES; larger files return only the head + `truncated: true`
+    so the UI can offer a download link instead.
+    """
+    import os
+    watcher = _owned_or_404(watcher_id, request.current_user['id'])
+    if not watcher:
+        return jsonify({'error': 'Watcher not found'}), 404
+    if kind not in _VALID_KINDS:
+        return jsonify({'error': f'kind must be one of {_VALID_KINDS}'}), 400
+
+    # Reject any path-traversal attempt. os.path.basename strips separators.
+    safe_name = os.path.basename(filename)
+    if safe_name != filename or safe_name in ('', '.', '..'):
+        return jsonify({'error': 'invalid filename'}), 400
+
+    input_dir = watcher['input_folder']
+    if kind == 'input':
+        folder = input_dir
+    elif kind == 'output':
+        folder = watcher['output_folder']
+    else:  # 'error'
+        folder = os.path.join(input_dir, '_error')
+
+    full_path = os.path.join(folder, safe_name)
+    if not os.path.isfile(full_path):
+        return jsonify({'error': 'file not found'}), 404
+
+    try:
+        size = os.path.getsize(full_path)
+    except OSError:
+        return jsonify({'error': 'file not readable'}), 500
+
+    truncated = size > _PREVIEW_MAX_BYTES
+    read_bytes = _PREVIEW_MAX_BYTES if truncated else size
+    try:
+        with open(full_path, 'r', encoding='utf-8', errors='replace') as f:
+            content = f.read(read_bytes)
+    except OSError as e:
+        return jsonify({'error': f'could not read: {e}'}), 500
+
+    return jsonify({
+        'name': safe_name,
+        'kind': kind,
+        'size': size,
+        'content': content,
+        'truncated': truncated,
+    })

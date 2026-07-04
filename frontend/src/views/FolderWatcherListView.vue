@@ -101,6 +101,16 @@
                 size="x-small"
                 variant="text"
                 color="info"
+                title="View files (input / output / errors)"
+                @click="openFilesDialog(w)"
+              >
+                <v-icon size="small">mdi-folder-eye-outline</v-icon>
+              </v-btn>
+              <v-btn
+                icon
+                size="x-small"
+                variant="text"
+                color="info"
                 title="Edit"
                 @click="editWatcher(w)"
               >
@@ -139,6 +149,109 @@
         <v-progress-circular indeterminate color="primary" size="36" />
       </div>
     </v-card>
+
+    <!-- Files Dialog: view input queue / output CSVs / errors -->
+    <v-dialog v-model="showFilesDialog" max-width="900" scrollable>
+      <v-card v-if="filesWatcher">
+        <v-card-title class="pt-4 pb-2 px-5">
+          <div class="d-flex align-center">
+            <v-icon class="mr-2">mdi-folder-eye-outline</v-icon>
+            <span class="text-truncate">{{ filesWatcher.name }}</span>
+            <v-spacer />
+            <v-btn icon size="small" variant="text" :loading="filesLoading" @click="loadFiles(filesWatcher!.id)">
+              <v-icon>mdi-refresh</v-icon>
+            </v-btn>
+          </div>
+        </v-card-title>
+
+        <v-tabs v-model="filesTab" density="compact">
+          <v-tab value="output">
+            <v-icon start size="small">mdi-check-circle-outline</v-icon>
+            Output <v-chip size="x-small" class="ml-2">{{ filesData.output.total }}</v-chip>
+          </v-tab>
+          <v-tab value="input">
+            <v-icon start size="small">mdi-inbox</v-icon>
+            Input Queue <v-chip size="x-small" class="ml-2">{{ filesData.input.total }}</v-chip>
+          </v-tab>
+          <v-tab value="error">
+            <v-icon start size="small">mdi-alert-circle-outline</v-icon>
+            Errors <v-chip size="x-small" class="ml-2" :color="filesData.error.total > 0 ? 'error' : undefined">{{ filesData.error.total }}</v-chip>
+          </v-tab>
+        </v-tabs>
+
+        <v-card-text class="px-0" style="max-height: 60vh;">
+          <v-window v-model="filesTab">
+            <v-window-item v-for="kind in (['output','input','error'] as const)" :key="kind" :value="kind">
+              <div class="px-5 pt-3">
+                <div class="text-caption text-medium-emphasis mb-2">
+                  Folder: <code>{{ filesData[kind].folder }}</code>
+                  <template v-if="filesData[kind].total > filesData[kind].files.length">
+                    &nbsp;·&nbsp; Showing newest {{ filesData[kind].files.length }} of {{ filesData[kind].total }}
+                  </template>
+                </div>
+
+                <v-alert v-if="!filesLoading && filesData[kind].files.length === 0" type="info" variant="tonal" density="compact" class="mb-2">
+                  <template v-if="kind === 'output'">No output files yet — nothing has been processed successfully.</template>
+                  <template v-else-if="kind === 'input'">No files waiting in the input folder.</template>
+                  <template v-else>No errored files — everything's been processed cleanly.</template>
+                </v-alert>
+
+                <v-table v-else density="compact" hover>
+                  <thead>
+                    <tr>
+                      <th>Name</th>
+                      <th class="text-right">Size</th>
+                      <th>Modified</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="f in filesData[kind].files" :key="f.name"
+                        :class="{ 'selected-row': selectedFile?.kind === kind && selectedFile?.name === f.name }"
+                        @click="previewFile(kind, f.name)"
+                        style="cursor: pointer">
+                      <td class="font-weight-medium">{{ f.name }}</td>
+                      <td class="text-right text-caption">{{ formatSize(f.size) }}</td>
+                      <td class="text-caption">{{ formatDate(f.mtime * 1000) }}</td>
+                      <td class="text-right">
+                        <v-icon v-if="selectedFile?.kind === kind && selectedFile?.name === f.name" size="small" color="primary">mdi-eye</v-icon>
+                      </td>
+                    </tr>
+                  </tbody>
+                </v-table>
+
+                <!-- File preview panel -->
+                <div v-if="selectedFile && selectedFile.kind === kind" class="mt-3">
+                  <div class="d-flex align-center mb-1">
+                    <span class="text-caption font-weight-medium">Preview: {{ selectedFile.name }}</span>
+                    <span v-if="preview?.truncated" class="text-caption text-warning ml-2">(truncated to first 200 KB — refresh to see fresh data)</span>
+                    <v-spacer />
+                    <v-btn size="x-small" variant="text" :loading="previewLoading" @click="loadPreview">
+                      <v-icon start size="x-small">mdi-refresh</v-icon> Refresh
+                    </v-btn>
+                  </div>
+                  <v-sheet
+                    v-if="preview"
+                    color="grey-darken-4"
+                    class="pa-3"
+                    rounded
+                    style="max-height: 300px; overflow: auto;"
+                  >
+                    <pre style="margin: 0; font-size: 11px; white-space: pre; font-family: monospace;">{{ preview.content }}</pre>
+                  </v-sheet>
+                  <v-progress-linear v-else-if="previewLoading" indeterminate />
+                </div>
+              </div>
+            </v-window-item>
+          </v-window>
+        </v-card-text>
+
+        <v-card-actions class="px-5 pb-4">
+          <v-spacer />
+          <v-btn variant="text" @click="closeFilesDialog">Close</v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
 
     <!-- Delete Confirm Dialog -->
     <v-dialog v-model="showDeleteDialog" max-width="400">
@@ -201,6 +314,30 @@ const busy = ref<Record<number, string>>({})
 const showDeleteDialog = ref(false)
 const watcherToDelete = ref<Watcher | null>(null)
 const deleting = ref(false)
+
+// --- Files dialog state ---------------------------------------------------
+interface FileInfo {
+  name: string
+  size: number
+  mtime: number
+}
+interface FolderData {
+  files: FileInfo[]
+  total: number
+  folder: string
+}
+const showFilesDialog = ref(false)
+const filesWatcher = ref<Watcher | null>(null)
+const filesTab = ref<'output' | 'input' | 'error'>('output')
+const filesLoading = ref(false)
+const filesData = ref<Record<'output' | 'input' | 'error', FolderData>>({
+  output: { files: [], total: 0, folder: '' },
+  input:  { files: [], total: 0, folder: '' },
+  error:  { files: [], total: 0, folder: '' },
+})
+const selectedFile = ref<{ kind: 'output' | 'input' | 'error'; name: string } | null>(null)
+const preview = ref<{ name: string; content: string; truncated: boolean; size: number } | null>(null)
+const previewLoading = ref(false)
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
@@ -275,6 +412,64 @@ const deleteWatcher = async () => {
   }
 }
 
+// --- Files dialog logic ---------------------------------------------------
+const openFilesDialog = async (w: Watcher) => {
+  filesWatcher.value = w
+  filesTab.value = 'output'
+  selectedFile.value = null
+  preview.value = null
+  showFilesDialog.value = true
+  await loadFiles(w.id)
+}
+
+const closeFilesDialog = () => {
+  showFilesDialog.value = false
+  filesWatcher.value = null
+  selectedFile.value = null
+  preview.value = null
+}
+
+const loadFiles = async (id: number) => {
+  try {
+    filesLoading.value = true
+    const res = await api.get(`/api/folder-watchers/${id}/files`)
+    filesData.value = res.data
+  } catch (e: any) {
+    notify.showError(e.response?.data?.error || 'Failed to load files')
+  } finally {
+    filesLoading.value = false
+  }
+}
+
+const previewFile = async (kind: 'output' | 'input' | 'error', name: string) => {
+  selectedFile.value = { kind, name }
+  preview.value = null
+  await loadPreview()
+}
+
+const loadPreview = async () => {
+  if (!filesWatcher.value || !selectedFile.value) return
+  try {
+    previewLoading.value = true
+    const { kind, name } = selectedFile.value
+    const res = await api.get(
+      `/api/folder-watchers/${filesWatcher.value.id}/files/${kind}/${encodeURIComponent(name)}`,
+    )
+    preview.value = res.data
+  } catch (e: any) {
+    notify.showError(e.response?.data?.error || 'Failed to load file content')
+    preview.value = null
+  } finally {
+    previewLoading.value = false
+  }
+}
+
+const formatSize = (bytes: number): string => {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
 const statusColor = (status: string) => {
   switch (status) {
     case 'running': return 'success'
@@ -283,13 +478,13 @@ const statusColor = (status: string) => {
   }
 }
 
-const formatDate = (dt?: string | null) => {
-  if (!dt) return '—'
+const formatDate = (dt?: string | number | null) => {
+  if (dt === null || dt === undefined || dt === '') return '—'
   try {
-    const d = new Date(dt)
-    if (isNaN(d.getTime())) return dt
+    const d = new Date(dt as any)
+    if (isNaN(d.getTime())) return String(dt)
     return d.toLocaleString()
-  } catch { return dt }
+  } catch { return String(dt) }
 }
 
 onMounted(() => {

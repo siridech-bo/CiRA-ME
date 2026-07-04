@@ -87,7 +87,7 @@ wire `project_id` through everywhere.
 Ordered newest first. Every SHA is on the `master` branch.
 
 ### T15. F1 Folder Watcher + ML Prediction (v1)
-**Status:** ✅ Done | **Commits:** `0a35d50` `576da36` | **Shipped:** 2026-07-04
+**Status:** ✅ Done | **Commits:** `0a35d50` `576da36` + File Browser | **Shipped:** 2026-07-04
 Backend daemon polls a user-specified folder every N seconds, runs each
 file's rows through a ME-LAB endpoint, writes results to an output
 folder as CSV, deletes the input. Matches the customer's flow diagram
@@ -116,6 +116,17 @@ Shipped the design decisions verbatim (F1.1–F1.6). All 3 QA blockers +
 5 important findings addressed before merge. Frontend list view has
 auto-refresh, status chip, start/stop/delete; edit form disables the
 endpoint select on edit (matches the backend's immutable rule).
+
+**Post-ship UX addition (2026-07-04):** In-browser File Browser dialog
+so users don't have to shell into `./watcher-data/<user_id>/<name>/`
+to inspect what's flowing through. New button
+(`mdi-folder-eye-outline`) on each row opens a dialog with Output /
+Input / Errors tabs, listing files (name / size / mtime) with a preview
+panel (200 KB cap, truncation flag). Backend adds two auth-gated
+endpoints: `GET /api/folder-watchers/<id>/files` (folder listing) and
+`GET /api/folder-watchers/<id>/files/<kind>/<filename>` (file preview),
+with `os.path.basename` path-traversal defense and a `_VALID_KINDS`
+whitelist.
 
 ### T14. F3 Normalization method choice
 **Status:** ✅ Done | **Commits:** `b110fe3` | **Shipped:** 2026-07-04
