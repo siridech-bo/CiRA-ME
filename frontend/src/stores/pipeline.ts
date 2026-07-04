@@ -410,14 +410,31 @@ export const usePipelineStore = defineStore('pipeline', () => {
 
   async function setActiveProject(id: number | null) {
     projectId.value = id
-    if (id !== null) {
-      try {
-        const res = await api.get(`/api/projects/${id}`)
-        if (res.data?.mode) {
-          mode.value = res.data.mode === 'mixed' ? mode.value : res.data.mode
-        }
-      } catch { /* ignore hydration errors */ }
-    }
+    if (id === null) return
+
+    try {
+      const res = await api.get(`/api/projects/${id}`)
+      if (res.data?.mode) {
+        mode.value = res.data.mode === 'mixed' ? mode.value : res.data.mode
+      }
+    } catch { /* ignore metadata hydration errors */ }
+
+    // Rehydrate the persisted data / windowing / features into the working
+    // pipeline state so clicking a stage chip on the Projects list lands the
+    // user on a pre-loaded view, not an empty one.
+    try {
+      const res = await api.post(`/api/projects/${id}/hydrate`)
+      const h = res.data
+      if (h?.data_session) {
+        dataSession.value = h.data_session
+      }
+      if (h?.windowing_config) {
+        windowingConfig.value = { ...windowingConfig.value, ...h.windowing_config }
+      }
+      if (h?.feature_session?.feature_names?.length) {
+        selectedFeatures.value = h.feature_session.feature_names
+      }
+    } catch { /* nothing persisted yet — new project */ }
   }
 
   async function createProjectAndAdopt(name: string): Promise<number | null> {
