@@ -1,0 +1,820 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>CiRA ME — Installation Guide</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --bg: #0f172a;
+    --bg-card: #1e293b;
+    --bg-code: #0f1728;
+    --border: #334155;
+    --text: #e2e8f0;
+    --text-muted: #94a3b8;
+    --accent: #8b5cf6;
+    --accent-hover: #a78bfa;
+    --success: #22c55e;
+    --warn: #eab308;
+    --danger: #ef4444;
+    --info: #38bdf8;
+    --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+    --mono: 'SF Mono', Menlo, Monaco, Consolas, 'Courier New', monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font);
+    line-height: 1.6;
+    font-size: 15px;
+  }
+  .layout {
+    display: grid;
+    grid-template-columns: 260px 1fr;
+    min-height: 100vh;
+  }
+  aside {
+    background: var(--bg-card);
+    padding: 24px 20px;
+    border-right: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    overflow-y: auto;
+  }
+  aside h1 {
+    margin: 0 0 8px 0;
+    font-size: 20px;
+    background: linear-gradient(135deg, var(--accent), var(--info));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  aside .tag {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-muted);
+    margin-bottom: 20px;
+  }
+  aside nav a {
+    display: block;
+    color: var(--text-muted);
+    text-decoration: none;
+    padding: 8px 12px;
+    border-radius: 6px;
+    margin-bottom: 4px;
+    font-size: 14px;
+    border-left: 2px solid transparent;
+  }
+  aside nav a:hover {
+    background: rgba(139, 92, 246, 0.08);
+    color: var(--text);
+    border-left-color: var(--accent);
+  }
+  aside nav .section-label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-muted);
+    padding: 16px 12px 6px;
+    font-weight: 600;
+  }
+  main {
+    padding: 40px 60px;
+    max-width: 1000px;
+  }
+  h2 {
+    font-size: 28px;
+    margin: 40px 0 8px 0;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+  h2:first-child { margin-top: 0; }
+  h3 {
+    font-size: 20px;
+    margin: 32px 0 12px 0;
+    color: var(--text);
+  }
+  h4 {
+    font-size: 16px;
+    margin: 20px 0 8px 0;
+    color: var(--text);
+  }
+  p { color: var(--text); }
+  .lede {
+    font-size: 18px;
+    color: var(--text-muted);
+    margin-top: 8px;
+  }
+  code {
+    font-family: var(--mono);
+    font-size: 13px;
+    background: var(--bg-code);
+    padding: 2px 6px;
+    border-radius: 4px;
+    color: #fde68a;
+  }
+  pre {
+    position: relative;
+    background: var(--bg-code);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 20px;
+    padding-right: 60px;
+    overflow-x: auto;
+    margin: 12px 0;
+  }
+  pre code {
+    background: none;
+    padding: 0;
+    color: var(--text);
+    font-size: 13.5px;
+    display: block;
+    white-space: pre;
+  }
+  pre .comment { color: var(--text-muted); font-style: italic; }
+  pre .cmd { color: #a5f3fc; }
+  pre .arg { color: #fde68a; }
+  .copy-btn {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    background: rgba(139, 92, 246, 0.15);
+    color: var(--accent-hover);
+    border: 1px solid rgba(139, 92, 246, 0.3);
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-family: var(--font);
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .copy-btn:hover {
+    background: rgba(139, 92, 246, 0.25);
+    color: var(--text);
+  }
+  .copy-btn.copied {
+    background: rgba(34, 197, 94, 0.2);
+    color: var(--success);
+    border-color: rgba(34, 197, 94, 0.4);
+  }
+  .os-tabs {
+    display: flex;
+    gap: 4px;
+    margin: 20px 0 0 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .os-tab {
+    background: transparent;
+    color: var(--text-muted);
+    border: none;
+    padding: 10px 20px;
+    cursor: pointer;
+    font-family: var(--font);
+    font-size: 14px;
+    font-weight: 500;
+    border-bottom: 2px solid transparent;
+    transition: all 0.15s;
+  }
+  .os-tab:hover { color: var(--text); }
+  .os-tab.active {
+    color: var(--accent-hover);
+    border-bottom-color: var(--accent);
+  }
+  .os-panel { display: none; }
+  .os-panel.active { display: block; }
+  .step {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    margin: 20px 0;
+    position: relative;
+  }
+  .step-num {
+    position: absolute;
+    top: -14px;
+    left: 20px;
+    background: linear-gradient(135deg, var(--accent), var(--info));
+    color: white;
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+  }
+  .step h3 { margin-top: 8px; }
+  .checklist {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px 24px;
+    margin: 20px 0;
+    list-style: none;
+    padding-left: 24px;
+  }
+  .checklist li {
+    padding: 8px 0;
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+  }
+  .checklist input[type=checkbox] {
+    margin-top: 4px;
+    width: 18px;
+    height: 18px;
+    accent-color: var(--accent);
+    cursor: pointer;
+  }
+  .checklist label { cursor: pointer; user-select: none; }
+  .checklist input:checked + label {
+    color: var(--text-muted);
+    text-decoration: line-through;
+  }
+  .alert {
+    padding: 12px 16px;
+    border-radius: 8px;
+    margin: 16px 0;
+    border-left: 3px solid;
+  }
+  .alert.info { background: rgba(56, 189, 248, 0.08); border-color: var(--info); }
+  .alert.warn { background: rgba(234, 179, 8, 0.08); border-color: var(--warn); }
+  .alert.danger { background: rgba(239, 68, 68, 0.08); border-color: var(--danger); }
+  .alert.success { background: rgba(34, 197, 94, 0.08); border-color: var(--success); }
+  .alert-title {
+    font-weight: 600;
+    margin-bottom: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-size: 12px;
+  }
+  .alert.info .alert-title { color: var(--info); }
+  .alert.warn .alert-title { color: var(--warn); }
+  .alert.danger .alert-title { color: var(--danger); }
+  .alert.success .alert-title { color: var(--success); }
+  details {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 20px;
+    margin: 8px 0;
+  }
+  details summary {
+    cursor: pointer;
+    font-weight: 500;
+    padding: 4px 0;
+  }
+  details summary:hover { color: var(--accent-hover); }
+  details[open] summary { margin-bottom: 12px; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 16px 0;
+    background: var(--bg-card);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  table th, table td {
+    padding: 10px 16px;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+  }
+  table th {
+    background: rgba(139, 92, 246, 0.08);
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--accent-hover);
+  }
+  table tr:last-child td { border-bottom: none; }
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    font-size: 11px;
+    border-radius: 4px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    margin-left: 4px;
+  }
+  .badge.required { background: rgba(239, 68, 68, 0.15); color: #fca5a5; }
+  .badge.optional { background: rgba(56, 189, 248, 0.15); color: #7dd3fc; }
+  .badge.recommended { background: rgba(139, 92, 246, 0.15); color: var(--accent-hover); }
+  .fold {
+    background: rgba(15, 23, 42, 0.5);
+    padding: 8px 12px;
+    border-radius: 4px;
+    margin-top: 8px;
+    font-size: 13px;
+    color: var(--text-muted);
+  }
+  a { color: var(--accent-hover); }
+  a:hover { color: var(--text); }
+  .footer {
+    margin-top: 60px;
+    padding: 24px 0;
+    border-top: 1px solid var(--border);
+    color: var(--text-muted);
+    font-size: 13px;
+    text-align: center;
+  }
+  @media (max-width: 900px) {
+    .layout { grid-template-columns: 1fr; }
+    aside { position: relative; height: auto; }
+    main { padding: 24px; }
+  }
+</style>
+</head>
+<body>
+<div class="layout">
+  <aside>
+    <h1>CiRA ME</h1>
+    <div class="tag">Installation Guide</div>
+    <nav>
+      <a href="#overview">Overview</a>
+      <a href="#requirements">Requirements</a>
+      <div class="section-label">Install</div>
+      <a href="#step-validate">1. Validate</a>
+      <a href="#step-install">2. Install</a>
+      <a href="#step-start">3. Start</a>
+      <a href="#step-login">4. Log In</a>
+      <div class="section-label">Operate</div>
+      <a href="#backup">Backup</a>
+      <a href="#update">Update</a>
+      <a href="#uninstall">Uninstall</a>
+      <div class="section-label">Help</div>
+      <a href="#gpu-driver">Old NVIDIA driver?</a>
+      <a href="#troubleshooting">Troubleshooting</a>
+      <a href="#commands">All commands</a>
+    </nav>
+  </aside>
+
+  <main>
+
+    <h2 id="overview">Install CiRA ME</h2>
+    <p class="lede">Machine Intelligence for Edge Computing — a 4-container Docker stack you can install in minutes.</p>
+
+    <div class="alert info">
+      <div class="alert-title">4 steps to a running install</div>
+      <strong>Validate</strong> your box &nbsp;→&nbsp; <strong>Install</strong> images &nbsp;→&nbsp; <strong>Start</strong> containers &nbsp;→&nbsp; <strong>Log in</strong> at <code>http://localhost:3030</code>
+    </div>
+
+    <p>Everything is run from the <code>deployment/</code> folder. Below, click your OS to see the exact commands. Every command has a <strong>Copy</strong> button in the top-right corner.</p>
+
+    <div class="os-tabs" role="tablist">
+      <button class="os-tab active" data-os="linux">Linux / macOS</button>
+      <button class="os-tab" data-os="windows">Windows</button>
+    </div>
+
+    <h2 id="requirements">Requirements</h2>
+
+    <ul class="checklist">
+      <li>
+        <input type="checkbox" id="c1">
+        <label for="c1"><strong>Docker 24.0+</strong> with the Compose plugin (v2) — see <a href="https://docs.docker.com/engine/install/" target="_blank">docker.com</a></label>
+      </li>
+      <li>
+        <input type="checkbox" id="c2">
+        <label for="c2"><strong>30 GB free disk</strong> where you'll run the install</label>
+      </li>
+      <li>
+        <input type="checkbox" id="c3">
+        <label for="c3"><strong>8 GB RAM minimum</strong> (16 GB recommended for TimesNet training)</label>
+      </li>
+      <li>
+        <input type="checkbox" id="c4">
+        <label for="c4"><strong>Ports 3030, 5100, 5200, 1883, 9001</strong> are free</label>
+      </li>
+      <li>
+        <input type="checkbox" id="c5">
+        <label for="c5"><strong>Linux only:</strong> your user is in the <code>docker</code> group (never run install with <code>sudo</code>)</label>
+      </li>
+      <li>
+        <input type="checkbox" id="c6">
+        <label for="c6"><strong>GPU (optional):</strong> NVIDIA driver <strong>550+</strong> and <code>nvidia-container-toolkit</code>. Older driver? See <a href="#gpu-driver">Old NVIDIA driver?</a></label>
+      </li>
+    </ul>
+
+    <div class="alert info">
+      <div class="alert-title">Not sure?</div>
+      Skip this section and run <strong>Step 1 (Validate)</strong> below — it checks every requirement automatically and tells you what to fix.
+    </div>
+
+    <h2 id="step-validate">Step 1 — Validate</h2>
+
+    <div class="step">
+      <span class="step-num">Step 1 of 4</span>
+      <h3>Pre-flight check (zero side effects)</h3>
+      <p>Confirms Docker, disk, ports, tarballs, and GPU driver are all in a state <code>install.sh</code> will accept. Nothing is changed — just diagnosed.</p>
+
+      <div class="os-panel active" data-os="linux">
+<pre><code><span class="cmd">cd</span> deployment
+<span class="cmd">bash</span> validate.sh</code></pre>
+      </div>
+      <div class="os-panel" data-os="windows">
+<pre><code><span class="cmd">cd</span> deployment
+validate.bat</code></pre>
+      </div>
+
+      <p>Expected output — every check should be <strong style="color:var(--success)">PASS</strong> or <strong style="color:var(--warn)">WARN</strong>:</p>
+<pre><code>== User environment ==   <span style="color:var(--success)">PASS</span>  not running as root
+== Docker ==             <span style="color:var(--success)">PASS</span>  docker daemon reachable
+                         <span style="color:var(--success)">PASS</span>  docker compose v2 plugin present
+== GPU ==                <span style="color:var(--success)">PASS</span>  GPU detected: RTX 5070 Ti (driver 576.88)
+                         <span style="color:var(--success)">PASS</span>  nvidia container runtime registered
+== Disk ==               <span style="color:var(--success)">PASS</span>  1570 GB free
+== Ports ==              <span style="color:var(--success)">PASS</span>  port 3030 free (for frontend)
+                         <span style="color:var(--success)">PASS</span>  port 5100 free (for backend)
+                         ...
+
+Summary: 11 PASS, 1 WARN, 0 <span style="color:var(--danger)">FAIL</span>
+Ready for install. Next: bash install.sh</code></pre>
+
+      <div class="alert warn">
+        <div class="alert-title">Any FAIL? Do this instead</div>
+        The FAIL messages include the exact fix command. Copy-paste it, re-run <code>validate.sh</code>, and only continue when everything is PASS or WARN.
+      </div>
+    </div>
+
+    <h2 id="step-install">Step 2 — Install</h2>
+
+    <div class="step">
+      <span class="step-num">Step 2 of 4</span>
+      <h3>Load Docker images</h3>
+      <p>Loads all 4 tarballs, verifies each landed as a tagged image, creates data folders with correct ownership. Safe to re-run.</p>
+
+      <div class="os-panel active" data-os="linux">
+<pre><code><span class="cmd">bash</span> install.sh</code></pre>
+      </div>
+      <div class="os-panel" data-os="windows">
+<pre><code>install.bat</code></pre>
+      </div>
+
+      <p>Typical runtime: <strong>3–5 minutes</strong> (mostly loading the 14 GB backend image).</p>
+
+      <div class="alert danger">
+        <div class="alert-title">Do NOT run with sudo (Linux)</div>
+        The install script refuses. Root-owned data files break every subsequent command. Add your user to the <code>docker</code> group instead:
+<pre style="margin-top:8px"><code><span class="cmd">sudo</span> usermod -aG docker $USER
+<span class="cmd">newgrp</span> docker</code></pre>
+      </div>
+    </div>
+
+    <h2 id="step-start">Step 3 — Start</h2>
+
+    <div class="step">
+      <span class="step-num">Step 3 of 4</span>
+      <h3>Start the containers</h3>
+      <p>Pick GPU or CPU based on your hardware. The start script checks ports and (in GPU mode) verifies the NVIDIA runtime is registered before doing anything.</p>
+
+      <h4>With GPU <span class="badge recommended">recommended if driver ≥ 550</span></h4>
+      <div class="os-panel active" data-os="linux">
+<pre><code><span class="cmd">bash</span> start.sh</code></pre>
+      </div>
+      <div class="os-panel" data-os="windows">
+<pre><code>start.bat</code></pre>
+      </div>
+
+      <h4>CPU-only <span class="badge optional">works on any machine</span></h4>
+      <div class="os-panel active" data-os="linux">
+<pre><code><span class="cmd">bash</span> start-no-gpu.sh</code></pre>
+      </div>
+      <div class="os-panel" data-os="windows">
+<pre><code>start-no-gpu.bat</code></pre>
+      </div>
+
+      <div class="alert info">
+        <div class="alert-title">First boot takes 60–90 seconds</div>
+        The backend runs SQLite migrations and imports PyTorch on first start. Give it 2 minutes before assuming something is wrong. Watch progress:
+<pre style="margin-top:8px"><code><span class="cmd">bash</span> logs.sh backend</code></pre>
+      </div>
+    </div>
+
+    <h2 id="step-login">Step 4 — Log in</h2>
+
+    <div class="step">
+      <span class="step-num">Step 4 of 4</span>
+      <h3>Open the web app</h3>
+      <p>In your browser, go to:</p>
+<pre><code>http://localhost:3030</code></pre>
+
+      <p>Default credentials:</p>
+      <table>
+        <tr><th>Username</th><td><code>admin</code></td></tr>
+        <tr><th>Password</th><td><code>admin123</code></td></tr>
+      </table>
+
+      <div class="alert danger">
+        <div class="alert-title">Change the password immediately</div>
+        Go to the profile menu (top right) → Change Password. Especially before exposing the app to the LAN.
+      </div>
+
+      <div class="alert success">
+        <div class="alert-title">Installation complete</div>
+        Your data (<code>data/</code>, <code>datasets/</code>, <code>watcher-data/</code>) lives on the host disk and survives every update. The 4 container images can be replaced any time — data stays.
+      </div>
+    </div>
+
+    <h2 id="backup">Backup your data</h2>
+
+    <p>Run before any risky operation (update, uninstall, rebuild). Writes a single tarball you can copy off the machine or restore later.</p>
+
+    <div class="os-panel active" data-os="linux">
+<pre><code><span class="comment"># default destination: backups/cirame-YYYYMMDD-HHMMSS.tar.gz</span>
+<span class="cmd">bash</span> backup.sh
+
+<span class="comment"># or with an explicit destination</span>
+<span class="cmd">bash</span> backup.sh /path/to/dest.tar.gz</code></pre>
+    </div>
+    <div class="os-panel" data-os="windows">
+<pre><code><span class="comment">REM default destination: backups\cirame-YYYYMMDD-HHMMSS.zip</span>
+backup.bat
+
+<span class="comment">REM or with an explicit destination</span>
+backup.bat C:\path\to\dest.zip</code></pre>
+    </div>
+
+    <p>The script optionally stops containers first so the SQLite DB is quiesced — recommended.</p>
+
+    <h4>Restore from backup</h4>
+    <div class="os-panel active" data-os="linux">
+<pre><code><span class="cmd">tar</span> xzf backups/cirame-20260704-201530.tar.gz -C /target/deployment/folder</code></pre>
+    </div>
+    <div class="os-panel" data-os="windows">
+<pre><code>powershell -Command "Expand-Archive -Path 'backups\cirame-20260704-201530.zip' -DestinationPath 'C:\target\folder'"</code></pre>
+    </div>
+
+    <h2 id="update">Update to a new version</h2>
+
+    <p>Two paths — both preserve your data and auto-snapshot the database before touching anything.</p>
+
+    <h3>Option A — In-place (recommended)</h3>
+    <p>Drop the new <code>.tar</code> files into your existing deployment folder, then:</p>
+    <div class="os-panel active" data-os="linux">
+<pre><code><span class="cmd">bash</span> update.sh
+<span class="cmd">bash</span> start.sh</code></pre>
+    </div>
+    <div class="os-panel" data-os="windows">
+<pre><code>update.bat
+start.bat</code></pre>
+    </div>
+
+    <p>The update script:</p>
+    <ol>
+      <li>Snapshots <code>data/database/</code> to <code>data/database.backup.&lt;timestamp&gt;/</code></li>
+      <li>Stops the running app</li>
+      <li>Loads and verifies each new image</li>
+      <li>Prunes old image layers</li>
+    </ol>
+
+    <details>
+      <summary>Rollback if the new version fails to boot</summary>
+      <p>The update script prints the exact rollback commands. Example:</p>
+      <div class="os-panel active" data-os="linux">
+<pre><code><span class="cmd">bash</span> stop.sh
+<span class="cmd">rm</span> -rf data/database
+<span class="cmd">mv</span> data/database.backup.20260704-201530 data/database
+<span class="cmd">bash</span> start.sh</code></pre>
+      </div>
+      <div class="os-panel" data-os="windows">
+<pre><code>stop.bat
+<span class="cmd">rmdir</span> /s /q data\database
+<span class="cmd">move</span> data\database.backup.20260704-201530 data\database
+start.bat</code></pre>
+      </div>
+    </details>
+
+    <h3>Option B — New folder + migrate</h3>
+    <p>If you prefer keeping each release in its own folder:</p>
+    <div class="os-panel active" data-os="linux">
+<pre><code><span class="comment"># in the NEW folder</span>
+<span class="cmd">bash</span> migrate.sh /path/to/old/deployment
+<span class="cmd">bash</span> install.sh
+<span class="cmd">bash</span> start.sh</code></pre>
+    </div>
+    <div class="os-panel" data-os="windows">
+<pre><code>REM in the NEW folder
+migrate.bat "C:\path\to\old\deployment"
+install.bat
+start.bat</code></pre>
+    </div>
+
+    <p><code>migrate.sh</code> refuses if source and target are the same folder, and aborts on any copy failure — no partial migrations.</p>
+
+    <h2 id="uninstall">Uninstall</h2>
+
+    <p>By default, uninstall <strong>preserves your data on disk</strong>. Only containers and images are removed.</p>
+
+    <div class="os-panel active" data-os="linux">
+<pre><code><span class="comment"># removes containers + images, keeps data</span>
+<span class="cmd">bash</span> uninstall.sh
+
+<span class="comment"># ALSO deletes data/, datasets/, watcher-data/ (unrecoverable)</span>
+<span class="cmd">bash</span> uninstall.sh --purge-data</code></pre>
+    </div>
+    <div class="os-panel" data-os="windows">
+<pre><code>REM removes containers + images, keeps data
+uninstall.bat
+
+REM ALSO deletes data\, datasets\, watcher-data\ (unrecoverable)
+uninstall.bat --purge-data</code></pre>
+    </div>
+
+    <div class="alert warn">
+      <div class="alert-title">Typed-phrase confirmation</div>
+      Uninstall asks you to type <code>REMOVE</code> for the safe path, or <code>PURGE</code> for the destructive one. "yes/no" prompts get answered on autopilot — a typed phrase forces a pause.
+    </div>
+
+    <h2 id="gpu-driver">Old NVIDIA driver? (515.x)</h2>
+
+    <p>The shipped backend is built with CUDA 12.8, which needs NVIDIA driver <strong>550 or newer</strong>. If <code>nvidia-smi</code> shows a driver in the 515.x–545.x range, you have three options:</p>
+
+    <div class="alert info">
+      <div class="alert-title">A. Update the driver</div>
+      Cleanest long-term. Requires a reboot. Talk to whoever else uses the box first.
+    </div>
+
+    <div class="alert info">
+      <div class="alert-title">B. Run in CPU mode</div>
+      Zero extra work — use <code>start-no-gpu.sh</code> instead. Everything works, but TimesNet training and TI model conversion run slower on CPU.
+    </div>
+
+    <div class="alert info">
+      <div class="alert-title">C. Rebuild the backend for CUDA 11.7</div>
+      Runs at full GPU speed on the old driver. Rebuild takes ~15 minutes and needs the source (not just the deployment tarballs):
+<pre style="margin-top:8px"><code><span class="comment"># from the repo root (not the deployment folder)</span>
+<span class="cmd">docker</span> build \
+    --network=host \
+    --build-arg TORCH_VERSION=2.0.1 \
+    --build-arg TORCH_CUDA=cu117 \
+    -t cirame-backend:latest \
+    backend/
+
+<span class="comment"># if you want to redistribute:</span>
+<span class="cmd">docker</span> save cirame-backend:latest -o deployment/cirame-backend.tar</code></pre>
+      Every feature (TimesNet training, GPU inference, TI export) works identically. Only the CUDA runtime version differs.
+    </div>
+
+    <h2 id="troubleshooting">Troubleshooting</h2>
+
+    <p>Always run <code>validate.sh</code> first — it names the exact fix for every common problem.</p>
+
+    <details>
+      <summary>Docker not running / images fail to load</summary>
+<pre style="margin-top:12px"><code><span class="cmd">docker</span> info
+<span class="cmd">df</span> -h  <span class="comment"># need 30 GB free</span></code></pre>
+      <p>On Linux, if you see <code>permission denied</code>: add your user to the docker group.</p>
+    </details>
+
+    <details>
+      <summary>Port 1883 already in use (Linux)</summary>
+      <p>Common on Ubuntu/Debian — a host <code>mosquitto</code> package is running as a systemd service. Stop it:</p>
+<pre><code><span class="cmd">sudo</span> systemctl stop mosquitto
+<span class="cmd">sudo</span> systemctl disable mosquitto</code></pre>
+    </details>
+
+    <details>
+      <summary>GPU not detected / "could not select device driver"</summary>
+<pre style="margin-top:12px"><code><span class="cmd">nvidia-smi</span>                                       <span class="comment"># does the host see the GPU?</span>
+<span class="cmd">docker</span> info | grep nvidia                        <span class="comment"># is the runtime registered?</span>
+<span class="cmd">docker</span> run --rm --gpus all nvidia/cuda:12.4.0-base-ubuntu20.04 nvidia-smi</code></pre>
+      <p>If the last command fails: reinstall nvidia-container-toolkit and restart Docker.</p>
+    </details>
+
+    <details>
+      <summary>Backend crashes with CUDA error on first inference</summary>
+      <p>Your NVIDIA driver is too old (needs 550+). See <a href="#gpu-driver">Old NVIDIA driver?</a> above — either rebuild for cu117 or use <code>start-no-gpu.sh</code>.</p>
+    </details>
+
+    <details>
+      <summary>Frontend loads but shows connection errors</summary>
+      <p>Backend is still starting up (SQLite migrations + torch import take ~90s on first boot). Wait 2 minutes, then check backend logs:</p>
+<pre><code><span class="cmd">bash</span> logs.sh backend --no-follow | tail -50</code></pre>
+    </details>
+
+    <details>
+      <summary>Cannot access from other machines on the LAN</summary>
+      <ol>
+        <li>Firewall must allow ports <strong>3030</strong>, <strong>1883</strong>, <strong>9001</strong>.</li>
+        <li>Use the server IP, not <code>localhost</code>: <code>http://192.168.x.x:3030</code></li>
+      </ol>
+    </details>
+
+    <details>
+      <summary>Data missing after upgrade</summary>
+      <p>This shouldn't happen — data is on the host disk in <code>./data/</code> and <code>./datasets/</code>. Common causes:</p>
+      <ol>
+        <li>You extracted the new release to a <em>different</em> folder → run <code>migrate.sh &lt;old_folder&gt;</code>.</li>
+        <li>You deleted <code>data/</code> or <code>datasets/</code> by mistake → restore from your most recent <code>backup.sh</code> output.</li>
+      </ol>
+    </details>
+
+    <h2 id="commands">All commands (cheat sheet)</h2>
+
+    <table>
+      <thead><tr><th>Do this</th><th>Linux / macOS</th><th>Windows</th></tr></thead>
+      <tbody>
+        <tr><td>Validate box before install</td><td><code>bash validate.sh</code></td><td><code>validate.bat</code></td></tr>
+        <tr><td><strong>Backup data</strong></td><td><code>bash backup.sh</code></td><td><code>backup.bat</code></td></tr>
+        <tr><td>Fresh install</td><td><code>bash install.sh</code></td><td><code>install.bat</code></td></tr>
+        <tr><td>Start (GPU)</td><td><code>bash start.sh</code></td><td><code>start.bat</code></td></tr>
+        <tr><td>Start (CPU)</td><td><code>bash start-no-gpu.sh</code></td><td><code>start-no-gpu.bat</code></td></tr>
+        <tr><td>Stop</td><td><code>bash stop.sh</code></td><td><code>stop.bat</code></td></tr>
+        <tr><td>Check status</td><td><code>bash status.sh</code></td><td><code>status.bat</code></td></tr>
+        <tr><td>Live logs</td><td><code>bash logs.sh</code></td><td><code>logs.bat</code></td></tr>
+        <tr><td>Logs for one service</td><td><code>bash logs.sh backend</code></td><td><code>logs.bat backend</code></td></tr>
+        <tr><td>Recent logs, no follow</td><td><code>bash logs.sh --no-follow</code></td><td><code>logs.bat --no-follow</code></td></tr>
+        <tr><td><strong>Update</strong></td><td><code>bash update.sh</code></td><td><code>update.bat</code></td></tr>
+        <tr><td><strong>Migrate</strong> from another folder</td><td><code>bash migrate.sh &lt;old&gt;</code></td><td><code>migrate.bat &lt;old&gt;</code></td></tr>
+        <tr><td>Uninstall (keep data)</td><td><code>bash uninstall.sh</code></td><td><code>uninstall.bat</code></td></tr>
+        <tr><td>Uninstall + delete data</td><td><code>bash uninstall.sh --purge-data</code></td><td><code>uninstall.bat --purge-data</code></td></tr>
+      </tbody>
+    </table>
+
+    <div class="footer">
+      CiRA ME — Center of Innovative Robotics and Automation<br>
+      See <a href="README.md">README.md</a> and <a href="MIGRATION.md">MIGRATION.md</a> for the full text version.
+    </div>
+
+  </main>
+</div>
+
+<script>
+// ─── Copy-to-clipboard buttons on every <pre> ──────────────────────
+document.querySelectorAll('pre').forEach(pre => {
+  if (pre.querySelector('.copy-btn')) return;  // already has one
+  const btn = document.createElement('button');
+  btn.className = 'copy-btn';
+  btn.textContent = 'Copy';
+  btn.addEventListener('click', () => {
+    // Grab text only from the <code> block — strip inline spans
+    const code = pre.querySelector('code');
+    // Skip commented lines? No — user may want them. Grab all text.
+    const text = code.innerText;
+    navigator.clipboard.writeText(text).then(() => {
+      btn.textContent = 'Copied!';
+      btn.classList.add('copied');
+      setTimeout(() => {
+        btn.textContent = 'Copy';
+        btn.classList.remove('copied');
+      }, 1500);
+    }).catch(() => {
+      // Fallback for very old browsers
+      const range = document.createRange();
+      range.selectNode(code);
+      window.getSelection().removeAllRanges();
+      window.getSelection().addRange(range);
+      try { document.execCommand('copy'); } catch (e) {}
+      window.getSelection().removeAllRanges();
+      btn.textContent = 'Copied!';
+      setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+    });
+  });
+  pre.appendChild(btn);
+});
+
+// ─── OS tabs (Linux / Windows) ────────────────────────────────────
+const tabs = document.querySelectorAll('.os-tab');
+const panels = document.querySelectorAll('.os-panel');
+function switchOS(os) {
+  tabs.forEach(t => t.classList.toggle('active', t.dataset.os === os));
+  panels.forEach(p => p.classList.toggle('active', p.dataset.os === os));
+  try { localStorage.setItem('cirame-install-os', os); } catch (e) {}
+}
+tabs.forEach(t => {
+  t.addEventListener('click', () => switchOS(t.dataset.os));
+});
+// Restore previous OS choice
+try {
+  const saved = localStorage.getItem('cirame-install-os');
+  if (saved) switchOS(saved);
+} catch (e) {}
+
+// ─── Smooth scroll for sidebar nav (offset for sticky header) ──────
+document.querySelectorAll('aside nav a[href^="#"]').forEach(a => {
+  a.addEventListener('click', e => {
+    const id = a.getAttribute('href').slice(1);
+    const target = document.getElementById(id);
+    if (target) {
+      e.preventDefault();
+      target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  });
+});
+
+// ─── Persist requirement checklist across page reloads ────────────
+document.querySelectorAll('.checklist input[type=checkbox]').forEach(cb => {
+  const key = 'cirame-check-' + cb.id;
+  try {
+    if (localStorage.getItem(key) === '1') cb.checked = true;
+  } catch (e) {}
+  cb.addEventListener('change', () => {
+    try { localStorage.setItem(key, cb.checked ? '1' : '0'); } catch (e) {}
+  });
+});
+</script>
+</body>
+</html>
