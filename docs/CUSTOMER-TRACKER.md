@@ -32,6 +32,137 @@ initiatives in [FUTURE-WORK.md](./FUTURE-WORK.md) remain.
 
 Ordered newest first. Every SHA is on the `master` branch.
 
+### T20. App Builder TimesNet end-to-end + editor cleanup
+**Status:** ✅ Done | **Commits:** `cc03ef2` `c70bc7c` `a7e59ae` `ff02fe5` | **Shipped:** 2026-07-04
+
+Customer testing surfaced that **TimesNet endpoints were never actually
+runnable through App Builder, ME-LAB, or the Wizard** despite the T7/T8
+FE-skip work. The runtime path went straight through
+`ModelManager.predict()` which unconditionally did
+`model_data['model']` — TimesNet pickles store `model_state` (torch
+state_dict) with no `model` key, so every DL inference crashed with
+`KeyError: 'model'`. Only the main pipeline's Deploy view worked
+(via `pipeline_replay`'s dedicated DL path).
+
+Shipped in 4 commits:
+
+- **`cc03ef2`** — 3 new TimesNet templates in the App Builder gallery
+  (Classifier CSV, Anomaly Detector CSV, Live Classifier MQTT), each
+  omitting Feature Extract by design. Endpoint picker in the editor now
+  filters DL endpoints out when a Feature Extract node exists upstream
+  (currently-selected endpoint never filtered out). Small caption below
+  the picker explains what's hidden.
+
+- **`c70bc7c`** — Editor cleanup: removed 95 lines of dead + misleading
+  UI. Killed the T7 "Remove Feature Extract" dialog (unreachable after
+  the `cc03ef2` filter). Removed the orphaned "AUTO-CONFIGURE FROM
+  MULTI-MODEL" button and its function (silently wrong for
+  heterogeneous multi-model endpoints; superseded by
+  `getMultiselectOptions` auto-population). For DL endpoints in the
+  config panel: hid the "Required Features N" row, hid the "Expects"
+  chip list, hid the "Auto-configure Feature Extract" button, replaced
+  with a single "Raw windowed data (no features)" pill so intent is
+  clear.
+
+- **`a7e59ae`** — The real fix: added `ModelManager._is_timesnet` (sniffs
+  pickle shape) and `ModelManager._predict_timesnet` (dispatches to the
+  torch subprocess via `pipeline_replay._run_timesnet_subprocess`).
+  Returns the same `[{label, prediction, confidence, probabilities}]`
+  shape sklearn predictions do, so App Builder / ME-LAB / Wizard all
+  work without any consumer-side changes. `torch_subprocess`
+  classification also now returns `confidences` (max softmax) +
+  `probabilities` (full class vector) which it was computing but
+  discarding.
+
+- **`ff02fe5`** — PublishedApp live-mode UX. `runLiveInference` only
+  accumulated history for numeric predictions (regression), so on
+  classification MQTT streams the results table showed "WINDOWS 1" (the
+  latest single window) instead of a scrolling history. Now
+  `livePredictionHistoryFull` accumulates the `{label, confidence,
+  probabilities}` dicts across every mode. Also hid the "UPLOAD NEW
+  FILE" button in live-stream mode — it's CSV-specific noise there.
+
+Verified via docker-exec on real customer data (project 39 dataset,
+`shake.csv` + `updown.csv`, 623 rows): pipeline reloaded with model's
+own saved normalization + window config, `(18, 64, 2)` tensor through
+`ModelManager.predict_by_endpoint`, **17/18 windows correctly predicted
+(94%)**, ~127 ms/window batched latency, proper confidence values +
+per-class probability breakdowns on every prediction.
+
+**Cold-start latency caveat:** subprocess spawn adds ~1-3 s per call.
+Amortized fine for batched inference (~127 ms/window). For high-rate
+MQTT streams that fire one window at a time, this may queue. In-process
+torch caching is a future follow-up if it becomes a bottleneck.
+
+### T19. F4 project resume — full hydration flow
+**Status:** ✅ Done | **Commits:** `3f3ccf0` `0ae7f73` `fa14350` `e003301` | **Shipped:** 2026-07-04
+
+Customer clicked a stage chip on the Projects list (T17) to jump into a
+project showing "csv · 623 rows" — but landed on an empty Data Source
+page and had to re-select the file. The T17 persistence phase shipped,
+but the return trip back into the working pipeline never did.
+
+Shipped in 4 commits:
+
+- **`3f3ccf0`** — New `POST /api/projects/<id>/hydrate` on the backend.
+  Reads the latest DataSession row, re-materializes it in DataLoader's
+  in-memory dict (LRU-wiped by restart), returns the same shape as
+  `/api/data/ingest/csv`. Also returns persisted windowing config +
+  feature session for downstream form pre-fill.
+  `pipeline.setActiveProject(id)` now calls hydrate after loading
+  metadata; populates `dataSession`, merges `windowingConfig`, seeds
+  `selectedFeatures`.
+
+- **`0ae7f73`** — `DataSourceView` renders from a local `dataPreview`
+  ref, not from the store. `onMounted` now adopts `?project_id=` from
+  the URL (triggers hydrate) and mirrors `pipelineStore.dataSession`
+  into the local ref so the picker shows the loaded file, not empty
+  Root.
+
+- **`fa14350`** — Backend 500 on hydrate for project 39: DataLoader
+  records `format='csv'` for multi-CSV selections (T3 pattern) with a
+  DIRECTORY `file_path`, and hydrate blindly called `load_csv` on it.
+  Now dispatches on `os.path.isdir(file_path)` first and reloads via
+  `load_csv_multiple` when appropriate. 410 (not 500) for missing
+  files.
+
+- **`e003301`** — Same class of bug in `WindowingView`: the persisted
+  windowing config was hydrated into the store but the view rendered
+  from a local `windowedResult` ref. On project resume, silently
+  auto-applies windowing with the persisted config so Continue enables
+  with zero user clicks. Matches Q4: state only commits on Apply
+  (silent apply on resume counts as continuation, not new commit).
+
+Verified end-to-end via ngrok testing: click Data chip on project 39 →
+CSV picker shows the loaded file (623 rows, `accY`/`accZ` sensor
+columns). Click Windowing chip → windowed result auto-populates,
+Continue enables.
+
+### T18. Two latent bugs surfaced by real customer testing
+**Status:** ✅ Done | **Commits:** `47a7078` `bb546d3` | **Shipped:** 2026-07-04
+
+**`47a7078` — Features preview 404 on stale session with silent
+recovery.** After a backend restart (during the F4 hydration
+iterations), users returning to the Features page hit an error toast on
+every visit because `onMounted` auto-fired `fetchFeaturePreview` with a
+`session_id` from before the restart. The backend caught the
+`ValueError` in a generic `except Exception → 400` — no way for the
+frontend to distinguish "please re-run Extract" from a real 400. Now
+returns 404 with `code: SESSION_NOT_FOUND` for the not-found case;
+frontend catches it, silently clears the stored extraction state, no
+toast. Also added `logger.exception` on the route's error paths so
+future silent 400s surface a real traceback in the container logs.
+
+**`bb546d3` — numpy int64 not JSON-serializable in features preview.**
+Same route surfaced a real 400 for integer-labeled datasets (customer's
+Edge Impulse converted CSVs — labels parsed as int64, not strings).
+`np.unique(labels)` returns `numpy.int64` which Flask's default JSON
+encoder can't serialize. Latent bug that only tripped when three
+conditions co-occurred: integer-valued labels + user clicks Select tab
++ label list serialization. Fix: apply `.item()` coercion to every
+element of the labels list before returning. Both bugs verified
+end-to-end via docker-exec + real customer session.
+
 ### T17. F4 End-to-end Project Status view (v1)
 **Status:** ✅ Done | **Shipped:** 2026-07-04
 Projects sidebar entry showing pipeline stage progress (Data →
