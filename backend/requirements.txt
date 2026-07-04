@@ -25,15 +25,19 @@ xgboost>=2.0.0
 lightgbm>=4.0.0
 
 # Deep Learning - TimesNet
-# IMPORTANT: Pin torch to cu128 to match NVIDIA driver (CUDA 12.8/12.9)
-# Installed separately in Dockerfile with --index-url
-torch==2.10.0
+# torch is installed separately in the Dockerfile from the correct
+# cuXXX --index-url based on build args (see Dockerfile ARG TORCH_*).
+# The range here loosely brackets the two supported versions
+# (2.0.1 for cu117, 2.10.0 for cu128) so `pip install -r` does not
+# fight with the version already installed.
+torch>=2.0.1
 
 # Feature Extraction
 tsfresh>=0.20.0
 
-# CBOR Support
-cbor2>=5.5.0
+# CBOR Support — pin to 5.x (pure Python) to avoid Rust PanicException
+# in 6.x that crashes on Edge Impulse signed CBOR files (uncatchable by `except Exception`)
+cbor2>=5.5.0,<6.0
 
 # SSH Deployment
 paramiko>=3.3.0

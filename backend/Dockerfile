@@ -31,17 +31,31 @@ WORKDIR /app
 # Stage 2: Dependencies installation
 FROM base as builder
 
+# PyTorch build args. Default is cu128 to match local dev boxes
+# (NVIDIA driver 550+ / CUDA 12.8-12.9). For hosts with older drivers,
+# override at build time:
+#   docker build --build-arg TORCH_VERSION=2.0.1 \
+#                --build-arg TORCH_CUDA=cu117 ...
+# Currently supported combos:
+#   cu128 -> torch==2.10.0  (driver 550+)
+#   cu117 -> torch==2.0.1   (driver 515.x)
+ARG TORCH_VERSION=2.10.0
+ARG TORCH_CUDA=cu128
+
 # Copy requirements first for better layer caching
 COPY requirements.txt .
 
 # Install Python dependencies
 # Use --user to install in user directory for better security
 # BuildKit cache mount keeps downloaded wheels across rebuilds
-# Install PyTorch with CUDA 12.8 first (separate index)
+# Install PyTorch first from the correct CUDA index (separate URL).
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --user torch==2.10.0 --index-url https://download.pytorch.org/whl/cu128
+    pip install --user "torch==${TORCH_VERSION}" \
+        --index-url "https://download.pytorch.org/whl/${TORCH_CUDA}"
 
-# Install remaining dependencies from PyPI
+# Install remaining dependencies from PyPI (respect the torch pin already
+# installed above — requirements.txt loosens the pin to a range so it
+# does not fight with the version we just installed).
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --user -r requirements.txt
 
