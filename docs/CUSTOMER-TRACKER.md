@@ -20,11 +20,11 @@ Each item lists commit SHAs where relevant. `git show <sha>` for details.
 
 ## OPEN ITEMS
 
-*(F2 moved to DONE — see T16 below.)*
-
----
-
-*(F4 moved to DONE — see T17 below.)*
+**None.** All three big customer requests from the 2026-06 / 2026-07
+round shipped 2026-07-04: F1 Folder Watcher (T15), F2 Multi-Dataset
+Wizard (T16), F4 Project Status view (T17). Small housekeeping items
+in [FOLLOW-UPS.md](./FOLLOW-UPS.md) (~40 min total) and larger parked
+initiatives in [FUTURE-WORK.md](./FUTURE-WORK.md) remain.
 
 ---
 
