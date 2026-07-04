@@ -153,6 +153,14 @@
           :to="{ name: 'app-builder' }"
           rounded="lg"
         />
+
+        <v-list-item
+          prepend-icon="mdi-folder-eye"
+          title="Folder Watcher"
+          value="folder-watcher"
+          :to="{ name: 'folder-watcher-list' }"
+          rounded="lg"
+        />
       </v-list>
 
       <template #append>

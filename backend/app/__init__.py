@@ -50,6 +50,7 @@ def create_app(config=None):
     from .routes.melab import melab_bp
     from .routes.app_builder import app_builder_bp
     from .routes.mqtt_publisher import mqtt_bp
+    from .routes.folder_watchers import folder_watchers_bp
 
     app.register_blueprint(auth_bp, url_prefix='/api/auth')
     app.register_blueprint(admin_bp, url_prefix='/api/admin')
@@ -62,10 +63,31 @@ def create_app(config=None):
     app.register_blueprint(melab_bp, url_prefix='/api/melab')
     app.register_blueprint(app_builder_bp, url_prefix='/api/app-builder')
     app.register_blueprint(mqtt_bp, url_prefix='/api/mqtt')
+    app.register_blueprint(folder_watchers_bp, url_prefix='/api/folder-watchers')
 
     # Health check endpoint
     @app.route('/api/health')
     def health_check():
         return {'status': 'healthy', 'app': 'CiRA ME', 'version': '1.0.0'}
+
+    # Rehydrate any folder watchers whose persisted status is 'running'.
+    # Skip in the Flask dev-reloader's *monitor* process (both parent and
+    # child call create_app; only the child gets WERKZEUG_RUN_MAIN set),
+    # so we don't spawn duplicate worker threads in the parent that die
+    # instantly on fork. Production gunicorn doesn't set this variable —
+    # in that mode we only rehydrate once per process; run gunicorn with
+    # --workers 1 to avoid cross-process watcher duplication.
+    # Wrapped so a failure here can't kill app startup.
+    _is_reloader_child = os.environ.get('WERKZEUG_RUN_MAIN') == 'true'
+    _reloader_active = os.environ.get('FLASK_DEBUG') in ('1', 'true')
+    if (not _reloader_active) or _is_reloader_child:
+        try:
+            from .services import folder_watcher_service
+            folder_watcher_service.rehydrate_running_watchers()
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).exception(
+                f"Folder Watcher rehydration failed at startup: {e}"
+            )
 
     return app

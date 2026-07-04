@@ -26,6 +26,8 @@ services:
       # Datasets folder - includes shared/ AND all user private folders
       # Mounting the entire datasets root ensures user-uploaded data persists across updates
       - ./datasets:/app/datasets
+      # Folder Watcher data - per-user input/output folders for the file-polling daemon
+      - ./watcher-data:/app/watcher-data
 
     ports:
       # Expose backend port (optional - frontend proxies through nginx)

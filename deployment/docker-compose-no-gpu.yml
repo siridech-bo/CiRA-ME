@@ -25,6 +25,8 @@ services:
       - ./data/models:/app/models
       # Mount full datasets root so user private folders persist across updates
       - ./datasets:/app/datasets
+      # Folder Watcher — per-user input/output folders live under ./watcher-data/<uid>/
+      - ./watcher-data:/app/watcher-data
 
     ports:
       - "5100:5100"

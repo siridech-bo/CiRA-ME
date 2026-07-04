@@ -156,6 +156,29 @@ def init_db(db_path: str):
             )
         ''')
 
+        # Folder Watchers: per-user daemons that poll a folder and run ML inference
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS folder_watchers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                endpoint_id TEXT NOT NULL,
+                input_folder TEXT NOT NULL,
+                output_folder TEXT NOT NULL,
+                poll_interval_s INTEGER NOT NULL DEFAULT 60,
+                file_glob TEXT NOT NULL DEFAULT '*.txt',
+                header_mode TEXT NOT NULL DEFAULT 'auto',
+                status TEXT NOT NULL DEFAULT 'stopped',
+                last_run_at TEXT,
+                last_error TEXT,
+                files_processed INTEGER DEFAULT 0,
+                rows_processed INTEGER DEFAULT 0,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id),
+                FOREIGN KEY (endpoint_id) REFERENCES melab_endpoints(id)
+            )
+        ''')
+
         # Add quota columns to users table (migration-safe)
         try:
             cursor.execute('ALTER TABLE users ADD COLUMN max_folder_mb INTEGER DEFAULT 500')
@@ -823,5 +846,107 @@ class AppBuilderApp:
             cursor.execute(
                 'UPDATE app_builder_apps SET calls = calls + 1 WHERE id = ?',
                 (app_id,)
+            )
+            conn.commit()
+
+
+class FolderWatcher:
+    """Folder Watcher operations. Owns a per-user polling worker that reads
+    files from an input folder, runs each row through a ME-LAB endpoint,
+    and writes results to an output folder as CSV.
+    """
+
+    _ALLOWED_UPDATE_FIELDS = (
+        'name', 'input_folder', 'output_folder', 'poll_interval_s',
+        'file_glob', 'header_mode', 'status', 'last_run_at', 'last_error',
+        'files_processed', 'rows_processed',
+    )
+
+    @staticmethod
+    def create(user_id, name, endpoint_id, input_folder, output_folder, **kwargs):
+        poll_interval_s = int(kwargs.get('poll_interval_s', 60) or 60)
+        file_glob = kwargs.get('file_glob') or '*.txt'
+        header_mode = kwargs.get('header_mode') or 'auto'
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO folder_watchers
+                (user_id, name, endpoint_id, input_folder, output_folder,
+                 poll_interval_s, file_glob, header_mode, status, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'stopped', ?)
+            ''', (
+                user_id, name, endpoint_id, input_folder, output_folder,
+                poll_interval_s, file_glob, header_mode,
+                datetime.utcnow().isoformat()
+            ))
+            conn.commit()
+            return cursor.lastrowid
+
+    @staticmethod
+    def get_by_id(watcher_id):
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM folder_watchers WHERE id = ?', (watcher_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    @staticmethod
+    def get_by_user(user_id):
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT * FROM folder_watchers WHERE user_id = ? ORDER BY created_at DESC',
+                (user_id,)
+            )
+            return [dict(r) for r in cursor.fetchall()]
+
+    @staticmethod
+    def get_all_running():
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM folder_watchers WHERE status = 'running'"
+            )
+            return [dict(r) for r in cursor.fetchall()]
+
+    @staticmethod
+    def update(watcher_id, **kwargs):
+        updates = {
+            k: v for k, v in kwargs.items()
+            if k in FolderWatcher._ALLOWED_UPDATE_FIELDS
+        }
+        if not updates:
+            return
+        with get_db() as conn:
+            cursor = conn.cursor()
+            set_clause = ', '.join(f'{k} = ?' for k in updates.keys())
+            cursor.execute(
+                f'UPDATE folder_watchers SET {set_clause} WHERE id = ?',
+                (*updates.values(), watcher_id)
+            )
+            conn.commit()
+
+    @staticmethod
+    def delete(watcher_id, user_id):
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'DELETE FROM folder_watchers WHERE id = ? AND user_id = ?',
+                (watcher_id, user_id)
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    @staticmethod
+    def increment_counters(watcher_id, files_delta=0, rows_delta=0):
+        """Atomic counter update — avoids read-modify-write race between worker ticks."""
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'UPDATE folder_watchers '
+                'SET files_processed = COALESCE(files_processed, 0) + ?, '
+                '    rows_processed = COALESCE(rows_processed, 0) + ? '
+                'WHERE id = ?',
+                (int(files_delta), int(rows_delta), watcher_id)
             )
             conn.commit()

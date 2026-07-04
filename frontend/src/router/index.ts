@@ -81,6 +81,18 @@ const router = createRouter({
       meta: { requiresAuth: true }
     },
     {
+      path: '/folder-watcher',
+      name: 'folder-watcher-list',
+      component: () => import('@/views/FolderWatcherListView.vue'),
+      meta: { requiresAuth: true }
+    },
+    {
+      path: '/folder-watcher/:id?',
+      name: 'folder-watcher-edit',
+      component: () => import('@/views/FolderWatcherEditView.vue'),
+      meta: { requiresAuth: true }
+    },
+    {
       path: '/admin',
       name: 'admin',
       component: () => import('@/views/AdminView.vue'),
