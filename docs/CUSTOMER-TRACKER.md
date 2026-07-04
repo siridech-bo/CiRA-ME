@@ -20,43 +20,6 @@ Each item lists commit SHAs where relevant. `git show <sha>` for details.
 
 ## OPEN ITEMS
 
-### F1. Folder Watcher + ML Prediction
-**Status:** 📋 Ready to implement | **Effort:** ~1.5 days
-**Type:** feature | **Requested:** 2026-06-19 (June email, restated 2026-07-04)
-**Diagram:** `Feature_Watcher-ML-Prediction.png` (shared by customer)
-
-**Summary:** Backend daemon polls a user-specified folder every 60s. For
-each file found, reads each row, runs it through a trained ML model,
-writes results to an output folder as CSV with columns
-`source_file, record_index, sensor_values, prediction, confidence,
-predicted_at`, then deletes the input file.
-
-**Decided design (all approved 2026-07-04 — v1 stays small; expand later):**
-
-| # | Decision | Rationale |
-|---|---|---|
-| F1.1 | **One model per watcher.** Customer creates a second watcher if they need two models on the same folder. | Single `endpoint_id` FK — simpler DB schema, simpler UI, easy to expand later. |
-| F1.2 | **Auto-detect headered vs headerless with a user override toggle.** Default: auto. Read first row, try to parse as floats — success → headerless, failure → headered. | Zero friction for the common case; escape hatch for weird files. |
-| F1.3 | **Container-side path only.** Customer types any path visible inside the backend container. SMB/NFS is a Docker-compose concern, not application code. | Matches App Builder input handling. |
-| F1.4 | **File-only output, no DB persistence.** Output CSV IS the audit trail. | Avoids retention / cleanup / quota design. Also matches the customer's flow diagram. |
-| F1.5 | **Per-user watchers.** Each user's watcher points at a subfolder under their private space. | Matches ME-LAB endpoints and App Builder apps. Respects existing quota model. |
-| F1.6 | **Raw Mode only, v1.** One row = one prediction. No windowing / buffering. | Matches the flow diagram. Time-series can come later if customer asks. |
-
-**Implementation plan (matches decisions above):**
-- Call an existing ME-LAB endpoint per row (reuse `ModelManager.predict()`
-  from `melab_service.py`), reuse the label decoding path already fixed
-  for App Builder.
-- New sidebar entry **"Folder Watcher"** under SERVICES (peer of App
-  Builder).
-- New `folder_watchers` DB table (id, user_id, name, input_folder,
-  output_folder, endpoint_id, status, last_run_at, error_count,
-  header_mode). Watchers survive container restarts.
-- New bind mount in both compose files: `./watcher-data:/app/watcher-data`.
-- Backend daemon: single thread per watcher, 60s tick, poll-glob-process-delete.
-  Fail-safe on per-file errors — log, don't abort.
-
----
-
 ### F2. App Builder multi-dataset Wizard
 **Status:** 📋 Ready to implement | **Effort:** 4-5 days
 **Type:** feature | **Requested:** 2026-07-02
@@ -122,6 +85,37 @@ wire `project_id` through everywhere.
 ## DONE — this round (July 2026)
 
 Ordered newest first. Every SHA is on the `master` branch.
+
+### T15. F1 Folder Watcher + ML Prediction (v1)
+**Status:** ✅ Done | **Commits:** `0a35d50` `576da36` | **Shipped:** 2026-07-04
+Backend daemon polls a user-specified folder every N seconds, runs each
+file's rows through a ME-LAB endpoint, writes results to an output
+folder as CSV, deletes the input. Matches the customer's flow diagram
+exactly (columns: `source_file, record_index, sensor_values, prediction,
+confidence, predicted_at`; sensor values pipe-separated; input filename
+preserved on output).
+
+Failure-tolerant by design: output is written to `.tmp` first and
+atomic-renamed into place; input is only deleted after successful
+commit. Killing the worker mid-file leaves the input alone for the next
+boot. Files whose mtime is within 5s are skipped (probably still being
+written). Endpoint status is checked at every tick — a paused/deleted
+endpoint flips watcher status to `error` with an actionable message.
+Watchers survive backend restarts via DB rehydration (guarded against
+Flask dev-reloader double-start).
+
+Verified via a 3-part docker-exec suite:
+- Happy path — 3-row input → 3 predictions → correct output CSV with
+  exact customer-spec header, sensor values pipe-separated, input
+  deleted after commit.
+- No `.tmp` files left behind (atomic rename working).
+- Endpoint-status guard — paused endpoint flips watcher to `error`,
+  message actionable, input file preserved.
+
+Shipped the design decisions verbatim (F1.1–F1.6). All 3 QA blockers +
+5 important findings addressed before merge. Frontend list view has
+auto-refresh, status chip, start/stop/delete; edit form disables the
+endpoint select on edit (matches the backend's immutable rule).
 
 ### T14. F3 Normalization method choice
 **Status:** ✅ Done | **Commits:** `b110fe3` | **Shipped:** 2026-07-04
