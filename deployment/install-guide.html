@@ -161,11 +161,113 @@
     color: var(--success);
     border-color: rgba(34, 197, 94, 0.4);
   }
+  /* Big prominent OS chooser card at the top */
+  .os-picker {
+    background: var(--bg-card);
+    border: 2px solid var(--accent);
+    border-radius: 12px;
+    padding: 24px;
+    margin: 24px 0 32px 0;
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    flex-wrap: wrap;
+  }
+  .os-picker-label {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text);
+    flex-shrink: 0;
+  }
+  .os-picker-hint {
+    color: var(--text-muted);
+    font-size: 13px;
+    flex-basis: 100%;
+    margin-top: 4px;
+  }
+  .os-picker .os-tabs {
+    border: none;
+    margin: 0;
+    padding: 0;
+    gap: 8px;
+    flex: 1;
+    min-width: 300px;
+  }
+  .os-picker .os-tab {
+    background: var(--bg-code);
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 20px;
+    font-size: 15px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1;
+  }
+  .os-picker .os-tab:hover {
+    background: rgba(139, 92, 246, 0.08);
+    color: var(--text);
+    border-color: var(--accent);
+  }
+  .os-picker .os-tab.active {
+    background: linear-gradient(135deg, var(--accent), var(--info));
+    color: white;
+    border-color: transparent;
+    box-shadow: 0 4px 12px rgba(139, 92, 246, 0.3);
+  }
+  .os-picker .os-tab .os-icon {
+    font-size: 20px;
+  }
+
+  /* Sticky OS switcher that appears while scrolling */
+  .os-tabs-sticky {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+    padding: 12px 20px;
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    margin: 0 -60px 24px -60px;
+    padding-left: 60px;
+    padding-right: 60px;
+  }
+  .os-tabs-sticky-label {
+    color: var(--text-muted);
+    font-size: 13px;
+    font-weight: 500;
+  }
+  .os-tabs-sticky .os-tab {
+    background: var(--bg-code);
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 14px;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    font-family: var(--font);
+    transition: all 0.15s;
+  }
+  .os-tabs-sticky .os-tab:hover {
+    color: var(--text);
+    border-color: var(--accent);
+  }
+  .os-tabs-sticky .os-tab.active {
+    background: var(--accent);
+    color: white;
+    border-color: var(--accent);
+  }
+
+  /* Legacy inline tabs (no longer used inline, but keep for compatibility) */
   .os-tabs {
     display: flex;
     gap: 4px;
     margin: 20px 0 0 0;
-    border-bottom: 1px solid var(--border);
   }
   .os-tab {
     background: transparent;
@@ -178,11 +280,6 @@
     font-weight: 500;
     border-bottom: 2px solid transparent;
     transition: all 0.15s;
-  }
-  .os-tab:hover { color: var(--text); }
-  .os-tab.active {
-    color: var(--accent-hover);
-    border-bottom-color: var(--accent);
   }
   .os-panel { display: none; }
   .os-panel.active { display: block; }
@@ -362,11 +459,25 @@
       <strong>Validate</strong> your box &nbsp;→&nbsp; <strong>Install</strong> images &nbsp;→&nbsp; <strong>Start</strong> containers &nbsp;→&nbsp; <strong>Log in</strong> at <code>http://localhost:3030</code>
     </div>
 
-    <p>Everything is run from the <code>deployment/</code> folder. Below, click your OS to see the exact commands. Every command has a <strong>Copy</strong> button in the top-right corner.</p>
+    <p>Everything is run from the <code>deployment/</code> folder. First, pick your operating system below — every command block on this page will switch to match. Each command has a <strong>Copy</strong> button in the top-right corner.</p>
 
-    <div class="os-tabs" role="tablist">
-      <button class="os-tab active" data-os="linux">Linux / macOS</button>
-      <button class="os-tab" data-os="windows">Windows</button>
+    <div class="os-picker" role="tablist">
+      <div class="os-picker-label">Choose your operating system:</div>
+      <div class="os-tabs">
+        <button class="os-tab active" data-os="windows">
+          <span class="os-icon">🪟</span> Windows
+        </button>
+        <button class="os-tab" data-os="linux">
+          <span class="os-icon">🐧</span> Linux / macOS
+        </button>
+      </div>
+      <div class="os-picker-hint">Your choice is remembered next time you open this page. You can change it any time using the mini-switcher at the top while scrolling.</div>
+    </div>
+
+    <div class="os-tabs-sticky">
+      <span class="os-tabs-sticky-label">Showing commands for:</span>
+      <button class="os-tab active" data-os="windows">Windows</button>
+      <button class="os-tab" data-os="linux">Linux / macOS</button>
     </div>
 
     <h2 id="requirements">Requirements</h2>
@@ -410,11 +521,11 @@
       <h3>Pre-flight check (zero side effects)</h3>
       <p>Confirms Docker, disk, ports, tarballs, and GPU driver are all in a state <code>install.sh</code> will accept. Nothing is changed — just diagnosed.</p>
 
-      <div class="os-panel active" data-os="linux">
+      <div class="os-panel" data-os="linux">
 <pre><code><span class="cmd">cd</span> deployment
 <span class="cmd">bash</span> validate.sh</code></pre>
       </div>
-      <div class="os-panel" data-os="windows">
+      <div class="os-panel active" data-os="windows">
 <pre><code><span class="cmd">cd</span> deployment
 validate.bat</code></pre>
       </div>
@@ -446,10 +557,10 @@ Ready for install. Next: bash install.sh</code></pre>
       <h3>Load Docker images</h3>
       <p>Loads all 4 tarballs, verifies each landed as a tagged image, creates data folders with correct ownership. Safe to re-run.</p>
 
-      <div class="os-panel active" data-os="linux">
+      <div class="os-panel" data-os="linux">
 <pre><code><span class="cmd">bash</span> install.sh</code></pre>
       </div>
-      <div class="os-panel" data-os="windows">
+      <div class="os-panel active" data-os="windows">
 <pre><code>install.bat</code></pre>
       </div>
 
@@ -471,18 +582,18 @@ Ready for install. Next: bash install.sh</code></pre>
       <p>Pick GPU or CPU based on your hardware. The start script checks ports and (in GPU mode) verifies the NVIDIA runtime is registered before doing anything.</p>
 
       <h4>With GPU <span class="badge recommended">recommended if driver ≥ 550</span></h4>
-      <div class="os-panel active" data-os="linux">
+      <div class="os-panel" data-os="linux">
 <pre><code><span class="cmd">bash</span> start.sh</code></pre>
       </div>
-      <div class="os-panel" data-os="windows">
+      <div class="os-panel active" data-os="windows">
 <pre><code>start.bat</code></pre>
       </div>
 
       <h4>CPU-only <span class="badge optional">works on any machine</span></h4>
-      <div class="os-panel active" data-os="linux">
+      <div class="os-panel" data-os="linux">
 <pre><code><span class="cmd">bash</span> start-no-gpu.sh</code></pre>
       </div>
-      <div class="os-panel" data-os="windows">
+      <div class="os-panel active" data-os="windows">
 <pre><code>start-no-gpu.bat</code></pre>
       </div>
 
@@ -522,14 +633,14 @@ Ready for install. Next: bash install.sh</code></pre>
 
     <p>Run before any risky operation (update, uninstall, rebuild). Writes a single tarball you can copy off the machine or restore later.</p>
 
-    <div class="os-panel active" data-os="linux">
+    <div class="os-panel" data-os="linux">
 <pre><code><span class="comment"># default destination: backups/cirame-YYYYMMDD-HHMMSS.tar.gz</span>
 <span class="cmd">bash</span> backup.sh
 
 <span class="comment"># or with an explicit destination</span>
 <span class="cmd">bash</span> backup.sh /path/to/dest.tar.gz</code></pre>
     </div>
-    <div class="os-panel" data-os="windows">
+    <div class="os-panel active" data-os="windows">
 <pre><code><span class="comment">REM default destination: backups\cirame-YYYYMMDD-HHMMSS.zip</span>
 backup.bat
 
@@ -540,10 +651,10 @@ backup.bat C:\path\to\dest.zip</code></pre>
     <p>The script optionally stops containers first so the SQLite DB is quiesced — recommended.</p>
 
     <h4>Restore from backup</h4>
-    <div class="os-panel active" data-os="linux">
+    <div class="os-panel" data-os="linux">
 <pre><code><span class="cmd">tar</span> xzf backups/cirame-20260704-201530.tar.gz -C /target/deployment/folder</code></pre>
     </div>
-    <div class="os-panel" data-os="windows">
+    <div class="os-panel active" data-os="windows">
 <pre><code>powershell -Command "Expand-Archive -Path 'backups\cirame-20260704-201530.zip' -DestinationPath 'C:\target\folder'"</code></pre>
     </div>
 
@@ -553,11 +664,11 @@ backup.bat C:\path\to\dest.zip</code></pre>
 
     <h3>Option A — In-place (recommended)</h3>
     <p>Drop the new <code>.tar</code> files into your existing deployment folder, then:</p>
-    <div class="os-panel active" data-os="linux">
+    <div class="os-panel" data-os="linux">
 <pre><code><span class="cmd">bash</span> update.sh
 <span class="cmd">bash</span> start.sh</code></pre>
     </div>
-    <div class="os-panel" data-os="windows">
+    <div class="os-panel active" data-os="windows">
 <pre><code>update.bat
 start.bat</code></pre>
     </div>
@@ -573,13 +684,13 @@ start.bat</code></pre>
     <details>
       <summary>Rollback if the new version fails to boot</summary>
       <p>The update script prints the exact rollback commands. Example:</p>
-      <div class="os-panel active" data-os="linux">
+      <div class="os-panel" data-os="linux">
 <pre><code><span class="cmd">bash</span> stop.sh
 <span class="cmd">rm</span> -rf data/database
 <span class="cmd">mv</span> data/database.backup.20260704-201530 data/database
 <span class="cmd">bash</span> start.sh</code></pre>
       </div>
-      <div class="os-panel" data-os="windows">
+      <div class="os-panel active" data-os="windows">
 <pre><code>stop.bat
 <span class="cmd">rmdir</span> /s /q data\database
 <span class="cmd">move</span> data\database.backup.20260704-201530 data\database
@@ -589,13 +700,13 @@ start.bat</code></pre>
 
     <h3>Option B — New folder + migrate</h3>
     <p>If you prefer keeping each release in its own folder:</p>
-    <div class="os-panel active" data-os="linux">
+    <div class="os-panel" data-os="linux">
 <pre><code><span class="comment"># in the NEW folder</span>
 <span class="cmd">bash</span> migrate.sh /path/to/old/deployment
 <span class="cmd">bash</span> install.sh
 <span class="cmd">bash</span> start.sh</code></pre>
     </div>
-    <div class="os-panel" data-os="windows">
+    <div class="os-panel active" data-os="windows">
 <pre><code>REM in the NEW folder
 migrate.bat "C:\path\to\old\deployment"
 install.bat
@@ -608,14 +719,14 @@ start.bat</code></pre>
 
     <p>By default, uninstall <strong>preserves your data on disk</strong>. Only containers and images are removed.</p>
 
-    <div class="os-panel active" data-os="linux">
+    <div class="os-panel" data-os="linux">
 <pre><code><span class="comment"># removes containers + images, keeps data</span>
 <span class="cmd">bash</span> uninstall.sh
 
 <span class="comment"># ALSO deletes data/, datasets/, watcher-data/ (unrecoverable)</span>
 <span class="cmd">bash</span> uninstall.sh --purge-data</code></pre>
     </div>
-    <div class="os-panel" data-os="windows">
+    <div class="os-panel active" data-os="windows">
 <pre><code>REM removes containers + images, keeps data
 uninstall.bat
 
@@ -776,7 +887,10 @@ document.querySelectorAll('pre').forEach(pre => {
   pre.appendChild(btn);
 });
 
-// ─── OS tabs (Linux / Windows) ────────────────────────────────────
+// ─── OS tabs (Windows / Linux) ────────────────────────────────────
+// Default is Windows (most customer boxes). Same choice applies to
+// every .os-tab button anywhere on the page (the big chooser card
+// + the sticky mini-switcher).
 const tabs = document.querySelectorAll('.os-tab');
 const panels = document.querySelectorAll('.os-panel');
 function switchOS(os) {
@@ -787,10 +901,10 @@ function switchOS(os) {
 tabs.forEach(t => {
   t.addEventListener('click', () => switchOS(t.dataset.os));
 });
-// Restore previous OS choice
+// Restore previous OS choice (or use Windows default)
 try {
   const saved = localStorage.getItem('cirame-install-os');
-  if (saved) switchOS(saved);
+  switchOS(saved === 'linux' ? 'linux' : 'windows');
 } catch (e) {}
 
 // ─── Smooth scroll for sidebar nav (offset for sticky header) ──────
