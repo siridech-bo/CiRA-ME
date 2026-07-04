@@ -64,81 +64,6 @@ is new.
 
 ---
 
-### F3. Normalization method choice
-**Status:** ✅ Done | **Commits:** `b110fe3` | **Shipped:** 2026-07-04
-**Type:** feature | **Requested:** 2026-07-02
-
-**Summary of what shipped:** User picks `min_max` / `z_score` / `robust` /
-`none` at the Windowing step. Method + fitted params persist with the
-SavedModel and apply identically at every inference/export site
-(App Builder runner, ME-LAB endpoint, pipeline replay for ML+DL,
-deployer's generated Python inference scripts, CLAW exporter validation
-and manifest). Legacy min_max models keep predicting byte-identically.
-
-**Test evidence:** 10-subtest docker-exec suite green — persisted params
-shape per method, byte-identical legacy min_max math, App Builder +
-pipeline_replay inference for all four methods, deployer script
-generation parses valid Python for all four, CLAW exporter accepts all
-four and writes correct manifest.
-
-**Follow-up needed (out of F3 scope):** the App Builder Normalize NODE UI
-still uses the old `minmax`/`zscore`/`robust` literal names (without
-underscores), different from the training-time literals `min_max`/
-`z_score`/`robust`. The App Builder runner fallback handles both, so it's
-not a bug — just a UX inconsistency. Also: pre-existing
-`cira_claw_exporter.py:196` NoneType.get bug when `feature_selection` is
-null — same pattern I fixed in deployer earlier this month, unrelated to
-normalization but discovered while running F3 tests.
-
-<details>
-<summary>Original design + audit findings (kept for history)</summary>
-
-
-**Summary:** Currently min-max normalization is hardcoded at training time.
-Let the user pick min-max / z-score / robust / none at pipeline setup.
-
-**What's already in the codebase (audited 2026-07-04):**
-- App Builder `transform.normalize` node UI **schema** offers three
-  methods: `minmax`, `zscore`, `robust` — [AppBuilderEditorView.vue:838](../frontend/src/views/AppBuilderEditorView.vue#L838).
-  Default: `zscore`.
-- App Builder pipeline runner `_apply_normalization` implements **minmax
-  and zscore only** — [app_builder.py:1179-1190](../backend/app/routes/app_builder.py#L1179).
-  `robust` option is a UI stub that silently falls through to zscore.
-- Main pipeline **training-time normalization** (Windowing stage) is
-  hardcoded min-max — [data_loader.py:1758-1772](../backend/app/services/data_loader.py#L1758).
-  `norm_params.method = 'min_max'` is what gets saved with every model.
-- Runtime override: when App Builder / ME-LAB inference detects
-  `_model_norm` (the training params), it uses those exclusively —
-  [app_builder.py:1152-1176](../backend/app/routes/app_builder.py#L1152). So even if
-  the user picks zscore at the App Builder Normalize node, a min-max
-  trained model would still receive min-max normalized data (correct
-  behaviour for consistency with training).
-
-**What's needed to satisfy the customer request:**
-1. Add method choice at the Windowing UI (main pipeline). Options:
-   `min-max`, `z-score`, `robust`, `none`.
-2. Compute + persist the fitted parameters for whichever method is
-   chosen: `channel_min`/`channel_max`, OR `channel_mean`/`channel_std`,
-   OR `channel_median`/`channel_iqr`. Store the method name in
-   `norm_params.method`.
-3. Update `_apply_normalization` in app_builder.py and pipeline_replay
-   to actually implement `robust` (median + IQR) and `none` (identity).
-4. Ensure `_model_norm` override path handles all four methods.
-5. Verify TI / DL / Custom trainers respect the chosen method or fail
-   fast if incompatible.
-
-**Non-obvious constraint (still applies):** persistence MUST travel with
-the SavedModel and be applied identically at every inference site —
-ME-LAB endpoint, App Builder runner, live MQTT, TI export, pipeline
-replay. A silent mismatch produces garbage predictions.
-
-**Effort:** ~1.5-2 days (previous estimate was low; the audit revealed
-more places need touching).
-
-</details>
-
----
-
 ### F4. End-to-end Project Status view
 **Status:** 📋 Open (large — ~6-7 days)
 **Type:** feature | **Requested:** 2026-06-23
@@ -171,6 +96,25 @@ wire project_id through everywhere.
 ## DONE — this round (July 2026)
 
 Ordered newest first. Every SHA is on the `master` branch.
+
+### T14. F3 Normalization method choice
+**Status:** ✅ Done | **Commits:** `b110fe3` | **Shipped:** 2026-07-04
+User can now pick `min_max` / `z_score` / `robust` / `none` at the
+Windowing step. Method + fitted params travel with the SavedModel and
+apply identically at every inference/export site: App Builder runner,
+ME-LAB endpoint, pipeline replay (ML+DL), deployer's generated Python
+inference scripts, CLAW exporter validation and manifest. Legacy
+`min_max` models keep predicting byte-identically.
+
+Verified via 10-subtest docker-exec suite — all green. Wired through
+8 files across 4 layers (data_loader, app_builder, pipeline_replay,
+deployer, cira_claw_exporter, plus store + Windowing UI). Method
+literals `min_max`, `z_score`, `robust`, `none` consistent across every
+layer.
+
+**In-scope follow-ups NOT taken (see Discovered follow-ups below):**
+App Builder Normalize NODE UI literal naming inconsistency (`minmax`
+vs `min_max`), and a pre-existing `NoneType.get` in the CLAW exporter.
 
 ### T1. TI MCU export failed for ONNX-native (TI NN) saved models
 **Status:** ✅ Done | **Commits:** `d3c39b8` `709915d` `3113966`
@@ -314,6 +258,41 @@ Discovered during this round while reading code, then confirmed done.
   App Builder implementation. Runner implements minmax + zscore; UI
   schema also exposes `robust` but the runner treats it as zscore.
   This partial coverage is why F3 is 🔧 partial not ✅ done.
+
+## Discovered follow-ups — not yet fixed
+
+Small items surfaced during other work. Fixes are known, scope is
+trivial, but they were out of scope for the session that discovered
+them.
+
+### D1. App Builder Normalize node UI uses old literal names
+**Discovered:** 2026-07-04 (during F3 QA)
+**File:** [AppBuilderEditorView.vue:838](../frontend/src/views/AppBuilderEditorView.vue#L838),
+runner side at [app_builder.py:_apply_normalization](../backend/app/routes/app_builder.py)
+The Normalize node's UI schema uses `minmax`/`zscore`/`robust` (no
+underscore), while the F3 training-time literals are `min_max`/`z_score`/
+`robust`/`none`. The App Builder runner accepts BOTH conventions, so no
+functional bug, but the UX is inconsistent. Also, the node UI is missing
+the `none` option. Trivial fix: update the `configSchema.options` values
++ the runner fallback to accept only the underscored names for
+consistency (breaking change for any published app hardcoding the old
+values — audit before touching).
+
+### D2. `cira_claw_exporter.py:196` NoneType.get crash
+**Discovered:** 2026-07-04 (during F3 QA)
+**File:** [cira_claw_exporter.py:196](../backend/app/services/cira_claw_exporter.py#L196)
+Same pattern I fixed in `deployer.py` earlier: `sel.get('selected_features', [])`
+where `sel` is `None` because the DB has `pipeline_config.feature_selection: null`
+for TI NN and some ML models. Coalesce with `or {}`. Trivial one-line fix.
+
+### D3. `admin.py:451,458` stale `./shared` UI hint
+**Discovered:** 2026-06 (during TI REGR QA), still not fixed
+**File:** [admin.py:451, :458](../backend/app/routes/admin.py#L451)
+Cosmetic. Comment and `host_hint` UI string still say `./shared` after
+the May 2026 migration to `./datasets/`. Misleads admins in the Storage
+panel about where data lives on disk. Trivial fix.
+
+---
 
 ## Known unfinished / leftover (not customer requests but tracked)
 
