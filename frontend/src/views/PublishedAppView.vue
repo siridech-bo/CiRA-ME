@@ -730,8 +730,10 @@
         {{ runError }}
       </v-alert>
 
-      <!-- Upload new file button after results -->
-      <div v-if="result" class="text-center mt-4">
+      <!-- Upload new file button after results — CSV mode only.
+           In live-stream mode the input is the MQTT connection, so the
+           equivalent action is Disconnect / Reconnect, not File Upload. -->
+      <div v-if="result && !isLiveStream" class="text-center mt-4">
         <v-btn variant="outlined" color="purple" @click="clearFile">
           <v-icon start size="small">mdi-upload</v-icon>
           Upload New File
@@ -1194,6 +1196,9 @@ const sensorBufferProgress = ref(0)
 const liveInferenceCount = ref(0)
 const livePrediction = ref(null)
 const livePredictionHistory = ref([])
+// Object-shape history for classification/anomaly ({label, confidence, ...}).
+// Kept separately from livePredictionHistory (which is numbers for regression).
+const livePredictionHistoryFull = ref([])
 const liveActualColumn = ref('(none)')  // Selected MQTT column for actual comparison
 const liveActualHistory = ref([])  // accumulated actual values from selected column
 watch(liveActualColumn, () => { liveActualHistory.value = [] })
@@ -1905,14 +1910,35 @@ async function runLiveInference(windowData) {
     } else {
       // Single model response
       const preds = resp.data?.predictions || []
+      const predsFull = resp.data?.predictions_full || []
       if (preds.length > 0) {
         const lastPred = preds[preds.length - 1]
         livePrediction.value = lastPred
         if (typeof lastPred === 'number') {
+          // Regression: numeric history
           livePredictionHistory.value.push(lastPred)
           if (livePredictionHistory.value.length > MAX_LIVE_HISTORY) {
             livePredictionHistory.value = livePredictionHistory.value.slice(-MAX_LIVE_HISTORY)
           }
+        } else {
+          // Classification / anomaly: also keep the raw label list so
+          // `predictions` on the accumulated result stays non-empty and
+          // downstream tables/charts have something to iterate over.
+          livePredictionHistory.value.push(lastPred)
+          if (livePredictionHistory.value.length > MAX_LIVE_HISTORY) {
+            livePredictionHistory.value = livePredictionHistory.value.slice(-MAX_LIVE_HISTORY)
+          }
+        }
+        // Accumulate the rich per-window record (label + confidence + probs)
+        // for classification/anomaly tables. Falls back to the plain label
+        // if the backend didn't send predictions_full.
+        if (predsFull.length > 0) {
+          livePredictionHistoryFull.value.push(predsFull[predsFull.length - 1])
+        } else {
+          livePredictionHistoryFull.value.push(lastPred)
+        }
+        if (livePredictionHistoryFull.value.length > MAX_LIVE_HISTORY) {
+          livePredictionHistoryFull.value = livePredictionHistoryFull.value.slice(-MAX_LIVE_HISTORY)
         }
       }
 
@@ -1935,7 +1961,9 @@ async function runLiveInference(windowData) {
       result.value = {
         ...resp.data,
         predictions: livePredictionHistory.value.length > 0 ? [...livePredictionHistory.value] : resp.data?.predictions,
+        predictions_full: livePredictionHistoryFull.value.length > 0 ? [...livePredictionHistoryFull.value] : resp.data?.predictions_full,
         count: livePredictionHistory.value.length || resp.data?.count,
+        num_windows: livePredictionHistory.value.length || resp.data?.num_windows,
         actual: liveActualHistory.value.length > 0 ? [...liveActualHistory.value] : resp.data?.actual,
       }
 
