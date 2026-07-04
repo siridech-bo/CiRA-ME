@@ -171,8 +171,21 @@ class CiraCLAWExporter:
         norm = pipeline_config.get('normalization', {})
         if not norm.get('sensor_columns'):
             errors.append("normalization.sensor_columns is missing or empty")
-        if not norm.get('channel_min') or not norm.get('channel_max'):
-            errors.append("normalization.channel_min / channel_max are missing")
+
+        # Required per-channel fields depend on which normalization method
+        # was used at training time. Default to min_max to preserve the
+        # legacy check for models that pre-date the persisted `method` key.
+        norm_method = norm.get('method', 'min_max')
+        if norm_method == 'min_max':
+            if not norm.get('channel_min') or not norm.get('channel_max'):
+                errors.append("normalization.channel_min / channel_max are missing")
+        elif norm_method == 'z_score':
+            if not norm.get('channel_mean') or not norm.get('channel_std'):
+                errors.append("normalization.channel_mean / channel_std are missing")
+        elif norm_method == 'robust':
+            if not norm.get('channel_median') or not norm.get('channel_iqr'):
+                errors.append("normalization.channel_median / channel_iqr are missing")
+        # 'none' → no per-channel constants required
 
         wc = pipeline_config.get('windowing', {})
         if not wc.get('window_size'):
@@ -467,6 +480,25 @@ class CiraCLAWExporter:
         if mode == 'anomaly' or output_format in ('reconstruction', 'anomaly_score'):
             threshold = self._extract_anomaly_threshold(model_data)
 
+        # Emit per-method constants so consumers can interpret them
+        # correctly. Legacy min_max models continue to emit the exact same
+        # `channel_min` / `channel_max` fields (plus the new `method` key).
+        norm_method = norm.get('method', 'min_max')
+        normalization_block = {
+            "method": norm_method,
+            "sensor_columns": norm.get('sensor_columns', []),
+        }
+        if norm_method == 'min_max':
+            normalization_block["channel_min"] = norm.get('channel_min', [])
+            normalization_block["channel_max"] = norm.get('channel_max', [])
+        elif norm_method == 'z_score':
+            normalization_block["channel_mean"] = norm.get('channel_mean', [])
+            normalization_block["channel_std"] = norm.get('channel_std', [])
+        elif norm_method == 'robust':
+            normalization_block["channel_median"] = norm.get('channel_median', [])
+            normalization_block["channel_iqr"] = norm.get('channel_iqr', [])
+        # 'none' → no per-channel fields
+
         return {
             "version": "1.0",
             "generated_by": "cira_me",
@@ -476,11 +508,7 @@ class CiraCLAWExporter:
             "algorithm": algorithm,
             "mode": mode,
             "input_type": "signal",
-            "normalization": {
-                "sensor_columns": norm.get('sensor_columns', []),
-                "channel_min": norm.get('channel_min', []),
-                "channel_max": norm.get('channel_max', []),
-            },
+            "normalization": normalization_block,
             "windowing": {
                 "window_size": wc.get('window_size', 128),
                 "stride": wc.get('stride', 64),

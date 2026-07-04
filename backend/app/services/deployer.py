@@ -1178,10 +1178,53 @@ int main(int argc, char* argv[]) {
         approach = pipeline_config.get('training_approach', 'ml')
 
         sensor_columns = norm.get('sensor_columns', [])
-        channel_min = norm.get('channel_min', [])
-        channel_max = norm.get('channel_max', [])
+        # Default to min_max to preserve legacy behaviour for models
+        # trained before the normalization method was persisted.
+        norm_method = norm.get('method', 'min_max')
         window_size = wc.get('window_size', 128)
         stride = wc.get('stride', 64)
+
+        # Per-method embedded constants + normalize() body.
+        # The min_max branch reproduces the exact pre-change source layout
+        # (constants block, section header, function body) so that legacy
+        # models render byte-identically.
+        if norm_method == 'min_max':
+            channel_min = norm.get('channel_min', [])
+            channel_max = norm.get('channel_max', [])
+            norm_constants_block = (
+                f"CHANNEL_MIN = np.array({channel_min})\n"
+                f"CHANNEL_MAX = np.array({channel_max})"
+            )
+            norm_section_header = "# ===== Step 3: Min-Max Normalization ====="
+            normalize_body = (
+                "    ch_range = CHANNEL_MAX - CHANNEL_MIN\n"
+                "    ch_range[ch_range == 0] = 1.0\n"
+                "    return (windows - CHANNEL_MIN) / ch_range"
+            )
+        elif norm_method == 'z_score':
+            channel_mean = norm.get('channel_mean', [])
+            channel_std = norm.get('channel_std', [])
+            norm_constants_block = (
+                f"CHANNEL_MEAN = np.array({channel_mean})\n"
+                f"CHANNEL_STD = np.array({channel_std})"
+            )
+            norm_section_header = "# ===== Step 3: Z-Score Normalization ====="
+            # Training persisted the safe (post-guard) std, so no runtime
+            # zero-std guard is required.
+            normalize_body = "    return (windows - CHANNEL_MEAN) / CHANNEL_STD"
+        elif norm_method == 'robust':
+            channel_median = norm.get('channel_median', [])
+            channel_iqr = norm.get('channel_iqr', [])
+            norm_constants_block = (
+                f"CHANNEL_MEDIAN = np.array({channel_median})\n"
+                f"CHANNEL_IQR = np.array({channel_iqr})"
+            )
+            norm_section_header = "# ===== Step 3: Robust Normalization ====="
+            normalize_body = "    return (windows - CHANNEL_MEDIAN) / CHANNEL_IQR"
+        else:  # 'none' — identity
+            norm_constants_block = "# (no per-channel normalization constants)"
+            norm_section_header = "# ===== Step 3: No Normalization ====="
+            normalize_body = "    return windows"
 
         expected_features = []
         if sel_config and sel_config.get('selected_features'):
@@ -1220,8 +1263,7 @@ from scipy.fft import fft, fftfreq
 SENSOR_COLUMNS = {sensor_columns}
 WINDOW_SIZE = {window_size}
 STRIDE = {stride}
-CHANNEL_MIN = np.array({channel_min})
-CHANNEL_MAX = np.array({channel_max})
+{norm_constants_block}
 EXPECTED_FEATURES = {expected_features}
 MODE = "{mode}"
 
@@ -1245,11 +1287,9 @@ def apply_windowing(data):
     return np.array(windows)
 
 
-# ===== Step 3: Min-Max Normalization =====
+{norm_section_header}
 def normalize(windows):
-    ch_range = CHANNEL_MAX - CHANNEL_MIN
-    ch_range[ch_range == 0] = 1.0
-    return (windows - CHANNEL_MIN) / ch_range
+{normalize_body}
 
 
 # ===== Step 4: Feature Extraction (lightweight DSP) =====
@@ -1529,10 +1569,48 @@ if __name__ == "__main__":
         norm = pipeline_config.get('normalization', {})
         wc = pipeline_config.get('windowing', {})
         sensor_columns = norm.get('sensor_columns', [])
-        channel_min = norm.get('channel_min', [])
-        channel_max = norm.get('channel_max', [])
+        # Default to min_max to preserve legacy behaviour for models
+        # trained before the normalization method was persisted.
+        norm_method = norm.get('method', 'min_max')
         window_size = wc.get('window_size', 128)
         stride = wc.get('stride', 64)
+
+        # Per-method embedded constants + normalize() body. The min_max
+        # branch reproduces the exact pre-change source layout so legacy
+        # models render byte-identically.
+        if norm_method == 'min_max':
+            channel_min = norm.get('channel_min', [])
+            channel_max = norm.get('channel_max', [])
+            norm_constants_block = (
+                f"CHANNEL_MIN = np.array({channel_min}, dtype=np.float32)\n"
+                f"CHANNEL_MAX = np.array({channel_max}, dtype=np.float32)"
+            )
+            normalize_body = (
+                "    ch_range = CHANNEL_MAX - CHANNEL_MIN\n"
+                "    ch_range[ch_range == 0] = 1.0\n"
+                "    return (windows - CHANNEL_MIN) / ch_range"
+            )
+        elif norm_method == 'z_score':
+            channel_mean = norm.get('channel_mean', [])
+            channel_std = norm.get('channel_std', [])
+            norm_constants_block = (
+                f"CHANNEL_MEAN = np.array({channel_mean}, dtype=np.float32)\n"
+                f"CHANNEL_STD = np.array({channel_std}, dtype=np.float32)"
+            )
+            # Training persisted the safe (post-guard) std, so no runtime
+            # zero-std guard is required.
+            normalize_body = "    return (windows - CHANNEL_MEAN) / CHANNEL_STD"
+        elif norm_method == 'robust':
+            channel_median = norm.get('channel_median', [])
+            channel_iqr = norm.get('channel_iqr', [])
+            norm_constants_block = (
+                f"CHANNEL_MEDIAN = np.array({channel_median}, dtype=np.float32)\n"
+                f"CHANNEL_IQR = np.array({channel_iqr}, dtype=np.float32)"
+            )
+            normalize_body = "    return (windows - CHANNEL_MEDIAN) / CHANNEL_IQR"
+        else:  # 'none' — identity
+            norm_constants_block = "# (no per-channel normalization constants)"
+            normalize_body = "    return windows"
 
         return f'''#!/usr/bin/env python3
 """
@@ -1552,8 +1630,7 @@ import pandas as pd
 SENSOR_COLUMNS = {sensor_columns}
 WINDOW_SIZE = {window_size}
 STRIDE = {stride}
-CHANNEL_MIN = np.array({channel_min}, dtype=np.float32)
-CHANNEL_MAX = np.array({channel_max}, dtype=np.float32)
+{norm_constants_block}
 
 
 # ===== Exact TimesNet architectures (mirrors torch_subprocess.py) =====
@@ -1654,9 +1731,7 @@ def apply_windowing(data):
 
 
 def normalize(windows):
-    ch_range = CHANNEL_MAX - CHANNEL_MIN
-    ch_range[ch_range == 0] = 1.0
-    return (windows - CHANNEL_MIN) / ch_range
+{normalize_body}
 
 
 def main():

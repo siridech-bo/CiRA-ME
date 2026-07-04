@@ -1138,8 +1138,14 @@ def _apply_fill_missing(data, params):
 
 def _apply_normalization(data, params):
     """Apply normalization to data.
-    If _model_norm is provided, use the training normalization params
-    (channel_min/channel_max) for consistency with how the model was trained.
+
+    If _model_norm is provided, use the training normalization params for
+    consistency with how the model was trained. Supported training methods
+    (from norm_params.method): 'min_max', 'z_score', 'robust', 'none'.
+    Missing method defaults to 'min_max' (legacy models saved before F3).
+
+    Fallback (no _model_norm): compute normalization from the input data
+    using params.method — supports 'minmax', 'zscore', 'robust', 'none'.
     """
     import pandas as pd
     if isinstance(data, pd.DataFrame):
@@ -1151,29 +1157,62 @@ def _apply_normalization(data, params):
     # Use model's training normalization if available
     model_norm = params.get('_model_norm')
     if model_norm:
-        channel_min = np.array(model_norm.get('channel_min', []), dtype=np.float64)
-        channel_max = np.array(model_norm.get('channel_max', []), dtype=np.float64)
+        # Legacy models predate F3 and have no 'method' key — treat as min_max.
+        train_method = model_norm.get('method', 'min_max')
         sensor_cols = model_norm.get('sensor_columns', [])
         input_cols = params.get('_sensor_columns', [])
+        n_cols = data.shape[-1] if data.ndim >= 2 else 1
 
-        if len(channel_min) > 0 and len(channel_max) > 0:
-            # Map model's normalization to input data columns
-            # The model's sensor_columns may be a subset of input columns
-            n_cols = data.shape[-1] if data.ndim >= 2 else 1
-            d_min = np.zeros(n_cols)
-            d_max = np.ones(n_cols)
+        if train_method == 'none':
+            logger.info("[AppBuilder] Model trained with normalization='none' — passing through")
+            return data
 
-            for i, col in enumerate(input_cols):
-                if col in sensor_cols:
-                    idx = sensor_cols.index(col)
-                    if idx < len(channel_min):
-                        d_min[i] = channel_min[idx]
-                        d_max[i] = channel_max[idx]
+        if train_method == 'z_score':
+            channel_mean = np.array(model_norm.get('channel_mean', []), dtype=np.float64)
+            channel_std = np.array(model_norm.get('channel_std', []), dtype=np.float64)
+            if len(channel_mean) > 0 and len(channel_std) > 0:
+                d_mean = np.zeros(n_cols)
+                d_std = np.ones(n_cols)
+                for i, col in enumerate(input_cols):
+                    if col in sensor_cols:
+                        idx = sensor_cols.index(col)
+                        if idx < len(channel_mean):
+                            d_mean[i] = channel_mean[idx]
+                            d_std[i] = channel_std[idx] if channel_std[idx] != 0 else 1.0
+                logger.info(f"[AppBuilder] Applying model z_score normalization: mean={d_mean[:3]}..., std={d_std[:3]}...")
+                return (data - d_mean) / d_std
 
-            denom = d_max - d_min
-            denom[denom == 0] = 1.0
-            logger.info(f"[AppBuilder] Applying model normalization: min={d_min[:3]}..., max={d_max[:3]}...")
-            return (data - d_min) / denom
+        elif train_method == 'robust':
+            channel_median = np.array(model_norm.get('channel_median', []), dtype=np.float64)
+            channel_iqr = np.array(model_norm.get('channel_iqr', []), dtype=np.float64)
+            if len(channel_median) > 0 and len(channel_iqr) > 0:
+                d_median = np.zeros(n_cols)
+                d_iqr = np.ones(n_cols)
+                for i, col in enumerate(input_cols):
+                    if col in sensor_cols:
+                        idx = sensor_cols.index(col)
+                        if idx < len(channel_median):
+                            d_median[i] = channel_median[idx]
+                            d_iqr[i] = channel_iqr[idx] if channel_iqr[idx] != 0 else 1.0
+                logger.info(f"[AppBuilder] Applying model robust normalization: median={d_median[:3]}..., iqr={d_iqr[:3]}...")
+                return (data - d_median) / d_iqr
+
+        else:  # 'min_max' (or legacy no-method)
+            channel_min = np.array(model_norm.get('channel_min', []), dtype=np.float64)
+            channel_max = np.array(model_norm.get('channel_max', []), dtype=np.float64)
+            if len(channel_min) > 0 and len(channel_max) > 0:
+                d_min = np.zeros(n_cols)
+                d_max = np.ones(n_cols)
+                for i, col in enumerate(input_cols):
+                    if col in sensor_cols:
+                        idx = sensor_cols.index(col)
+                        if idx < len(channel_min):
+                            d_min[i] = channel_min[idx]
+                            d_max[i] = channel_max[idx]
+                denom = d_max - d_min
+                denom[denom == 0] = 1.0
+                logger.info(f"[AppBuilder] Applying model normalization: min={d_min[:3]}..., max={d_max[:3]}...")
+                return (data - d_min) / denom
 
     # Fallback: compute normalization from data
     method = params.get('method', 'zscore')
@@ -1183,6 +1222,16 @@ def _apply_normalization(data, params):
         denom = d_max - d_min
         denom[denom == 0] = 1.0
         return (data - d_min) / denom
+    elif method == 'robust':
+        # Compute per-channel median and IQR from the input data
+        d_median = np.median(data, axis=0)
+        q75 = np.percentile(data, 75, axis=0)
+        q25 = np.percentile(data, 25, axis=0)
+        iqr = q75 - q25
+        iqr = np.where(iqr > 0, iqr, 1.0)
+        return (data - d_median) / iqr
+    elif method == 'none':
+        return data
     else:  # zscore
         mean = data.mean(axis=0)
         std = data.std(axis=0)

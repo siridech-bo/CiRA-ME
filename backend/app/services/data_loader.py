@@ -1281,7 +1281,8 @@ class DataLoader:
         target_column: str = None,
         selected_columns: list = None,
         split_strategy: str = 'temporal_end',
-        no_windowing: bool = False
+        no_windowing: bool = False,
+        normalization_method: str = 'min_max'
     ) -> Dict[str, Any]:
         """
         Apply windowing to loaded data, respecting sample boundaries.
@@ -1724,8 +1725,10 @@ class DataLoader:
                     print(f"[DataLoader] Stratified re-split failed: {e}. "
                           f"Need more data (record longer).")
 
-        # --- Per-channel min-max normalization (0-1) ---
-        # Compute stats from training data only to prevent leakage
+        # --- Per-channel normalization ---
+        # Compute stats from training data only to prevent leakage.
+        # Method is user-selectable: 'min_max' (default, historical behavior),
+        # 'z_score', 'robust', or 'none' (identity).
         all_windows = np.array(windows)  # (num_windows, window_size, num_channels)
         cat_arr_temp = np.array(categories) if categories else None
 
@@ -1737,39 +1740,95 @@ class DataLoader:
 
         # Flatten to (total_train_samples, num_channels) for stats
         train_flat = train_windows.reshape(-1, all_windows.shape[2])
-        ch_min = train_flat.min(axis=0)
-        ch_max = train_flat.max(axis=0)
-        ch_range = ch_max - ch_min
 
-        # Identify and drop constant columns (range == 0)
-        active_mask = ch_range > 1e-10
-        dropped_cols = [sensor_cols[i] for i in range(len(sensor_cols)) if not active_mask[i]]
-        kept_cols = [sensor_cols[i] for i in range(len(sensor_cols)) if active_mask[i]]
+        # Normalize the method string against known values (default to min_max)
+        norm_method = (normalization_method or 'min_max').lower()
+        if norm_method not in ('min_max', 'z_score', 'robust', 'none'):
+            print(f"[DataLoader] Unknown normalization_method '{normalization_method}', falling back to 'min_max'")
+            norm_method = 'min_max'
 
-        if dropped_cols:
-            print(f"[DataLoader] Dropped {len(dropped_cols)} constant column(s): {dropped_cols}")
+        if norm_method == 'min_max':
+            ch_min = train_flat.min(axis=0)
+            ch_max = train_flat.max(axis=0)
+            ch_range = ch_max - ch_min
 
-        # Keep only non-constant channels
-        all_windows = all_windows[:, :, active_mask]
-        ch_min = ch_min[active_mask]
-        ch_max = ch_max[active_mask]
-        ch_range = ch_range[active_mask]
+            # Constant-column dropping is only meaningful for min-max:
+            # a channel with zero range provides no signal AND would divide-by-zero here.
+            # For other methods we keep all channels (z_score guards std==0, robust guards iqr==0).
+            active_mask = ch_range > 1e-10
+            dropped_cols = [sensor_cols[i] for i in range(len(sensor_cols)) if not active_mask[i]]
+            kept_cols = [sensor_cols[i] for i in range(len(sensor_cols)) if active_mask[i]]
 
-        # Apply min-max normalization: (x - min) / (max - min) → [0, 1]
-        all_windows = (all_windows - ch_min) / ch_range
+            if dropped_cols:
+                print(f"[DataLoader] Dropped {len(dropped_cols)} constant column(s): {dropped_cols}")
 
-        # Update sensor_cols in metadata
-        sensor_cols = kept_cols
+            all_windows = all_windows[:, :, active_mask]
+            ch_min = ch_min[active_mask]
+            ch_max = ch_max[active_mask]
+            ch_range = ch_range[active_mask]
+
+            # (x - min) / (max - min) → [0, 1]
+            all_windows = (all_windows - ch_min) / ch_range
+
+            sensor_cols = kept_cols
+            norm_params = {
+                'method': 'min_max',
+                'channel_min': [float(v) for v in ch_min],
+                'channel_max': [float(v) for v in ch_max],
+                'sensor_columns': kept_cols,
+                'dropped_columns': dropped_cols,
+            }
+        elif norm_method == 'z_score':
+            ch_mean = train_flat.mean(axis=0)
+            ch_std = train_flat.std(axis=0)
+            # Guard against zero-std channels (constant columns): replace with 1.0
+            # so the transform reduces to (x - mean), i.e. leaves the channel centered at 0.
+            ch_std_safe = np.where(ch_std > 1e-10, ch_std, 1.0)
+
+            dropped_cols = []
+            kept_cols = list(sensor_cols)
+
+            all_windows = (all_windows - ch_mean) / ch_std_safe
+
+            norm_params = {
+                'method': 'z_score',
+                'channel_mean': [float(v) for v in ch_mean],
+                'channel_std': [float(v) for v in ch_std_safe],
+                'sensor_columns': kept_cols,
+                'dropped_columns': dropped_cols,
+            }
+        elif norm_method == 'robust':
+            # np.percentile returns array shape (3, num_channels)
+            pct = np.percentile(train_flat, [25, 50, 75], axis=0)
+            ch_q25 = pct[0]
+            ch_median = pct[1]
+            ch_q75 = pct[2]
+            ch_iqr = ch_q75 - ch_q25
+            ch_iqr_safe = np.where(ch_iqr > 1e-10, ch_iqr, 1.0)
+
+            dropped_cols = []
+            kept_cols = list(sensor_cols)
+
+            all_windows = (all_windows - ch_median) / ch_iqr_safe
+
+            norm_params = {
+                'method': 'robust',
+                'channel_median': [float(v) for v in ch_median],
+                'channel_iqr': [float(v) for v in ch_iqr_safe],
+                'sensor_columns': kept_cols,
+                'dropped_columns': dropped_cols,
+            }
+        else:  # 'none' — identity, no scaling
+            dropped_cols = []
+            kept_cols = list(sensor_cols)
+            # No transform applied to all_windows.
+            norm_params = {
+                'method': 'none',
+                'sensor_columns': kept_cols,
+                'dropped_columns': dropped_cols,
+            }
+
         windows = list(all_windows)
-
-        # Save normalization params for deployment
-        norm_params = {
-            'method': 'min_max',
-            'channel_min': [float(v) for v in ch_min],
-            'channel_max': [float(v) for v in ch_max],
-            'sensor_columns': kept_cols,
-            'dropped_columns': dropped_cols,
-        }
 
         # Store windowed data
         windowed_session_id = self._generate_session_id()

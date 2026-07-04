@@ -32,6 +32,8 @@ interface WindowingConfig {
   test_ratio: number
   split_strategy: 'temporal_end' | 'temporal_blocks' | 'random'
   no_windowing: boolean
+  // F3: user-selectable normalization method. Default 'min_max' preserves prior behavior.
+  normalization_method: 'min_max' | 'z_score' | 'robust' | 'none'
 }
 
 interface WindowedSession {
@@ -112,7 +114,8 @@ export const usePipelineStore = defineStore('pipeline', () => {
     label_method: 'majority',
     test_ratio: 0.2,
     split_strategy: 'temporal_end',
-    no_windowing: false
+    no_windowing: false,
+    normalization_method: 'min_max'
   })
   const windowedSession = ref<WindowedSession | null>(null)
 

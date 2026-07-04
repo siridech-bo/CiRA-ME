@@ -718,6 +718,8 @@ def apply_windowing():
     selected_columns = data.get('selected_columns')
     split_strategy = data.get('split_strategy', 'temporal_end')
     no_windowing = data.get('no_windowing', False)
+    # F3: user-selectable normalization. Default 'min_max' preserves prior behavior.
+    normalization_method = data.get('normalization_method', 'min_max')
 
     if not session_id:
         return jsonify({'error': 'Session ID required'}), 400
@@ -733,7 +735,8 @@ def apply_windowing():
             target_column=target_column,
             selected_columns=selected_columns,
             split_strategy=split_strategy,
-            no_windowing=no_windowing
+            no_windowing=no_windowing,
+            normalization_method=normalization_method
         )
         return jsonify(result)
     except Exception as e:

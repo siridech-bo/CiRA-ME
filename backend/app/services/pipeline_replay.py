@@ -94,10 +94,41 @@ def _window_data(sensor_data: np.ndarray, window_size: int, stride: int,
 
 def _normalize_windows(windows: np.ndarray, ch_min: np.ndarray,
                        ch_max: np.ndarray) -> np.ndarray:
-    """Apply saved min-max normalization to windows."""
+    """Apply saved min-max normalization to windows (legacy helper)."""
     ch_range = ch_max - ch_min
     ch_range[ch_range == 0] = 1.0
     return (windows - ch_min) / ch_range
+
+
+def _apply_saved_normalization(windows: np.ndarray, norm: dict) -> np.ndarray:
+    """Dispatch on norm.method to apply the correct saved-normalization transform.
+
+    Supports 'min_max', 'z_score', 'robust', 'none'. Missing method
+    defaults to 'min_max' (legacy models saved before F3).
+    """
+    method = (norm.get('method') or 'min_max').lower()
+    if method == 'none':
+        return windows
+    if method == 'z_score':
+        ch_mean = np.array(norm.get('channel_mean', []), dtype=np.float64)
+        ch_std = np.array(norm.get('channel_std', []), dtype=np.float64)
+        if len(ch_mean) == 0 or len(ch_std) == 0:
+            return windows
+        ch_std_safe = np.where(ch_std > 0, ch_std, 1.0)
+        return (windows - ch_mean) / ch_std_safe
+    if method == 'robust':
+        ch_median = np.array(norm.get('channel_median', []), dtype=np.float64)
+        ch_iqr = np.array(norm.get('channel_iqr', []), dtype=np.float64)
+        if len(ch_median) == 0 or len(ch_iqr) == 0:
+            return windows
+        ch_iqr_safe = np.where(ch_iqr > 0, ch_iqr, 1.0)
+        return (windows - ch_median) / ch_iqr_safe
+    # 'min_max' or legacy no-method
+    ch_min = np.array(norm.get('channel_min', []), dtype=np.float64)
+    ch_max = np.array(norm.get('channel_max', []), dtype=np.float64)
+    if len(ch_min) == 0 or len(ch_max) == 0:
+        return windows
+    return _normalize_windows(windows, ch_min, ch_max)
 
 
 def replay_ml_pipeline(csv_path: str, pipeline_config: dict,
@@ -247,11 +278,8 @@ def replay_ml_pipeline(csv_path: str, pipeline_config: dict,
 
     logger.info(f"Pipeline replay: {len(all_windows)} windows from {len(df)} rows")
 
-    # Step 3: Normalize
-    ch_min = np.array(norm.get('channel_min', []))
-    ch_max = np.array(norm.get('channel_max', []))
-    if len(ch_min) > 0 and len(ch_max) > 0:
-        all_windows = _normalize_windows(all_windows, ch_min, ch_max)
+    # Step 3: Normalize — dispatch on norm.method (F3). Missing method → min_max (legacy).
+    all_windows = _apply_saved_normalization(all_windows, norm)
 
     # Step 4: Extract features
     feat_config = pipeline_config.get('feature_extraction', {})
@@ -481,11 +509,8 @@ def replay_dl_pipeline(csv_path: str, pipeline_config: dict,
 
     logger.info(f"DL Pipeline replay: {len(all_windows)} windows from {len(df)} rows")
 
-    # Step 3: Normalize
-    ch_min = np.array(norm.get('channel_min', []))
-    ch_max = np.array(norm.get('channel_max', []))
-    if len(ch_min) > 0 and len(ch_max) > 0:
-        all_windows = _normalize_windows(all_windows, ch_min, ch_max)
+    # Step 3: Normalize — dispatch on norm.method (F3). Missing method → min_max (legacy).
+    all_windows = _apply_saved_normalization(all_windows, norm)
 
     # Step 4: Predict using TimesNet via subprocess (same pattern as timesnet_trainer)
     config_dict = model_data.get('config', {})

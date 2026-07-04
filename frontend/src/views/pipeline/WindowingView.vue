@@ -288,6 +288,23 @@
             </div>
           </div>
 
+          <!-- Normalization Method (hidden in raw mode — raw mode skips windowing/normalization) -->
+          <div v-if="!windowingConfig.no_windowing" class="mb-6">
+            <v-select
+              v-model="windowingConfig.normalization_method"
+              :items="[
+                { value: 'min_max', title: 'Min-Max — scale to [0, 1]' },
+                { value: 'z_score', title: 'Z-Score — (x - mean) / std' },
+                { value: 'robust', title: 'Robust — (x - median) / IQR' },
+                { value: 'none',    title: 'None — no scaling' },
+              ]"
+              label="Normalization"
+              hint="How sensor values are scaled before feature extraction / training"
+              persistent-hint
+              density="comfortable"
+            />
+          </div>
+
           <!-- Regression: Target Column Selector -->
           <template v-if="pipelineStore.mode === 'regression'">
             <h4 class="text-subtitle-2 font-weight-bold mb-3">
@@ -996,7 +1013,8 @@ const windowingConfig = reactive({
   label_method: pipelineStore.windowingConfig.label_method,
   test_ratio: pipelineStore.windowingConfig.test_ratio,
   split_strategy: pipelineStore.windowingConfig.split_strategy || 'temporal_end',
-  no_windowing: pipelineStore.windowingConfig.no_windowing || false
+  no_windowing: pipelineStore.windowingConfig.no_windowing || false,
+  normalization_method: pipelineStore.windowingConfig.normalization_method || 'min_max'
 })
 
 const totalSamples = computed(() =>
@@ -1276,6 +1294,7 @@ async function applyWindowing() {
   pipelineStore.windowingConfig.test_ratio = windowingConfig.test_ratio
   pipelineStore.windowingConfig.split_strategy = windowingConfig.split_strategy
   pipelineStore.windowingConfig.no_windowing = windowingConfig.no_windowing
+  pipelineStore.windowingConfig.normalization_method = windowingConfig.normalization_method
 
   loading.value = true
 
