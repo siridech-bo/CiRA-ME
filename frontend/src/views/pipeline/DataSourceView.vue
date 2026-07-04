@@ -968,7 +968,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import { usePipelineStore } from '@/stores/pipeline'
 import { useNotificationStore } from '@/stores/notification'
 import { useAuthStore } from '@/stores/auth'
@@ -1009,6 +1009,7 @@ interface FileItem {
 }
 
 const router = useRouter()
+const route = useRoute()
 const pipelineStore = usePipelineStore()
 const notificationStore = useNotificationStore()
 const authStore = useAuthStore()
@@ -2098,7 +2099,26 @@ function closeRecordDialog() {
   }
 }
 
-onMounted(() => {
+onMounted(async () => {
+  // Adopt the project from the URL first — this triggers hydration
+  // (POST /api/projects/<id>/hydrate) which repopulates
+  // pipelineStore.dataSession from persisted state after a backend restart.
+  const qpid = route.query.project_id
+  if (qpid && !pipelineStore.projectId) {
+    const idNum = Array.isArray(qpid) ? Number(qpid[0]) : Number(qpid)
+    if (!Number.isNaN(idNum)) {
+      await pipelineStore.setActiveProject(idNum)
+    }
+  }
+
+  // If hydration (or a still-warm store) has a dataSession, mirror it into
+  // the local dataPreview ref so the view renders as if the user had just
+  // loaded the file. Without this the picker shows an empty Root even
+  // though the Projects list clearly shows "csv · 623 rows".
+  if (pipelineStore.dataSession && !dataPreview.value) {
+    dataPreview.value = pipelineStore.dataSession
+  }
+
   loadFolders()
 })
 </script>
