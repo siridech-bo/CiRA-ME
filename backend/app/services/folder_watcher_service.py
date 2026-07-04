@@ -147,12 +147,13 @@ class _WatcherWorker(threading.Thread):
                 f"endpoint {watcher['endpoint_id']} is {endpoint.get('status')}, "
                 f"not active — cannot predict"
             )
+        # Pre-flight: confirm the saved model file still exists so we can raise
+        # a clean, actionable error before we spend time parsing the CSV.
         saved = SavedModel.get_by_id(endpoint['saved_model_id'])
         if not saved or not saved.get('model_path'):
             raise RuntimeError(
                 f"model file missing for endpoint {watcher['endpoint_id']}"
             )
-        model_data = ModelManager.load_model(saved['model_path'])
         mode = endpoint.get('mode', 'classification')
 
         # Detect / respect header mode
@@ -187,7 +188,9 @@ class _WatcherWorker(threading.Thread):
             return  # nothing to predict
 
         features = np.array(rows, dtype=np.float64)
-        preds = ModelManager.predict(model_data, features, mode)
+        # Use the canonical endpoint-scoped inference so label decoding +
+        # counter bookkeeping stay in one place (see ModelManager.predict_by_endpoint).
+        preds = ModelManager.predict_by_endpoint(watcher['endpoint_id'], features)
 
         # Write output CSV with the columns the customer's diagram specified.
         # If output already exists (customer re-uploaded same filename), rotate.

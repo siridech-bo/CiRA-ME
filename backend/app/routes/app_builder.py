@@ -1371,58 +1371,13 @@ def _derive_sensor_columns(feature_names):
 
 
 def _run_model_inference(endpoint_id, data):
-    """Run ME-LAB model inference on data."""
-    endpoint = MeLabEndpoint.get_by_id(endpoint_id)
-    if not endpoint:
-        raise ValueError(f"Endpoint {endpoint_id} not found")
-    if endpoint['status'] != 'active':
-        raise ValueError(f"Endpoint {endpoint_id} is not active")
+    """Run ME-LAB model inference on data.
 
-    saved = SavedModel.get_by_id(endpoint['saved_model_id'])
-    if not saved or not saved.get('model_path'):
-        raise ValueError(f"Model for endpoint {endpoint_id} not available")
-
-    if not isinstance(data, np.ndarray):
-        data = np.array(data, dtype=np.float64)
-
-    if data.ndim == 1:
-        data = data.reshape(1, -1)
-
-    model_data = ModelManager.load_model(saved['model_path'])
-    predictions = ModelManager.predict(model_data, data, endpoint['mode'])
-
-    # Decode integer labels for classification/anomaly
-    if endpoint['mode'] != 'regression' and predictions:
-        model_obj = model_data.get('model')
-
-        # Build prediction decoder: index → class name
-        decode_map = None
-
-        # Priority 1: label_inverse_map (exact encoder mapping from training)
-        inv_map = model_data.get('label_inverse_map')
-        if inv_map:
-            decode_map = {int(k): str(v) for k, v in inv_map.items()}
-        # Priority 2: model.classes_ with string values (sklearn native)
-        elif hasattr(model_obj, 'classes_') and len(model_obj.classes_) > 0:
-            if isinstance(model_obj.classes_[0], (str, np.str_)):
-                decode_map = None  # Predictions are already strings
-        # Priority 3: class_names (may be wrong order for old models, but best we have)
-        if not decode_map and not inv_map and model_data.get('class_names'):
-            cn = model_data['class_names']
-            decode_map = {i: cn[i] for i in range(len(cn))}
-
-        if decode_map:
-            for p in predictions:
-                label = p.get('label', '')
-                try:
-                    idx = int(float(label))
-                    if idx in decode_map:
-                        p['label'] = decode_map[idx]
-                        p['prediction'] = decode_map[idx]
-                except (ValueError, TypeError):
-                    pass
-
-    # Record the inference
-    MeLabEndpoint.record_inference(endpoint_id)
-
-    return predictions
+    Thin wrapper over ModelManager.predict_by_endpoint for backward
+    compatibility with pipeline replay + multi-model compare paths.
+    """
+    try:
+        return ModelManager.predict_by_endpoint(endpoint_id, data)
+    except RuntimeError as e:
+        # Preserve the ValueError contract older callers may expect.
+        raise ValueError(str(e))

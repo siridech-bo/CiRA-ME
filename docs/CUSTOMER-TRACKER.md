@@ -20,31 +20,7 @@ Each item lists commit SHAs where relevant. `git show <sha>` for details.
 
 ## OPEN ITEMS
 
-### F2. App Builder multi-dataset Wizard
-**Status:** 📋 Ready to implement | **Effort:** 4-5 days
-**Type:** feature | **Requested:** 2026-07-02
-
-**Summary:** Wizard flow that runs N models across M datasets and returns
-a matrix of per-cell confidence + latency + model size. Lets the customer
-pick the smallest model that hits their confidence bar for edge deployment.
-
-**Decided design (all approved 2026-07-04):**
-
-| # | Decision | Rationale |
-|---|---|---|
-| F2.1 | **Reject datasets with mismatched column schemas.** All datasets in one Wizard run must have identical column names. Clear error, no silent alignment. | Auto-align silently drops columns → wrong predictions → customer loses trust. |
-| F2.2 | **Cell shows confidence + predicted label.** Full per-class probability breakdown on hover / click. | Cell stays scannable; detail available on demand. |
-
-**Implementation plan:**
-- Wizard UI: 3 steps — (1) pick models (existing multi-select), (2) pick
-  datasets (multi-file upload with schema-check validation), (3) run &
-  view matrix.
-- Backend: reuse `Multi-Model Compare` runner infra with a new "batch"
-  mode that iterates datasets.
-- Results view: table rows=datasets, columns=models, cells=confidence +
-  predicted label. Hover shows full probability breakdown + latency +
-  model size.
-- Download-results-as-CSV button (reuses existing export path).
+*(F2 moved to DONE — see T16 below.)*
 
 ---
 
@@ -85,6 +61,51 @@ wire `project_id` through everywhere.
 ## DONE — this round (July 2026)
 
 Ordered newest first. Every SHA is on the `master` branch.
+
+### T16. F2 Multi-Dataset Wizard (v1)
+**Status:** ✅ Done | **Shipped:** 2026-07-04
+3-step wizard that runs N saved ME-LAB endpoints against M CSV datasets
+and returns an aggregated matrix so the customer can pick the smallest
+model meeting their confidence bar. Both customer-facing decisions
+shipped verbatim: F2.1 schema strict (reject mismatched columns with a
+clear per-dataset diff), F2.2 cell shows modal label + mean confidence
+with per-class probability breakdown on hover.
+
+Internal architecture decisions locked at implementation time:
+- **Single-mode only** — mixing classification / regression / anomaly
+  in one run rejected.
+- **Anomaly supported** — cell shows label + score; no per-class probs.
+- **100k-row cap** per dataset (fail-fast, actionable message).
+- **Raw Mode only in v1** — windowed / feature-extracted models rejected
+  at Step 2 with a clear "pick a raw-mode model" message.
+- **Model size in bytes in CSV export, auto-scaled KB/MB in hover.**
+
+Zero-behavior refactor also shipped: `_run_model_inference` extracted
+out of `app_builder.py` into `ModelManager.predict_by_endpoint` in
+`melab_service.py`. Folder Watcher (T15) also migrated to the new
+canonical helper — no behavior change, single source of truth for
+endpoint-based inference.
+
+Endpoints:
+- `POST /api/wizard/validate-datasets` — multipart upload OR
+  `dataset_paths[]` referencing files under `datasets/`.
+- `POST /api/wizard/run`
+- `POST|GET /api/wizard/export?level=aggregated|per_row`
+- `DELETE /api/wizard/runs/<run_id>`
+
+Verified via docker-exec suite: predict_by_endpoint present on
+ModelManager; module imports clean; all 4 routes registered; 401 on
+unauth POST; aggregation logic returns real per-row latency from
+persisted-prediction files (both new dict format + legacy list format
+handled). Frontend needs manual browser QA (Step 1 mode-disable, Step 2
+"From Datasets" tab file browser, matrix cell hover-menu rendering).
+
+Coder-flagged bug **fixed inline before merge:** aggregated CSV export
+was writing `avg_latency_ms: 0.0` because latencies weren't persisted
+alongside predictions. Fix: persistence now writes
+`{preds, latency_ms}` dict; export path unpacks the tuple and passes
+real latency into `_aggregate_cell`. Old bare-list format kept working
+as a back-compat degradation to 0 latency.
 
 ### T15. F1 Folder Watcher + ML Prediction (v1)
 **Status:** ✅ Done | **Commits:** `0a35d50` `576da36` + File Browser | **Shipped:** 2026-07-04

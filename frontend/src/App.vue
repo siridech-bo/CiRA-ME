@@ -161,6 +161,14 @@
           :to="{ name: 'folder-watcher-list' }"
           rounded="lg"
         />
+
+        <v-list-item
+          prepend-icon="mdi-table-search"
+          title="Multi-Dataset Wizard"
+          value="wizard"
+          :to="{ name: 'wizard' }"
+          rounded="lg"
+        />
       </v-list>
 
       <template #append>

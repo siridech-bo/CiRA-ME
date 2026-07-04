@@ -87,6 +87,12 @@ const router = createRouter({
       meta: { requiresAuth: true }
     },
     {
+      path: '/wizard',
+      name: 'wizard',
+      component: () => import('@/views/MultiDatasetWizardView.vue'),
+      meta: { requiresAuth: true }
+    },
+    {
       path: '/folder-watcher/:id?',
       name: 'folder-watcher-edit',
       component: () => import('@/views/FolderWatcherEditView.vue'),
