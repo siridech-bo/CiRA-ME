@@ -21,51 +21,72 @@ Each item lists commit SHAs where relevant. `git show <sha>` for details.
 ## OPEN ITEMS
 
 ### F1. Folder Watcher + ML Prediction
-**Status:** ⏸ blocked on customer answers (see Open Questions below)
+**Status:** 📋 Ready to implement | **Effort:** ~1.5 days
 **Type:** feature | **Requested:** 2026-06-19 (June email, restated 2026-07-04)
 **Diagram:** `Feature_Watcher-ML-Prediction.png` (shared by customer)
 
-**Summary:** Backend daemon polls `/input` folder every 60s. For each file
-found, reads each row, runs it through a trained ML model, writes results
-to `/output` as CSV with columns `source_file, record_index, sensor_values,
-prediction, confidence, predicted_at`, then deletes the input file.
+**Summary:** Backend daemon polls a user-specified folder every 60s. For
+each file found, reads each row, runs it through a trained ML model,
+writes results to an output folder as CSV with columns
+`source_file, record_index, sensor_values, prediction, confidence,
+predicted_at`, then deletes the input file.
 
-**Agreed design:**
-- Implement as **Raw Mode classification** calling an existing ME-LAB
-  endpoint — each input row is one feature vector already. No new pipeline.
-- New sidebar entry **"Folder Watcher"** under SERVICES, peer of App Builder.
-- Watcher daemon lives inside the backend container. State persisted to a
-  new `folder_watchers` DB table so watchers survive container restarts.
-- Reuses `ModelManager.predict()` from `melab_service.py`. Reuses the label
-  decoding path already fixed for App Builder.
+**Decided design (all approved 2026-07-04 — v1 stays small; expand later):**
+
+| # | Decision | Rationale |
+|---|---|---|
+| F1.1 | **One model per watcher.** Customer creates a second watcher if they need two models on the same folder. | Single `endpoint_id` FK — simpler DB schema, simpler UI, easy to expand later. |
+| F1.2 | **Auto-detect headered vs headerless with a user override toggle.** Default: auto. Read first row, try to parse as floats — success → headerless, failure → headered. | Zero friction for the common case; escape hatch for weird files. |
+| F1.3 | **Container-side path only.** Customer types any path visible inside the backend container. SMB/NFS is a Docker-compose concern, not application code. | Matches App Builder input handling. |
+| F1.4 | **File-only output, no DB persistence.** Output CSV IS the audit trail. | Avoids retention / cleanup / quota design. Also matches the customer's flow diagram. |
+| F1.5 | **Per-user watchers.** Each user's watcher points at a subfolder under their private space. | Matches ME-LAB endpoints and App Builder apps. Respects existing quota model. |
+| F1.6 | **Raw Mode only, v1.** One row = one prediction. No windowing / buffering. | Matches the flow diagram. Time-series can come later if customer asks. |
+
+**Implementation plan (matches decisions above):**
+- Call an existing ME-LAB endpoint per row (reuse `ModelManager.predict()`
+  from `melab_service.py`), reuse the label decoding path already fixed
+  for App Builder.
+- New sidebar entry **"Folder Watcher"** under SERVICES (peer of App
+  Builder).
+- New `folder_watchers` DB table (id, user_id, name, input_folder,
+  output_folder, endpoint_id, status, last_run_at, error_count,
+  header_mode). Watchers survive container restarts.
 - New bind mount in both compose files: `./watcher-data:/app/watcher-data`.
-- **Effort:** ~1.5 days once open questions are answered.
-
-**Open questions (6):** in the Open Questions section at the bottom.
+- Backend daemon: single thread per watcher, 60s tick, poll-glob-process-delete.
+  Fail-safe on per-file errors — log, don't abort.
 
 ---
 
 ### F2. App Builder multi-dataset Wizard
-**Status:** 📋 Open
+**Status:** 📋 Ready to implement | **Effort:** 4-5 days
 **Type:** feature | **Requested:** 2026-07-02
 
-**Summary:** Wizard flow that runs an AI model across many datasets and
-returns per-dataset confidence, so the user can pick the smallest model
-that hits their confidence bar for edge deployment.
+**Summary:** Wizard flow that runs N models across M datasets and returns
+a matrix of per-cell confidence + latency + model size. Lets the customer
+pick the smallest model that hits their confidence bar for edge deployment.
 
-**Agreed design:** Full matrix — N models × M datasets. Results table has
-rows=datasets, columns=models, cells=confidence + latency estimate + model
-size. Reuses the existing Multi-Model Compare backend; only the results view
-is new.
+**Decided design (all approved 2026-07-04):**
 
-**Effort:** 4-5 days.
+| # | Decision | Rationale |
+|---|---|---|
+| F2.1 | **Reject datasets with mismatched column schemas.** All datasets in one Wizard run must have identical column names. Clear error, no silent alignment. | Auto-align silently drops columns → wrong predictions → customer loses trust. |
+| F2.2 | **Cell shows confidence + predicted label.** Full per-class probability breakdown on hover / click. | Cell stays scannable; detail available on demand. |
 
-**Open questions:** in the Open Questions section.
+**Implementation plan:**
+- Wizard UI: 3 steps — (1) pick models (existing multi-select), (2) pick
+  datasets (multi-file upload with schema-check validation), (3) run &
+  view matrix.
+- Backend: reuse `Multi-Model Compare` runner infra with a new "batch"
+  mode that iterates datasets.
+- Results view: table rows=datasets, columns=models, cells=confidence +
+  predicted label. Hover shows full probability breakdown + latency +
+  model size.
+- Download-results-as-CSV button (reuses existing export path).
 
 ---
 
 ### F4. End-to-end Project Status view
-**Status:** 📋 Open (large — ~6-7 days)
+**Status:** 📋 Ready to implement | **Effort:** ~6-7 days
 **Type:** feature | **Requested:** 2026-06-23
 
 **Summary:** A Projects sidebar entry showing pipeline stage progress
@@ -75,21 +96,26 @@ not just App Builder.
 **Gap surfaced:** the `projects` DB table exists but only `training_sessions`
 has a FK to it. Data/windowing/feature sessions live only in Pinia +
 backend memory — lost on refresh. Need to persist these stages to DB and
-wire project_id through everywhere.
+wire `project_id` through everywhere.
 
-**Design decisions already made:**
-- One project = one dataset (swap = clone the project).
-- User-editable + reorderable feature selection (July item, folded in here)
-  becomes a per-project "feature template" so the API contract is stable
-  across retrainings.
+**Decided design (all approved 2026-07-04):**
+
+| # | Decision | Rationale |
+|---|---|---|
+| F4.1 | **One aggregated ✅ deploy badge with hover-tooltip breakdown** (ME-LAB / App Builder / TI MCU / Jetson). | Row density: 4 badges × N projects is visual noise. Aggregate keeps it scannable. |
+| F4.2 | **Strict per-user visibility.** Admin sees all (same model as ME-LAB endpoints today). | Matches every other user-owned resource. Zero surprise. |
+| F4.3 | **One project = one dataset.** Dataset swap = clone the project. | Simpler DB schema. Already agreed in the June design. |
+
+**Also folded in:**
+- User-editable + reorderable feature selection (from July email)
+  becomes a per-project "feature template" so the API contract stays
+  stable across retrainings.
 - The "project folder" wording in the user manual (§3) refers to
   `datasets/` subfolders — different from this new Project concept.
-  Rename "project folder" → "dataset folder" in the manual to avoid clash.
-  UI is already neutrally called "Folder Management".
+  Rename "project folder" → "dataset folder" in the manual to avoid
+  clash. UI is already neutrally called "Folder Management".
 
 **Full plan:** [docs/PLAN_customer_feedback_2026-06.md](./PLAN_customer_feedback_2026-06.md)
-
-**Open questions:** in the Open Questions section.
 
 ---
 
@@ -284,32 +310,33 @@ flashing, FW3 ONNX Runtime Web (WASM) for browser inference.
 
 ---
 
-## OPEN QUESTIONS — waiting on customer
+## Design decisions log
 
-Grouped by feature. Answer these to unblock implementation.
+Design questions the team decided internally (rather than pushing back
+to the customer) — recorded here so the "why" survives context
+compression and next session doesn't relitigate.
 
-### For F1 (Folder Watcher)
-1. **One watcher = one model, or multi-model per watcher?** Affects DB
-   schema (one endpoint_id vs many).
-2. **Input files headered or headerless?** Default value of the toggle.
-3. **Network share or local folder?** If SMB, who handles the Windows
-   mount into Docker? Biggest deployment risk.
-4. **Persist predictions to DB (audit trail) or output file only?**
-5. **Per-user folders or one shared system folder?**
-6. **Time-series files (multi-row → 1 prediction with windowing) or Raw
-   Mode only (1 row → 1 prediction)?**
+### 2026-07-04 — F1 / F2 / F4 unblocked as a batch (11 decisions)
 
-### For F2 (Multi-dataset Wizard)
-7. **Datasets with different column schemas** — reject as error, or
-   attempt auto-alignment?
-8. **Cell contents** — just confidence, or also predicted label and
-   per-class probability breakdown?
+Rather than block on customer email, we made all 11 design choices
+internally as the "smallest v1 that ships useful, doesn't paint us into
+a corner". The full recommendations were reviewed and approved verbatim.
+Individual decisions are folded into each feature's OPEN ITEMS entry
+above under the **Decided design** table. Summary of the pattern:
 
-### For F4 (Project Status)
-9. **Deploy status** — 4 separate badges (ME-LAB, App Builder, TI MCU,
-   Jetson SSH) or one aggregated ✅?
-10. **Cross-user project visibility** — admin sees all, everyone sees
-    everyone's read-only, or strict per-user?
+- **F1 Folder Watcher (6 decisions):** single model per watcher, auto-
+  detected headered/headerless with user override, container-side path
+  only (no code for SMB/NFS), file-only output (no DB audit),
+  per-user watchers, Raw Mode only for v1.
+- **F2 Multi-dataset Wizard (2 decisions):** reject mismatched schemas
+  with clear error (no silent auto-align), cell shows confidence +
+  predicted label with per-class breakdown on hover.
+- **F4 Project Status view (3 decisions):** aggregated Deploy badge
+  with hover breakdown, strict per-user visibility (admin sees all),
+  one project = one dataset (swap → clone).
+
+The customer can override any of these later if they surface a real
+need — we haven't foreclosed any bigger version.
 
 ---
 
