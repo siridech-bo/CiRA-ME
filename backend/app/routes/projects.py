@@ -211,19 +211,37 @@ def hydrate_project(project_id):
     # Re-load into the same LRU-capped in-memory dict the ingest endpoints
     # populate. This gives the frontend a fresh session_id it can use as a
     # normal handle for windowing / features downstream.
+    #
+    # `format` in the DataSession row is what DataLoader recorded on ingest,
+    # not what the user picked in the picker. Multi-CSV selections come
+    # through as format='csv' with a DIRECTORY file_path (see
+    # load_csv_multiple: it records 'csv' + selection_dir, not 'csv_multi').
+    # So we dispatch on path-is-directory first, then on format.
     try:
+        import os
         from ..services.data_loader import DataLoader
         loader = DataLoader()
-        if fmt == 'csv':
-            loaded = loader.load_csv(file_path)
-        elif fmt == 'csv_multi':
-            # file_path is the multi-csv selection directory in this case
-            import os, glob as _g
+
+        if not os.path.exists(file_path):
+            return jsonify({
+                'error': f'Persisted file no longer exists: {file_path}'
+            }), 410
+
+        if os.path.isdir(file_path):
+            # Multi-CSV selection dir (T3 pattern). Glob for CSVs and
+            # reload as a batch.
+            import glob as _g
             csv_files = sorted(_g.glob(os.path.join(file_path, '*.csv')))
-            loaded = loader.load_csv_multiple(csv_files) if csv_files else None
-        elif fmt in ('ei_json', 'edge_impulse_json'):
+            if not csv_files:
+                return jsonify({
+                    'error': f'Multi-CSV directory contains no .csv files: {file_path}'
+                }), 410
+            loaded = loader.load_csv_multiple(csv_files)
+        elif fmt == 'csv':
+            loaded = loader.load_csv(file_path)
+        elif fmt in ('edge_impulse_json', 'ei_json'):
             loaded = loader.load_edge_impulse_json(file_path)
-        elif fmt in ('ei_cbor', 'edge_impulse_cbor'):
+        elif fmt in ('edge_impulse_cbor', 'ei_cbor'):
             loaded = loader.load_edge_impulse_cbor(file_path)
         elif fmt in ('cira_cbor', 'cira'):
             loaded = loader.load_cira_cbor(file_path)
