@@ -39,7 +39,11 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 60s
+      # First boot on a customer box can take 60-90s (SQLite init +
+      # migrations + torch import + model warm-up). Give the daemon
+      # 120s before it flips backend to unhealthy — otherwise the
+      # frontend depends_on wait times out and everything looks broken.
+      start_period: 120s
 
     deploy:
       resources:

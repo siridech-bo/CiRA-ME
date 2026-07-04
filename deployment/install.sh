@@ -204,7 +204,23 @@ docker images | grep -E "cirame|mosquitto" | head -10
 echo
 echo "Next steps:"
 if command -v nvidia-smi >/dev/null 2>&1; then
-    echo "  GPU detected — run: bash start.sh"
+    driver=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1)
+    driver_major=$(echo "$driver" | cut -d. -f1)
+    echo "  GPU detected (driver $driver) — run: bash start.sh"
+    # The stock backend tarball ships torch+cu128 which needs driver 550+.
+    # Warn upfront so the customer does not start it, hit a CUDA crash, and
+    # then try to debug backwards.
+    if [ -n "$driver_major" ] && [ "$driver_major" -lt 550 ] 2>/dev/null; then
+        echo "  WARNING: driver $driver is older than 550. The shipped backend"
+        echo "           (built for CUDA 12.8) will crash on GPU calls."
+        echo "           Options:"
+        echo "             (a) update NVIDIA driver to 550+ (best for GPU)"
+        echo "             (b) rebuild backend with cu117:"
+        echo "                 docker build --build-arg TORCH_VERSION=2.0.1 \\"
+        echo "                              --build-arg TORCH_CUDA=cu117 \\"
+        echo "                              -t cirame-backend:latest backend/"
+        echo "             (c) run in CPU-only mode: bash start-no-gpu.sh"
+    fi
 else
     echo "  No GPU detected — run: bash start-no-gpu.sh"
 fi

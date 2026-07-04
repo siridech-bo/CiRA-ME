@@ -35,6 +35,23 @@ if ! docker images | grep -q cirame-backend; then
     exit 1
 fi
 
+# GPU passthrough sanity check. start.sh is the GPU variant — if the
+# host has no nvidia runtime registered, compose up will fail with
+# "could not select device driver" after 2 minutes of confusing output.
+# Bail early with an actionable message pointing at start-no-gpu.sh.
+if ! docker info 2>/dev/null | grep -qE 'Runtimes:.* nvidia'; then
+    echo "ERROR: nvidia container runtime is not registered with Docker."
+    echo "       This script (start.sh) requires GPU support."
+    echo
+    echo "Fix (Ubuntu):"
+    echo "  sudo apt-get install -y nvidia-container-toolkit"
+    echo "  sudo nvidia-ctk runtime configure --runtime=docker"
+    echo "  sudo systemctl restart docker"
+    echo
+    echo "Or run in CPU-only mode instead: bash start-no-gpu.sh"
+    exit 1
+fi
+
 # Port collision check — probe every port the compose file will bind
 # on the host. Fail fast with a naming-the-port message instead of the
 # raw docker "Bind: Address already in use" pile.
