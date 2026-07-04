@@ -65,20 +65,49 @@ is new.
 ---
 
 ### F3. Normalization method choice
-**Status:** 📋 Open
+**Status:** 🔧 Partial (App Builder inference only, half-baked); main pipeline still hardcoded
 **Type:** feature | **Requested:** 2026-07-02
 
-**Summary:** Currently min-max normalization is hardcoded. Let the user
-pick min-max / z-score / robust / none at pipeline setup time.
+**Summary:** Currently min-max normalization is hardcoded at training time.
+Let the user pick min-max / z-score / robust / none at pipeline setup.
 
-**Non-obvious constraint:** the chosen method AND its fitted parameters
-(min/max, mean/std, median/IQR) must be persisted with the SavedModel and
-applied identically at every inference site — ME-LAB endpoint, App Builder
-runner, live MQTT, TI export. A silent mismatch produces garbage
-predictions. Audit whether the current min-max params are already
-end-to-end persisted before touching this.
+**What's already in the codebase (audited 2026-07-04):**
+- App Builder `transform.normalize` node UI **schema** offers three
+  methods: `minmax`, `zscore`, `robust` — [AppBuilderEditorView.vue:838](../frontend/src/views/AppBuilderEditorView.vue#L838).
+  Default: `zscore`.
+- App Builder pipeline runner `_apply_normalization` implements **minmax
+  and zscore only** — [app_builder.py:1179-1190](../backend/app/routes/app_builder.py#L1179).
+  `robust` option is a UI stub that silently falls through to zscore.
+- Main pipeline **training-time normalization** (Windowing stage) is
+  hardcoded min-max — [data_loader.py:1758-1772](../backend/app/services/data_loader.py#L1758).
+  `norm_params.method = 'min_max'` is what gets saved with every model.
+- Runtime override: when App Builder / ME-LAB inference detects
+  `_model_norm` (the training params), it uses those exclusively —
+  [app_builder.py:1152-1176](../backend/app/routes/app_builder.py#L1152). So even if
+  the user picks zscore at the App Builder Normalize node, a min-max
+  trained model would still receive min-max normalized data (correct
+  behaviour for consistency with training).
 
-**Effort:** 1-2 days if persistence layer is already there, ~2 if not.
+**What's needed to satisfy the customer request:**
+1. Add method choice at the Windowing UI (main pipeline). Options:
+   `min-max`, `z-score`, `robust`, `none`.
+2. Compute + persist the fitted parameters for whichever method is
+   chosen: `channel_min`/`channel_max`, OR `channel_mean`/`channel_std`,
+   OR `channel_median`/`channel_iqr`. Store the method name in
+   `norm_params.method`.
+3. Update `_apply_normalization` in app_builder.py and pipeline_replay
+   to actually implement `robust` (median + IQR) and `none` (identity).
+4. Ensure `_model_norm` override path handles all four methods.
+5. Verify TI / DL / Custom trainers respect the chosen method or fail
+   fast if incompatible.
+
+**Non-obvious constraint (still applies):** persistence MUST travel with
+the SavedModel and be applied identically at every inference site —
+ME-LAB endpoint, App Builder runner, live MQTT, TI export, pipeline
+replay. A silent mismatch produces garbage predictions.
+
+**Effort:** ~1.5-2 days (previous estimate was low; the audit revealed
+more places need touching).
 
 ---
 
@@ -245,7 +274,30 @@ Discovered during this round while reading code, then confirmed done.
 - **Line Chart node Target Column config** — `840fb91` (auto-fill),
   `c79adc2` (pipeline runner honors it)
 - **Multi-file selection at Data Source (Select All / Scan Dataset)** —
-  documented in USER_MANUAL §4.1; confirmed present in code
+  `7345f5e` "Multi-model classification timeline chart + Select All for
+  CSV files". Frontend has "Select All (N)" button
+  [DataSourceView.vue:100](../frontend/src/views/pipeline/DataSourceView.vue#L100)
+  and "Scan Dataset" for CBOR folders with training/testing subdirs
+  [DataSourceView.vue:167](../frontend/src/views/pipeline/DataSourceView.vue#L167).
+  Documented in USER_MANUAL §4.1. Customer's original request in the
+  2026-06 email said "อาจารย์แจ้งว่าได้ดำเนินการแล้ว" ("teacher says
+  already done") — confirmed.
+- **App Builder Normalize node zscore support** — part of the initial
+  App Builder implementation. Runner implements minmax + zscore; UI
+  schema also exposes `robust` but the runner treats it as zscore.
+  This partial coverage is why F3 is 🔧 partial not ✅ done.
+
+## Known unfinished / leftover (not customer requests but tracked)
+
+- **TCN deep learning** — future work per memory. Smallest MCU DL
+  architecture, 5-15 KB INT8. Not started. Large effort.
+- **Web Serial API for MCU flashing** — future work per memory. Flash
+  from browser, no CCS needed. Not started. Large effort.
+- **ONNX Runtime Web (WASM)** — future work per memory. Edge inference
+  in browser. Not started. Medium effort.
+- **`admin.py:451,458` stale `./shared` UI hint** — QA nit from June
+  session, still not fixed. Cosmetic — misleads admins in Storage
+  panel about where data lives on disk. Trivial one-line fix.
 
 ---
 
