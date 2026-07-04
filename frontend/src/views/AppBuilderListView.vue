@@ -397,6 +397,55 @@ const TEMPLATES = [
       { id: 'n6', type: 'output.table', config: { max_rows: 100, show_confidence: true } },
     ],
   },
+  // ── TimesNet / Deep Learning Templates ──
+  // DL models operate on raw windowed signals (no Feature Extract).
+  // These templates omit transform.feature_extract by design so switching
+  // to a TimesNet endpoint doesn't leave a redundant node on the canvas.
+  {
+    id: 'timesnet_classifier',
+    name: 'TimesNet Classifier (CSV)',
+    description: 'CSV → Normalize → Window → TimesNet → Table',
+    icon: 'mdi-brain',
+    color: '#0ea5e9',
+    nodeLabels: ['CSV', 'Normalize', 'Window', 'Model', 'Table'],
+    requiresDl: true,
+    nodes: [
+      { id: 'n1', type: 'input.csv_upload', config: { timestamp_col: 'timestamp', value_cols: 'value' } },
+      { id: 'n2', type: 'transform.normalize', config: { method: 'minmax' } },
+      { id: 'n3', type: 'transform.window', config: { window_size: 128, step: 64 } },
+      { id: 'n6', type: 'output.table', config: { max_rows: 100, show_confidence: true } },
+    ],
+  },
+  {
+    id: 'timesnet_anomaly',
+    name: 'TimesNet Anomaly Detector (CSV)',
+    description: 'CSV → Normalize → Window → TimesNet → Alert',
+    icon: 'mdi-brain',
+    color: '#0ea5e9',
+    nodeLabels: ['CSV', 'Normalize', 'Window', 'Model', 'Alert'],
+    requiresDl: true,
+    nodes: [
+      { id: 'n1', type: 'input.csv_upload', config: { timestamp_col: 'timestamp', value_cols: 'value' } },
+      { id: 'n2', type: 'transform.normalize', config: { method: 'minmax' } },
+      { id: 'n3', type: 'transform.window', config: { window_size: 128, step: 64 } },
+      { id: 'n6', type: 'output.alert_badge', config: { label_normal: 'Normal', label_anomaly: 'Anomaly Detected', webhook_url: '' } },
+    ],
+  },
+  {
+    id: 'timesnet_live_classifier',
+    name: 'TimesNet Live Classifier (MQTT)',
+    description: 'MQTT → Normalize → Window → TimesNet → Table',
+    icon: 'mdi-brain',
+    color: '#0ea5e9',
+    nodeLabels: ['MQTT', 'Normalize', 'Window', 'Model', 'Table'],
+    requiresDl: true,
+    nodes: [
+      { id: 'n1', type: 'input.live_stream', config: { broker_url: 'ws://localhost:9001/mqtt', topic: 'sensors/machine1/#', channels: '' } },
+      { id: 'n2', type: 'transform.normalize', config: { method: 'minmax' } },
+      { id: 'n3', type: 'transform.window', config: { window_size: 128, step: 64 } },
+      { id: 'n6', type: 'output.table', config: { max_rows: 100, show_confidence: true } },
+    ],
+  },
   // ── MQTT Live Stream Templates ──
   {
     id: 'live_regression',

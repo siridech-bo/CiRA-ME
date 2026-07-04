@@ -238,6 +238,9 @@
                   hide-details
                   style="font-size: 11px"
                 />
+                <div v-if="hasFeatureExtractNode" class="text-caption mt-1" style="font-size: 10px; color: rgba(255,255,255,0.6)">
+                  DL models (TimesNet) hidden while Feature Extract is in the pipeline. Start from a TimesNet template for raw-signal models.
+                </div>
               </div>
               <div class="config-model-row">
                 <span class="config-model-key">Mode</span>
@@ -1117,9 +1120,27 @@ function updateConfig(nodeId, key, val) {
 }
 
 // Available endpoints for switching (same mode as current model node)
+const hasFeatureExtractNode = computed(() =>
+  nodes.value.some(n => n.type === 'transform.feature_extract')
+)
+
 const availableEndpoints = computed(() => {
+  const currentEndpointId = selectedCap.value?.endpoint_id
+  const feHere = hasFeatureExtractNode.value
   return melabEndpoints.value
-    .filter(e => e.status === 'active')
+    .filter(e => {
+      if (e.status !== 'active') return false
+      // Never filter out the currently-selected endpoint — otherwise the
+      // picker would render an "invalid" state on a legally-configured node.
+      if (String(e.id) === String(currentEndpointId)) return true
+      // Hide DL endpoints when a Feature Extract node exists upstream.
+      // DL models operate on raw windowed data and don't consume features,
+      // so pairing them with FE is what caused the confusing "Required
+      // Features 92" state. TimesNet users should start from a
+      // TimesNet template (no FE node) instead.
+      if (feHere && e.is_dl) return false
+      return true
+    })
     .map(e => ({
       id: e.id,
       label: `${e.name} (${e.algorithm})`,
