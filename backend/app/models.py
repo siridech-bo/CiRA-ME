@@ -193,6 +193,190 @@ def init_db(db_path: str):
         except Exception:
             pass
 
+        # ── F4: Project Status feature — pipeline-stage persistence tables ─────
+        # Data / Windowing / Features sessions are persisted on Apply boundaries
+        # (Q4). One project = one dataset (F4.3); dataset swap = clone.
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS data_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id INTEGER NOT NULL,
+                file_path TEXT NOT NULL,
+                format TEXT NOT NULL,
+                session_id TEXT,
+                sensor_columns TEXT,
+                label_column TEXT,
+                labels TEXT,
+                total_rows INTEGER,
+                created_at TEXT NOT NULL,
+                updated_at TEXT,
+                FOREIGN KEY (project_id) REFERENCES projects(id)
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS windowed_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id INTEGER NOT NULL,
+                data_session_id INTEGER NOT NULL,
+                config TEXT,
+                num_windows INTEGER,
+                window_shape TEXT,
+                normalization TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (project_id) REFERENCES projects(id),
+                FOREIGN KEY (data_session_id) REFERENCES data_sessions(id)
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS feature_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id INTEGER NOT NULL,
+                windowed_session_id INTEGER NOT NULL,
+                method TEXT,
+                feature_names TEXT,
+                num_features INTEGER,
+                selection TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (project_id) REFERENCES projects(id),
+                FOREIGN KEY (windowed_session_id) REFERENCES windowed_sessions(id)
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS feature_templates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id INTEGER NOT NULL UNIQUE,
+                ordered_feature_names TEXT NOT NULL,
+                version INTEGER NOT NULL DEFAULT 1,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (project_id) REFERENCES projects(id)
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS deploy_records (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id INTEGER NOT NULL,
+                saved_model_id INTEGER,
+                target TEXT NOT NULL,
+                ref_id TEXT,
+                status TEXT NOT NULL DEFAULT 'active',
+                metadata TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (project_id) REFERENCES projects(id)
+            )
+        ''')
+
+        # F4 ALTERs — cross-table project linkage (all migration-safe)
+        try:
+            cursor.execute('ALTER TABLE saved_models ADD COLUMN project_id INTEGER REFERENCES projects(id)')
+        except Exception:
+            pass
+        try:
+            cursor.execute('ALTER TABLE melab_endpoints ADD COLUMN project_id INTEGER REFERENCES projects(id)')
+        except Exception:
+            pass
+        try:
+            cursor.execute('ALTER TABLE app_builder_apps ADD COLUMN project_id INTEGER REFERENCES projects(id)')
+        except Exception:
+            pass
+        try:
+            cursor.execute('ALTER TABLE folder_watchers ADD COLUMN project_id INTEGER REFERENCES projects(id)')
+        except Exception:
+            pass
+        try:
+            cursor.execute('ALTER TABLE projects ADD COLUMN current_stage TEXT')
+        except Exception:
+            pass
+        # Q3: Legacy project's mode column must permit NULL to render as "mixed".
+        # The original schema declared `mode NOT NULL DEFAULT 'anomaly'`, which
+        # would reject our Legacy row. SQLite can't drop NOT NULL in-place, so
+        # if the constraint is present we just insert 'mixed' as a mode string
+        # (chip logic still renders it distinctly).
+
+        # ── F4: Legacy adoption migration (Q3, Watch-out 3, 4) ────────────────
+        # Create one Legacy project per user who owns orphan resources, then
+        # adopt their orphans. Idempotent: skips users that already have Legacy.
+        try:
+            orphan_users = set()
+            for tbl in ('saved_models', 'melab_endpoints', 'app_builder_apps', 'training_sessions'):
+                try:
+                    if tbl == 'training_sessions':
+                        # training_sessions has project_id NOT NULL — no orphans exist here
+                        # by construction. Adopt only rows whose project row has been deleted.
+                        cursor.execute(
+                            f'''SELECT DISTINCT p.user_id
+                                FROM training_sessions t
+                                LEFT JOIN projects p ON t.project_id = p.id
+                                WHERE p.id IS NULL AND p.user_id IS NOT NULL'''
+                        )
+                    else:
+                        cursor.execute(
+                            f'SELECT DISTINCT user_id FROM {tbl} '
+                            f'WHERE project_id IS NULL AND user_id IS NOT NULL'
+                        )
+                    for row in cursor.fetchall():
+                        if row[0] is not None:
+                            orphan_users.add(row[0])
+                except Exception:
+                    # Table might not exist yet in super-fresh setups
+                    pass
+
+            for uid in orphan_users:
+                cursor.execute(
+                    "SELECT id FROM projects WHERE name = 'Legacy' AND user_id = ?",
+                    (uid,)
+                )
+                existing = cursor.fetchone()
+                if existing:
+                    legacy_id = existing[0]
+                else:
+                    # `mode` column is NOT NULL from original schema; store 'mixed'
+                    # sentinel so the UI can render as "mixed" (Q3). The plan
+                    # says `mode = NULL` renders as mixed, but the NOT NULL
+                    # constraint means we can't. Use 'mixed' string instead.
+                    cursor.execute(
+                        '''INSERT INTO projects (name, description, mode, user_id, created_at)
+                           VALUES (?, ?, ?, ?, ?)''',
+                        (
+                            'Legacy',
+                            'Auto-created project holding pre-F4 resources',
+                            'mixed',
+                            uid,
+                            datetime.utcnow().isoformat()
+                        )
+                    )
+                    legacy_id = cursor.lastrowid
+
+                # Adopt orphans (skip folder_watchers per Q5)
+                for tbl in ('saved_models', 'melab_endpoints', 'app_builder_apps'):
+                    try:
+                        cursor.execute(
+                            f'UPDATE {tbl} SET project_id = ? '
+                            f'WHERE user_id = ? AND project_id IS NULL',
+                            (legacy_id, uid)
+                        )
+                    except Exception:
+                        pass
+                # training_sessions has project_id NOT NULL — re-parent rows
+                # whose project row has been deleted for this user
+                try:
+                    cursor.execute(
+                        '''UPDATE training_sessions
+                           SET project_id = ?
+                           WHERE project_id IN (
+                             SELECT t.project_id FROM training_sessions t
+                             LEFT JOIN projects p ON t.project_id = p.id
+                             WHERE p.id IS NULL
+                           ) AND EXISTS (
+                             SELECT 1 FROM saved_models sm WHERE sm.training_session_id = training_sessions.id AND sm.user_id = ?
+                           )''',
+                        (legacy_id, uid)
+                    )
+                except Exception:
+                    pass
+        except Exception:
+            # Migration must never break app startup
+            import logging
+            logging.getLogger(__name__).exception('F4 Legacy adoption migration failed')
+
         # Create default admin user if not exists
         cursor.execute('SELECT id FROM users WHERE username = ?', ('admin',))
         if not cursor.fetchone():
@@ -368,7 +552,7 @@ class Project:
         import json
         with get_db() as conn:
             cursor = conn.cursor()
-            allowed_fields = ['name', 'description', 'mode', 'config']
+            allowed_fields = ['name', 'description', 'mode', 'config', 'current_stage']
             updates = {}
 
             for k, v in kwargs.items():
@@ -387,6 +571,409 @@ class Project:
                     (*updates.values(), project_id)
                 )
                 conn.commit()
+
+    # ── F4 additions ──────────────────────────────────────────────────────
+    @staticmethod
+    def touch(project_id: int, stage: str):
+        """Update current_stage + updated_at. Q2: latest-apply wins."""
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'UPDATE projects SET current_stage = ?, updated_at = ? WHERE id = ?',
+                (stage, datetime.utcnow().isoformat(), project_id)
+            )
+            conn.commit()
+
+    @staticmethod
+    def delete(project_id: int):
+        """Explicit cascade per Watch-out 1 (FKs are off in SQLite).
+
+        Deletes child stage rows; DETACHES saved_models / melab_endpoints /
+        app_builder_apps / folder_watchers by setting project_id = NULL.
+        """
+        with get_db() as conn:
+            cursor = conn.cursor()
+            for tbl in ('deploy_records', 'feature_sessions',
+                        'windowed_sessions', 'data_sessions',
+                        'feature_templates'):
+                try:
+                    cursor.execute(f'DELETE FROM {tbl} WHERE project_id = ?', (project_id,))
+                except Exception:
+                    pass
+            # training_sessions is NOT NULL — hard-delete rather than orphan
+            try:
+                cursor.execute('DELETE FROM training_sessions WHERE project_id = ?', (project_id,))
+            except Exception:
+                pass
+            # Detach external refs (saved_models, endpoints, apps, watchers)
+            for tbl in ('saved_models', 'melab_endpoints',
+                        'app_builder_apps', 'folder_watchers'):
+                try:
+                    cursor.execute(f'UPDATE {tbl} SET project_id = NULL WHERE project_id = ?', (project_id,))
+                except Exception:
+                    pass
+            cursor.execute('DELETE FROM projects WHERE id = ?', (project_id,))
+            conn.commit()
+
+    @staticmethod
+    def get_all_with_status(user_id: int = None) -> list:
+        """Return per-project rows enriched with stage summaries and deploy
+        breakdown. user_id=None means admin view (see all projects).
+        """
+        import json
+        with get_db() as conn:
+            cursor = conn.cursor()
+            if user_id is None:
+                cursor.execute(
+                    '''SELECT p.*, u.username AS owner_username
+                       FROM projects p
+                       LEFT JOIN users u ON p.user_id = u.id
+                       ORDER BY COALESCE(p.updated_at, p.created_at) DESC'''
+                )
+            else:
+                cursor.execute(
+                    '''SELECT p.*, u.username AS owner_username
+                       FROM projects p
+                       LEFT JOIN users u ON p.user_id = u.id
+                       WHERE p.user_id = ?
+                       ORDER BY COALESCE(p.updated_at, p.created_at) DESC''',
+                    (user_id,)
+                )
+            base_rows = cursor.fetchall()
+            projects = []
+            for row in base_rows:
+                proj = dict(row)
+                pid = proj['id']
+                c2 = conn.cursor()
+                # Per-stage rows
+                data_row = c2.execute(
+                    'SELECT * FROM data_sessions WHERE project_id = ? ORDER BY id DESC LIMIT 1', (pid,)
+                ).fetchone()
+                win_row = c2.execute(
+                    'SELECT * FROM windowed_sessions WHERE project_id = ? ORDER BY id DESC LIMIT 1', (pid,)
+                ).fetchone()
+                feat_row = c2.execute(
+                    'SELECT * FROM feature_sessions WHERE project_id = ? ORDER BY id DESC LIMIT 1', (pid,)
+                ).fetchone()
+                # Trained models: saved_models attached to project
+                sm_row = c2.execute(
+                    '''SELECT id, name, algorithm, metrics FROM saved_models
+                       WHERE project_id = ? ORDER BY created_at DESC LIMIT 1''', (pid,)
+                ).fetchone()
+                sm_count = c2.execute(
+                    'SELECT COUNT(*) FROM saved_models WHERE project_id = ?', (pid,)
+                ).fetchone()[0]
+
+                # Deploy breakdown
+                melab_rows = c2.execute(
+                    '''SELECT id, name FROM melab_endpoints
+                       WHERE project_id = ? AND status = 'active' ''', (pid,)
+                ).fetchall()
+                app_rows = c2.execute(
+                    '''SELECT id, name FROM app_builder_apps
+                       WHERE project_id = ? AND status = 'published' ''', (pid,)
+                ).fetchall()
+                ti_rows = c2.execute(
+                    '''SELECT id, ref_id, metadata FROM deploy_records
+                       WHERE project_id = ? AND target = 'ti_mcu' AND status = 'active' ''', (pid,)
+                ).fetchall()
+                jet_rows = c2.execute(
+                    '''SELECT id, ref_id, metadata FROM deploy_records
+                       WHERE project_id = ? AND target = 'jetson' AND status = 'active' ''', (pid,)
+                ).fetchall()
+
+                def _stage(present, summary):
+                    return {'status': 'complete' if present else 'not_started',
+                            'summary': summary if present else None}
+
+                stages = {
+                    'data': _stage(
+                        data_row is not None,
+                        f"{dict(data_row).get('format') if data_row else ''} · {dict(data_row).get('total_rows') if data_row else ''} rows"
+                            if data_row else None
+                    ),
+                    'windowing': _stage(
+                        win_row is not None,
+                        f"{dict(win_row).get('num_windows') if win_row else ''} windows"
+                            if win_row else None
+                    ),
+                    'features': _stage(
+                        feat_row is not None,
+                        f"{dict(feat_row).get('num_features') if feat_row else ''} features"
+                            if feat_row else None
+                    ),
+                    'training': _stage(
+                        sm_row is not None,
+                        f"{sm_count} model{'s' if sm_count != 1 else ''} saved"
+                    ),
+                }
+                if data_row:
+                    stages['data']['id'] = dict(data_row)['id']
+                if win_row:
+                    stages['windowing']['id'] = dict(win_row)['id']
+                if feat_row:
+                    stages['features']['id'] = dict(feat_row)['id']
+
+                deploy_targets = [
+                    ('melab', melab_rows),
+                    ('app_builder', app_rows),
+                    ('ti_mcu', ti_rows),
+                    ('jetson', jet_rows),
+                ]
+                total_deploys = sum(len(rows) for _, rows in deploy_targets)
+                targets_with_any = sum(1 for _, rows in deploy_targets if len(rows) > 0)
+                if total_deploys == 0:
+                    deploy_status = 'not_started'
+                elif targets_with_any >= 3:
+                    deploy_status = 'complete'
+                else:
+                    deploy_status = 'in_progress'
+
+                def _items(rows):
+                    result = []
+                    for r in rows:
+                        d = dict(r)
+                        result.append({
+                            'id': d.get('id') or d.get('ref_id'),
+                            'name': d.get('name') or d.get('ref_id') or f"#{d.get('id')}",
+                        })
+                    return result
+
+                deploy_breakdown = {
+                    'melab':       {'count': len(melab_rows), 'items': _items(melab_rows)},
+                    'app_builder': {'count': len(app_rows),   'items': _items(app_rows)},
+                    'ti_mcu':      {'count': len(ti_rows),    'items': _items(ti_rows)},
+                    'jetson':      {'count': len(jet_rows),   'items': _items(jet_rows)},
+                }
+
+                stages['deploy'] = {'status': deploy_status,
+                                    'summary': f"{total_deploys} target{'s' if total_deploys != 1 else ''}" if total_deploys else None}
+
+                # Best metric — pick first available from newest saved_model
+                best_metric = None
+                if sm_row:
+                    m = dict(sm_row).get('metrics')
+                    if isinstance(m, str):
+                        try: m = json.loads(m)
+                        except Exception: m = {}
+                    m = m or {}
+                    for key in ('f1', 'F1', 'accuracy', 'Accuracy', 'auc_roc', 'AUROC',
+                                'r2', 'R2', 'mae', 'MAE'):
+                        if key in m and isinstance(m[key], (int, float)):
+                            best_metric = {'name': key, 'value': m[key]}
+                            break
+
+                proj['stages'] = stages
+                proj['deploy_breakdown'] = deploy_breakdown
+                proj['best_metric'] = best_metric
+                if proj.get('config'):
+                    try:
+                        proj['config'] = json.loads(proj['config']) if isinstance(proj['config'], str) else proj['config']
+                    except Exception:
+                        pass
+                projects.append(proj)
+            return projects
+
+
+class DataSession:
+    """Persisted data session (Q4: created on Windowing apply, not ingest)."""
+
+    @staticmethod
+    def create(project_id: int, file_path: str, format: str, session_id: str = None,
+               sensor_columns=None, label_column=None, labels=None,
+               total_rows=None) -> int:
+        import json
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''INSERT INTO data_sessions
+                   (project_id, file_path, format, session_id,
+                    sensor_columns, label_column, labels, total_rows, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                (project_id, file_path, format, session_id,
+                 json.dumps(sensor_columns) if sensor_columns else None,
+                 label_column,
+                 json.dumps(labels) if labels else None,
+                 total_rows,
+                 datetime.utcnow().isoformat())
+            )
+            conn.commit()
+            return cursor.lastrowid
+
+    @staticmethod
+    def get_by_project(project_id: int) -> list:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT * FROM data_sessions WHERE project_id = ? ORDER BY id DESC',
+                (project_id,)
+            )
+            return [dict(r) for r in cursor.fetchall()]
+
+    @staticmethod
+    def get_by_id(id: int) -> dict:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM data_sessions WHERE id = ?', (id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+
+class WindowedSession:
+    @staticmethod
+    def create(project_id: int, data_session_id: int, config: dict = None,
+               num_windows: int = None, window_shape=None, normalization=None) -> int:
+        import json
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''INSERT INTO windowed_sessions
+                   (project_id, data_session_id, config, num_windows,
+                    window_shape, normalization, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)''',
+                (project_id, data_session_id,
+                 json.dumps(config) if config else None,
+                 num_windows,
+                 json.dumps(window_shape) if window_shape else None,
+                 json.dumps(normalization) if normalization else None,
+                 datetime.utcnow().isoformat())
+            )
+            conn.commit()
+            return cursor.lastrowid
+
+    @staticmethod
+    def get_by_project(project_id: int) -> list:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT * FROM windowed_sessions WHERE project_id = ? ORDER BY id DESC',
+                (project_id,)
+            )
+            return [dict(r) for r in cursor.fetchall()]
+
+
+class FeatureSession:
+    @staticmethod
+    def create(project_id: int, windowed_session_id: int, method: str = None,
+               feature_names=None, num_features: int = None,
+               selection=None) -> int:
+        import json
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''INSERT INTO feature_sessions
+                   (project_id, windowed_session_id, method, feature_names,
+                    num_features, selection, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)''',
+                (project_id, windowed_session_id, method,
+                 json.dumps(feature_names) if feature_names else None,
+                 num_features,
+                 json.dumps(selection) if selection else None,
+                 datetime.utcnow().isoformat())
+            )
+            conn.commit()
+            return cursor.lastrowid
+
+    @staticmethod
+    def get_by_project(project_id: int) -> list:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT * FROM feature_sessions WHERE project_id = ? ORDER BY id DESC',
+                (project_id,)
+            )
+            return [dict(r) for r in cursor.fetchall()]
+
+
+class FeatureTemplate:
+    """Per-project ordered feature list — stabilizes the ME-LAB /
+    App Builder payload contract across retrainings.
+    """
+    @staticmethod
+    def get(project_id: int) -> dict:
+        import json
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM feature_templates WHERE project_id = ?', (project_id,))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            d = dict(row)
+            if d.get('ordered_feature_names'):
+                try:
+                    d['ordered_feature_names'] = json.loads(d['ordered_feature_names'])
+                except Exception:
+                    d['ordered_feature_names'] = []
+            return d
+
+    @staticmethod
+    def upsert(project_id: int, ordered_feature_names: list) -> dict:
+        """Insert or update. Bumps version on update."""
+        import json
+        now = datetime.utcnow().isoformat()
+        with get_db() as conn:
+            cursor = conn.cursor()
+            existing = cursor.execute(
+                'SELECT id, version FROM feature_templates WHERE project_id = ?',
+                (project_id,)
+            ).fetchone()
+            if existing:
+                new_version = int(existing['version']) + 1
+                cursor.execute(
+                    '''UPDATE feature_templates
+                       SET ordered_feature_names = ?, version = ?, updated_at = ?
+                       WHERE project_id = ?''',
+                    (json.dumps(ordered_feature_names), new_version, now, project_id)
+                )
+            else:
+                cursor.execute(
+                    '''INSERT INTO feature_templates
+                       (project_id, ordered_feature_names, version, updated_at)
+                       VALUES (?, ?, 1, ?)''',
+                    (project_id, json.dumps(ordered_feature_names), now)
+                )
+            conn.commit()
+        return FeatureTemplate.get(project_id)
+
+
+class DeployRecord:
+    """Rows for TI MCU / Jetson deploy targets. ME-LAB and App Builder
+    counts are still read from their native tables.
+    """
+    @staticmethod
+    def create(project_id: int, target: str, saved_model_id: int = None,
+               ref_id: str = None, metadata: dict = None,
+               status: str = 'active') -> int:
+        import json
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''INSERT INTO deploy_records
+                   (project_id, saved_model_id, target, ref_id, status,
+                    metadata, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)''',
+                (project_id, saved_model_id, target, ref_id, status,
+                 json.dumps(metadata) if metadata else None,
+                 datetime.utcnow().isoformat())
+            )
+            conn.commit()
+            return cursor.lastrowid
+
+    @staticmethod
+    def get_by_project(project_id: int, target: str = None) -> list:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            if target:
+                cursor.execute(
+                    'SELECT * FROM deploy_records WHERE project_id = ? AND target = ? ORDER BY id DESC',
+                    (project_id, target)
+                )
+            else:
+                cursor.execute(
+                    'SELECT * FROM deploy_records WHERE project_id = ? ORDER BY id DESC',
+                    (project_id,)
+                )
+            return [dict(r) for r in cursor.fetchall()]
 
 
 class TrainingSession:

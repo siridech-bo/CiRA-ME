@@ -207,6 +207,27 @@ def deploy_model():
             saved_model_session=saved_model_session,
             pipeline_config=pipeline_config
         )
+        # F4: record a jetson deploy_records row on successful SSH deploy
+        try:
+            from ..models import DeployRecord as _DeployRecord, Project as _Project
+            if saved_model_id:
+                _saved = saved_model
+            else:
+                _saved = None
+            _pid = _saved.get('project_id') if _saved else None
+            if _pid and (result.get('status') in ('completed', 'success', None) or result.get('status') != 'failed'):
+                _DeployRecord.create(
+                    project_id=_pid,
+                    target='jetson',
+                    saved_model_id=int(saved_model_id) if saved_model_id else None,
+                    ref_id=ssh_config.get('host'),
+                    metadata={'target_type': target_type,
+                              'export_format': export_format,
+                              'host': ssh_config.get('host')},
+                )
+                _Project.touch(_pid, 'deploy')
+        except Exception:
+            pass
         return jsonify(result)
     except Exception as e:
         return jsonify({'error': str(e)}), 400
@@ -271,10 +292,27 @@ def generate_package(model_id):
     Returns a zip file containing model, inference script, pipeline config, and requirements.
     """
     from flask import send_file
+    from ..models import DeployRecord as _DeployRecord, Project as _Project
 
     saved = SavedModel.get_by_id(model_id)
     if not saved:
         return jsonify({'error': 'Model not found'}), 404
+
+    # F4: record a ti_mcu deploy row (this endpoint bundles a package that's
+    # typically used for TI MCU/CCS deployment). Watch-out 6: wrap in try/except.
+    try:
+        _pid = saved.get('project_id')
+        if _pid:
+            _DeployRecord.create(
+                project_id=_pid,
+                target='ti_mcu',
+                saved_model_id=model_id,
+                ref_id=f"package_{saved.get('algorithm', 'model')}",
+                metadata={'source': '/api/deployment/package'},
+            )
+            _Project.touch(_pid, 'deploy')
+    except Exception:
+        pass
 
     # dict.get(key, default) returns None when the key exists but the value is
     # None (e.g. TI NN saved models with pipeline_config=null in the DB).
@@ -341,6 +379,23 @@ def export_cira_claw_package(model_id: int):
     """
     from flask import send_file
     from ..services.cira_claw_exporter import CiraCLAWExporter
+    from ..models import DeployRecord as _DeployRecord, Project as _Project
+
+    # F4: record ti_mcu deploy_records row (CCS is TI-family per plan)
+    try:
+        _saved = SavedModel.get_by_id(model_id)
+        _pid = _saved.get('project_id') if _saved else None
+        if _pid:
+            _DeployRecord.create(
+                project_id=_pid,
+                target='ti_mcu',
+                saved_model_id=model_id,
+                ref_id='cira_claw',
+                metadata={'source': '/api/deployment/cira-claw-package'},
+            )
+            _Project.touch(_pid, 'deploy')
+    except Exception:
+        pass
 
     try:
         exporter = CiraCLAWExporter()

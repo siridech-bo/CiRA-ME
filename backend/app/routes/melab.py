@@ -137,6 +137,22 @@ def create_endpoint():
         description=data.get('description', ''),
     )
 
+    # F4: link endpoint to project (inherited from saved_model's project)
+    try:
+        from ..models import get_db as _get_db, Project as _Project
+        pid = saved.get('project_id')
+        if pid:
+            with _get_db() as _c:
+                _cur = _c.cursor()
+                _cur.execute(
+                    'UPDATE melab_endpoints SET project_id = ? WHERE id = ?',
+                    (pid, endpoint_id)
+                )
+                _c.commit()
+            _Project.touch(pid, 'deploy')
+    except Exception:
+        pass
+
     return jsonify({
         'endpoint_id': endpoint_id,
         'name': name,

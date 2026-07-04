@@ -85,6 +85,14 @@
           rounded="lg"
         />
 
+        <v-list-item
+          prepend-icon="mdi-folder-multiple-outline"
+          title="Projects"
+          value="projects"
+          :to="{ name: 'projects-list' }"
+          rounded="lg"
+        />
+
         <v-list-subheader v-if="!rail">PIPELINE</v-list-subheader>
 
         <v-list-item

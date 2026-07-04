@@ -9,6 +9,7 @@ from flask import Blueprint, request, jsonify, current_app, send_file
 from werkzeug.utils import secure_filename
 from ..auth import login_required, validate_path, get_user_folders, _is_path_within
 from ..services.data_loader import DataLoader
+from ..models import Project, DataSession, WindowedSession
 
 data_sources_bp = Blueprint('data_sources', __name__)
 
@@ -703,7 +704,11 @@ def load_full_dataset():
 @data_sources_bp.route('/windowing', methods=['POST'])
 @login_required
 def apply_windowing():
-    """Apply windowing to loaded data."""
+    """Apply windowing to loaded data.
+
+    F4 Q4: Persist data_sessions + windowed_sessions on this apply boundary
+    if a project_id was provided. Latest-apply wins for current_stage.
+    """
     data = request.get_json()
 
     if not data:
@@ -720,6 +725,7 @@ def apply_windowing():
     no_windowing = data.get('no_windowing', False)
     # F3: user-selectable normalization. Default 'min_max' preserves prior behavior.
     normalization_method = data.get('normalization_method', 'min_max')
+    project_id = data.get('project_id')
 
     if not session_id:
         return jsonify({'error': 'Session ID required'}), 400
@@ -738,6 +744,51 @@ def apply_windowing():
             no_windowing=no_windowing,
             normalization_method=normalization_method
         )
+        # F4: persist DataSession + WindowedSession rows on Apply (Q4)
+        if project_id:
+            try:
+                pid = int(project_id)
+                proj = Project.get_by_id(pid)
+                if proj and proj.get('user_id') == request.current_user['id']:
+                    # Load original data session to snapshot format/rows
+                    src = loader._get_session(session_id) or {}
+                    src_meta = (src.get('metadata') or {})
+                    ds_id = DataSession.create(
+                        project_id=pid,
+                        file_path=src_meta.get('file_path', ''),
+                        format=src_meta.get('format', 'unknown'),
+                        session_id=session_id,
+                        sensor_columns=src_meta.get('sensor_columns'),
+                        label_column=src_meta.get('label_column'),
+                        labels=src_meta.get('labels'),
+                        total_rows=src_meta.get('total_rows'),
+                    )
+                    win_meta = result.get('metadata') or {}
+                    WindowedSession.create(
+                        project_id=pid,
+                        data_session_id=ds_id,
+                        config={
+                            'window_size': window_size,
+                            'stride': stride,
+                            'label_method': label_method,
+                            'test_ratio': test_ratio,
+                            'split_strategy': split_strategy,
+                            'no_windowing': no_windowing,
+                            'normalization_method': normalization_method,
+                            'target_column': target_column,
+                            'selected_columns': selected_columns,
+                        },
+                        num_windows=result.get('num_windows'),
+                        window_shape=result.get('window_shape'),
+                        normalization=win_meta.get('normalization'),
+                    )
+                    Project.touch(pid, 'windowing')
+            except Exception as e:
+                # Don't let persistence break the windowing response
+                import logging
+                logging.getLogger(__name__).warning(
+                    f"[F4] Persisting windowing state failed: {e}"
+                )
         return jsonify(result)
     except Exception as e:
         return jsonify({'error': str(e)}), 400

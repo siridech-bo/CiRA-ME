@@ -52,6 +52,7 @@ def create_app(config=None):
     from .routes.mqtt_publisher import mqtt_bp
     from .routes.folder_watchers import folder_watchers_bp
     from .routes.wizard import wizard_bp
+    from .routes.projects import projects_bp
 
     app.register_blueprint(auth_bp, url_prefix='/api/auth')
     app.register_blueprint(admin_bp, url_prefix='/api/admin')
@@ -66,6 +67,7 @@ def create_app(config=None):
     app.register_blueprint(mqtt_bp, url_prefix='/api/mqtt')
     app.register_blueprint(folder_watchers_bp, url_prefix='/api/folder-watchers')
     app.register_blueprint(wizard_bp, url_prefix='/api/wizard')
+    app.register_blueprint(projects_bp, url_prefix='/api/projects')
 
     # Health check endpoint
     @app.route('/api/health')

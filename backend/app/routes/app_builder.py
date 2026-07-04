@@ -294,6 +294,29 @@ def publish_app(app_id):
 
     AppBuilderApp.publish(app_id, slug)
 
+    # F4: link app to project via any endpoint referenced by its nodes
+    try:
+        from ..models import get_db as _get_db, Project as _Project
+        _pid_found = None
+        for nt in node_types:
+            if nt.startswith('model.endpoint.'):
+                eid = nt.replace('model.endpoint.', '')
+                ep = MeLabEndpoint.get_by_id(eid)
+                if ep and ep.get('project_id'):
+                    _pid_found = ep['project_id']
+                    break
+        if _pid_found:
+            with _get_db() as _c:
+                _cur = _c.cursor()
+                _cur.execute(
+                    'UPDATE app_builder_apps SET project_id = ? WHERE id = ?',
+                    (_pid_found, app_id)
+                )
+                _c.commit()
+            _Project.touch(_pid_found, 'deploy')
+    except Exception:
+        pass
+
     return jsonify({
         'slug': slug,
         'web_url': f'/app/{slug}',

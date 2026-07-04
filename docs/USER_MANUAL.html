@@ -1,0 +1,869 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CiRA ME — User Manual</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --bg-elev: #161b22;
+  --bg-elev2: #21262d;
+  --fg: #e6edf3;
+  --fg-muted: #8b949e;
+  --accent: #a78bfa;
+  --accent2: #22d3ee;
+  --green: #34d399;
+  --amber: #f59e0b;
+  --red: #f87171;
+  --border: #30363d;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+  line-height: 1.65;
+}
+.layout { display: flex; min-height: 100vh; }
+nav.toc {
+  width: 280px;
+  flex-shrink: 0;
+  background: var(--bg-elev);
+  border-right: 1px solid var(--border);
+  padding: 24px 16px;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+  font-size: 13px;
+}
+nav.toc h2 {
+  margin: 0 0 16px 0;
+  font-size: 14px;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+nav.toc ol { list-style: none; padding: 0; margin: 0; }
+nav.toc li { margin: 4px 0; }
+nav.toc a {
+  color: var(--fg-muted);
+  text-decoration: none;
+  display: block;
+  padding: 6px 10px;
+  border-radius: 4px;
+  border-left: 2px solid transparent;
+}
+nav.toc a:hover { color: var(--fg); background: var(--bg-elev2); border-left-color: var(--accent); }
+nav.toc ul { list-style: none; padding-left: 16px; margin: 4px 0; }
+nav.toc ul a { font-size: 12px; padding: 3px 8px; }
+
+main {
+  flex: 1;
+  max-width: 980px;
+  padding: 40px 56px 80px;
+  margin: 0 auto;
+}
+
+.hero {
+  background: linear-gradient(135deg, #1a1f2e 0%, #2a1f3d 100%);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 32px;
+  margin-bottom: 32px;
+}
+.hero h1 {
+  font-size: 32px;
+  margin: 0 0 8px 0;
+  background: linear-gradient(90deg, var(--accent), var(--accent2));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+.hero p { color: var(--fg-muted); margin: 0; font-size: 15px; }
+.hero .badges { margin-top: 16px; display: flex; gap: 8px; flex-wrap: wrap; }
+.hero .badge {
+  background: var(--bg-elev2);
+  padding: 4px 10px;
+  border-radius: 12px;
+  font-size: 11px;
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+}
+
+h1 { font-size: 28px; margin: 48px 0 16px; color: var(--fg); border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+h1:first-of-type { margin-top: 16px; }
+h2 { font-size: 22px; margin: 32px 0 12px; color: var(--accent); }
+h3 { font-size: 18px; margin: 24px 0 8px; color: var(--accent2); }
+h4 { font-size: 15px; margin: 16px 0 4px; color: var(--fg); }
+
+p { margin: 8px 0 16px; }
+ul, ol { padding-left: 28px; margin: 8px 0 16px; }
+li { margin: 4px 0; }
+
+code {
+  font-family: "JetBrains Mono", "Fira Code", Consolas, monospace;
+  background: var(--bg-elev2);
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 13px;
+  color: var(--accent2);
+}
+pre {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px 20px;
+  overflow-x: auto;
+  font-size: 13px;
+  line-height: 1.5;
+}
+pre code { background: none; color: var(--fg); padding: 0; }
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 16px 0 24px;
+  font-size: 14px;
+  background: var(--bg-elev);
+  border-radius: 8px;
+  overflow: hidden;
+}
+th, td {
+  text-align: left;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+th {
+  background: var(--bg-elev2);
+  font-weight: 600;
+  color: var(--accent);
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+tr:last-child td { border-bottom: none; }
+tr:hover td { background: rgba(167, 139, 250, 0.05); }
+td code { font-size: 12px; }
+
+blockquote {
+  border-left: 3px solid var(--amber);
+  margin: 16px 0;
+  padding: 8px 16px;
+  background: rgba(245, 158, 11, 0.05);
+  color: var(--fg-muted);
+  border-radius: 0 6px 6px 0;
+}
+
+.callout {
+  border-radius: 8px;
+  padding: 16px 20px;
+  margin: 16px 0;
+  font-size: 14px;
+  display: flex;
+  gap: 12px;
+}
+.callout-icon { font-size: 18px; flex-shrink: 0; }
+.callout-info { background: rgba(34, 211, 238, 0.08); border-left: 3px solid var(--accent2); }
+.callout-warn { background: rgba(245, 158, 11, 0.08); border-left: 3px solid var(--amber); }
+.callout-success { background: rgba(52, 211, 153, 0.08); border-left: 3px solid var(--green); }
+.callout-danger { background: rgba(248, 113, 113, 0.08); border-left: 3px solid var(--red); }
+
+hr { border: none; border-top: 1px solid var(--border); margin: 32px 0; }
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.pipeline-diagram {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 20px;
+  background: var(--bg-elev);
+  border-radius: 12px;
+  margin: 16px 0 24px;
+  font-family: monospace;
+}
+.pipeline-step {
+  background: var(--bg-elev2);
+  padding: 10px 18px;
+  border-radius: 8px;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+  font-size: 14px;
+}
+.pipeline-arrow { color: var(--fg-muted); font-size: 18px; }
+
+.kbd {
+  background: var(--bg-elev2);
+  border: 1px solid var(--border);
+  border-bottom: 2px solid var(--border);
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-family: monospace;
+  font-size: 12px;
+}
+
+footer {
+  margin-top: 64px;
+  padding-top: 24px;
+  border-top: 1px solid var(--border);
+  color: var(--fg-muted);
+  font-size: 13px;
+  text-align: center;
+}
+
+@media (max-width: 900px) {
+  .layout { flex-direction: column; }
+  nav.toc { width: 100%; height: auto; position: static; }
+  main { padding: 24px; }
+}
+</style>
+</head>
+<body>
+<div class="layout">
+
+<nav class="toc">
+  <h2>Contents</h2>
+  <ol>
+    <li><a href="#section-1">1. System Overview</a></li>
+    <li><a href="#section-2">2. Getting Started</a></li>
+    <li><a href="#section-3">3. Default Login &amp; First Steps</a></li>
+    <li><a href="#section-4">4. The Training Pipeline</a>
+      <ul>
+        <li><a href="#section-4-1">4.1 Data Source</a></li>
+        <li><a href="#section-4-2">4.2 Windowing</a></li>
+        <li><a href="#section-4-3">4.3 Features</a></li>
+        <li><a href="#section-4-4">4.4 Training</a></li>
+        <li><a href="#section-4-5">4.5 Deployment</a></li>
+      </ul>
+    </li>
+    <li><a href="#section-5">5. ME-LAB Endpoints</a></li>
+    <li><a href="#section-6">6. App Builder</a></li>
+    <li><a href="#section-7">7. MQTT Live Streaming</a></li>
+    <li><a href="#section-8">8. Signal Recorder</a></li>
+    <li><a href="#section-9">9. Multi-Model Comparison</a></li>
+    <li><a href="#section-10">10. TI TinyML — MCU</a></li>
+    <li><a href="#section-11">11. Admin Panel</a></li>
+    <li><a href="#section-12">12. Updating</a></li>
+    <li><a href="#section-13">13. Troubleshooting</a></li>
+    <li><a href="#section-14">14. Glossary</a></li>
+  </ol>
+</nav>
+
+<main>
+
+<div class="hero">
+  <h1>CiRA ME — User Manual</h1>
+  <p>An end-to-end no-code AI platform for time-series anomaly detection, classification, and regression. Train ML and deep-learning models from sensor data, deploy them as REST endpoints, build live dashboards, and stream predictions from MQTT — all from a web browser.</p>
+  <div class="badges">
+    <span class="badge">Machine Intelligence for Edge</span>
+    <span class="badge">Docker-based</span>
+    <span class="badge">Multi-user</span>
+    <span class="badge">GPU + MCU support</span>
+  </div>
+</div>
+
+<h1 id="section-1">1. System Overview</h1>
+
+<h3>What CiRA ME Does</h3>
+<p>CiRA ME guides you through five steps that turn raw sensor data into a working AI model:</p>
+
+<div class="pipeline-diagram">
+  <span class="pipeline-step">Data</span>
+  <span class="pipeline-arrow">→</span>
+  <span class="pipeline-step">Windowing</span>
+  <span class="pipeline-arrow">→</span>
+  <span class="pipeline-step">Features</span>
+  <span class="pipeline-arrow">→</span>
+  <span class="pipeline-step">Training</span>
+  <span class="pipeline-arrow">→</span>
+  <span class="pipeline-step">Deployment</span>
+</div>
+
+<p>Every step is visual: upload a CSV, click a button, see a chart. No code required.</p>
+
+<p>After training, you can:</p>
+<ul>
+  <li>Call your model via <strong>REST API</strong> (ME-LAB endpoints)</li>
+  <li>Build a <strong>live dashboard</strong> by dragging blocks together (App Builder)</li>
+  <li>Stream real-time predictions from an <strong>MQTT broker</strong></li>
+  <li>Compare up to <strong>5 models side-by-side</strong> on the same data</li>
+  <li>Export to <strong>C code</strong> for TI MSP/TMS320 microcontrollers</li>
+</ul>
+
+<h3>Architecture (for IT teams)</h3>
+<p>Four Docker containers, all managed by <code>docker compose</code>:</p>
+
+<table>
+  <tr><th>Container</th><th>Purpose</th><th>Port</th></tr>
+  <tr><td><code>cirame-backend</code></td><td>Flask REST API + ML training</td><td>5100</td></tr>
+  <tr><td><code>cirame-frontend</code></td><td>Vue 3 web UI (nginx)</td><td>3030</td></tr>
+  <tr><td><code>cirame-ti-modelmaker</code></td><td>TI TinyML training (Python 3.10)</td><td>5200</td></tr>
+  <tr><td><code>cirame-mosquitto</code></td><td>MQTT broker</td><td>1883 (TCP), 9001 (WebSocket)</td></tr>
+</table>
+
+<p>All user data is stored on the host disk in <code>data/</code> and <code>datasets/</code> folders — survives every update.</p>
+
+<h3>Modes Supported</h3>
+<table>
+  <tr><th>Mode</th><th>Use Case</th><th>Algorithms</th></tr>
+  <tr><td><strong>Classification</strong></td><td>Identify motion gestures, machine states</td><td>Random Forest, XGBoost, LightGBM, SVM, KNN, MLP, Logistic Regression, Decision Tree, Naive Bayes</td></tr>
+  <tr><td><strong>Regression</strong></td><td>Predict continuous values</td><td>Random Forest, XGBoost, LightGBM, KNN, SVR, Linear</td></tr>
+  <tr><td><strong>Anomaly Detection</strong></td><td>Spot machine failures, outliers</td><td>Isolation Forest, LOF, OCSVM, AutoEncoder, KNN, COPOD, ECOD</td></tr>
+  <tr><td><strong>Deep Learning</strong></td><td>Complex temporal patterns</td><td>TimesNet (PyTorch)</td></tr>
+  <tr><td><strong>TI TinyML</strong></td><td>On-MCU inference</td><td>TI Model Zoo: MLP, Conv1D</td></tr>
+</table>
+
+<h1 id="section-2">2. Getting Started</h1>
+
+<h3>Requirements</h3>
+<ul>
+  <li><strong>OS</strong>: Windows 10/11, Linux, macOS</li>
+  <li><strong>Docker</strong>: Docker Desktop 24.0+ with Docker Compose v2</li>
+  <li><strong>RAM</strong>: 8 GB minimum, 16 GB recommended</li>
+  <li><strong>Disk</strong>: 30 GB free</li>
+  <li><strong>GPU</strong> (optional): NVIDIA GPU with <code>nvidia-container-toolkit</code> for faster deep learning</li>
+</ul>
+
+<h3>Installation (Fresh)</h3>
+<p>You will receive a <code>deployment/</code> folder containing <code>.tar</code> image files and scripts.</p>
+
+<h4>Windows</h4>
+<ol>
+  <li>Install Docker Desktop and start it</li>
+  <li>Double-click <code>install.bat</code></li>
+  <li>Wait for the script to load all images (~15–20 minutes)</li>
+  <li>Double-click <code>start.bat</code> (or <code>start-no-gpu.bat</code> if no NVIDIA GPU)</li>
+  <li>Open <code>http://localhost:3030</code></li>
+</ol>
+
+<h4>Linux / macOS</h4>
+<pre><code>cd deployment
+bash install.sh
+bash start.sh         # or bash start-no-gpu.sh</code></pre>
+
+<p>Access at <code>http://localhost:3030</code> (or <code>http://&lt;server-ip&gt;:3030</code> from other machines on your LAN).</p>
+
+<h3>Network Ports</h3>
+<table>
+  <tr><th>Port</th><th>Service</th><th>Should be accessible from LAN?</th></tr>
+  <tr><td><strong>3030</strong></td><td>Web app</td><td>Yes</td></tr>
+  <tr><td>5100</td><td>Backend API</td><td>Internal use</td></tr>
+  <tr><td>5200</td><td>TI ModelMaker</td><td>Internal use</td></tr>
+  <tr><td><strong>1883</strong></td><td>MQTT TCP (for sensors)</td><td>Yes</td></tr>
+  <tr><td><strong>9001</strong></td><td>MQTT WebSocket (for browsers)</td><td>Yes</td></tr>
+</table>
+
+<h1 id="section-3">3. Default Login &amp; First Steps</h1>
+
+<pre><code>Username: admin
+Password: cira123</code></pre>
+
+<div class="callout callout-warn">
+  <span class="callout-icon">⚠️</span>
+  <div><strong>Change the password immediately after first login</strong> (Admin → Users → Edit → Reset Password).</div>
+</div>
+
+<h3>Recommended First Actions</h3>
+<ol>
+  <li><strong>Create your first dataset folder</strong> (Admin → Folder Management → New Folder Name)</li>
+  <li><strong>Add team members</strong> (Admin → Add User) with their own private folders</li>
+  <li><strong>Upload your first dataset</strong> (Data Source → Upload, or drop files into <code>datasets/shared/</code>)</li>
+</ol>
+
+<h1 id="section-4">4. The Training Pipeline</h1>
+<p>Click <strong>Pipeline</strong> (or the "Train New Model" tile on the Dashboard) to start. The stepper at the top guides you through five steps.</p>
+
+<h2 id="section-4-1">4.1 Data Source</h2>
+<p>Select one of four input formats:</p>
+
+<table>
+  <tr><th>Format</th><th>When to use</th></tr>
+  <tr><td><strong>CSV File</strong></td><td>Standard tabular data with headers in row 1. Optional <code>label</code> column for classification.</td></tr>
+  <tr><td><strong>Edge Impulse JSON</strong></td><td>Exported from Edge Impulse Studio (single recording per file).</td></tr>
+  <tr><td><strong>Edge Impulse CBOR</strong></td><td>Binary CBOR format, faster loading. Supports signed (JWS) and unsigned CBOR.</td></tr>
+  <tr><td><strong>CiRA CBOR</strong></td><td>CiRA's native recording format with multiple samples per file.</td></tr>
+</table>
+
+<h4>Browse Files</h4>
+<ul>
+  <li>Navigate folders with breadcrumbs</li>
+  <li><strong>Upload</strong> button: drag-drop CSV/JSON/CBOR files into your folder</li>
+  <li><strong>Refresh</strong> button: reload after manually copying files into <code>datasets/</code></li>
+  <li><strong>Select All (N)</strong> button (CSV mode only): selects every CSV file in the current folder for multi-file training</li>
+  <li><strong>Live counter chip</strong>: "5 / 192 selected"</li>
+  <li><strong>Record Sensors</strong> (admin only): collect data live from a connected sensor</li>
+</ul>
+
+<h4>Dataset folder detection (CBOR)</h4>
+<ul>
+  <li>If the folder contains <code>training/</code> and <code>testing/</code> subfolders, CiRA ME auto-detects it as a <em>dataset</em> and offers a <strong>Scan Dataset</strong> button.</li>
+  <li>After scanning, you see counts per partition (e.g., <code>training: 85 files</code>, <code>testing: 16 files</code>) and per label (e.g., <code>wave: 4</code>, <code>idle: 4</code>).</li>
+</ul>
+
+<h4>Preview Panel (right)</h4>
+<ul>
+  <li>Shows column names, row count, and the first 100 rows</li>
+  <li>For multi-CSV selection: validates that all files share the same columns (column-mismatch error if not)</li>
+</ul>
+
+<h2 id="section-4-2">4.2 Windowing &amp; Preprocessing</h2>
+<p>Configure how the time series is segmented into fixed-length windows.</p>
+
+<h4>Raw Mode (no windowing) toggle</h4>
+<ul>
+  <li>For pre-processed tabular data where <strong>each row is already a complete feature vector</strong></li>
+  <li>Skips windowing AND feature extraction</li>
+  <li>Click <em>"Prepare Data &amp; Go to Training"</em> — auto-runs both steps and jumps to Training</li>
+</ul>
+
+<h4>Time-Series Mode (default)</h4>
+<table>
+  <tr><th>Setting</th><th>What it does</th></tr>
+  <tr><td><strong>Window Size</strong> (samples)</td><td>Number of consecutive readings per window. E.g., 128 samples at 100 Hz = 1.28 seconds</td></tr>
+  <tr><td><strong>Stride</strong></td><td>Step between window starts. Stride &lt; window size = overlapping windows (more data)</td></tr>
+  <tr><td><strong>Test Ratio</strong></td><td>Fraction of data reserved for evaluation (default 0.2 = 20%)</td></tr>
+</table>
+
+<h4>Split Strategy (3 options)</h4>
+<table>
+  <tr><th>Strategy</th><th>How it works</th><th>Best for</th></tr>
+  <tr><td><strong>End Block</strong> (default)</td><td>Test = last N% of signal, gap = window size</td><td>Standard time-series, prevents future leakage</td></tr>
+  <tr><td><strong>Interleaved</strong></td><td>Signal split into blocks; test blocks distributed evenly</td><td>Better coverage of the full signal range</td></tr>
+  <tr><td><strong>Random</strong></td><td>Windows shuffled and randomly assigned</td><td>Maximum variety (may leak temporal patterns)</td></tr>
+</table>
+
+<div class="callout callout-info">
+  <span class="callout-icon">💡</span>
+  <div><strong>Smart Recommendation:</strong> if your dataset is too small for the current settings, an alert suggests better values (e.g., "Try window_size=64, stride=32 for at least 10 training windows").</div>
+</div>
+
+<h4>Regression Mode — Prediction Target</h4>
+<ul>
+  <li>Pick which sensor column to predict. The remaining columns become input features.</li>
+  <li>Test set split temporally so future predictions are evaluated on unseen data.</li>
+</ul>
+
+<h4>Classification Mode — Label Preservation</h4>
+<ul>
+  <li><strong>Majority Voting</strong> (default): window label = most frequent label in the window</li>
+  <li><strong>First / Last</strong>: window label = first/last sample's label</li>
+  <li><strong>Threshold</strong>: window labeled as anomaly if any sample exceeds threshold</li>
+</ul>
+
+<h2 id="section-4-3">4.3 Feature Engineering</h2>
+<p>Extract numerical features from each window. Three workflows:</p>
+
+<h4>1. Extract tab — choose extraction method</h4>
+<ul>
+  <li><strong>Lightweight (DSP + statistics)</strong> — fast, ~20 features per channel</li>
+  <li><strong>TSFresh</strong> — comprehensive, ~700 features per channel</li>
+  <li><strong>Both</strong> — concatenated feature set</li>
+</ul>
+
+<h4>2. Select tab — feature ranking and selection</h4>
+<ul>
+  <li>Mutual Information, Chi-squared, ANOVA F-test</li>
+  <li>Recursive feature elimination (RFE) with cross-validation</li>
+  <li>Click "Auto-select top N" to keep only the most informative features</li>
+</ul>
+
+<h4>3. Visualize tab — explore feature distributions</h4>
+<ul>
+  <li>Per-class violin plots</li>
+  <li>Correlation matrix</li>
+  <li>2D/3D scatter via PCA or UMAP</li>
+</ul>
+
+<div class="callout callout-info">
+  <span class="callout-icon">ℹ️</span>
+  <div><strong>Raw Mode users</strong>: this entire step is skipped. The CSV columns become the input features directly.</div>
+</div>
+
+<h2 id="section-4-4">4.4 Training</h2>
+<p>The page is split by mode (tabs: <strong>Anomaly</strong>, <strong>Classification</strong>, <strong>Regression</strong>).</p>
+
+<p>Click any algorithm to train. Results show all metrics:</p>
+<ul>
+  <li><strong>Classification</strong>: Accuracy, Precision, Recall, F1, ROC-AUC, confusion matrix</li>
+  <li><strong>Regression</strong>: R², RMSE, MAE, residuals histogram, <strong>Actual vs Predicted</strong> time-series chart with TEST ONLY / TRAIN+TEST toggle</li>
+  <li><strong>Anomaly</strong>: Precision, Recall, F1, anomaly-score distribution</li>
+</ul>
+
+<h4>Test region visualization (regression)</h4>
+<p>The Actual vs Predicted chart shows test regions as <strong>highlighted orange bands</strong> matching your split strategy — multiple bands for Interleaved, scattered for Random, one tail band for End Block.</p>
+
+<h4>Deep Learning tab (TimesNet)</h4>
+<ul>
+  <li>Enter epochs, batch size, learning rate</li>
+  <li>Trains using PyTorch (uses GPU if available)</li>
+  <li>Live loss curve updates during training</li>
+</ul>
+
+<h4>Save the model</h4>
+<ul>
+  <li>Click <strong>Save Model</strong>, give it a name + description</li>
+  <li>It appears in Dashboard → Saved Models and can be deployed via ME-LAB</li>
+</ul>
+
+<h4>Test with New Data</h4>
+<p>Upload a NEW dataset and replay the full pipeline to verify the model on fresh data.</p>
+
+<h2 id="section-4-5">4.5 Deployment</h2>
+<p>Three deployment paths:</p>
+<ol>
+  <li><strong>ME-LAB endpoint</strong> (most common) — see <a href="#section-5">Section 5</a></li>
+  <li><strong>SSH deploy to Jetson</strong> — package the model + a Python inference script and copy to a remote NVIDIA Jetson over SSH</li>
+  <li><strong>TI MCU C code export</strong> — see <a href="#section-10">Section 10</a></li>
+</ol>
+
+<h1 id="section-5">5. ME-LAB — Model-as-a-Service</h1>
+<p><strong>ME-LAB</strong> turns any saved model into a callable REST endpoint with per-endpoint API keys.</p>
+
+<h3>Creating an Endpoint</h3>
+<ol>
+  <li>Dashboard → ME-LAB</li>
+  <li>Click <strong>+ New Endpoint</strong></li>
+  <li>Pick a saved model, give the endpoint a name (e.g., <code>motor-anomaly-prod</code>)</li>
+  <li>Endpoint becomes <strong>Active</strong> with a unique ID</li>
+</ol>
+
+<h3>Calling an Endpoint</h3>
+
+<h4>A) Session auth (browser)</h4>
+<pre><code>fetch('http://localhost:5100/api/melab/predict/e3a8b9c5d1f2', {
+  method: 'POST',
+  credentials: 'include',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ data: [[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]] })
+})</code></pre>
+
+<h4>B) API key (for IoT devices, scripts)</h4>
+<pre><code>curl -X POST http://server-ip:5100/api/melab/predict/e3a8b9c5d1f2 \
+  -H "X-API-Key: cira_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" \
+  -H "Content-Type: application/json" \
+  -d '{"data": [[0.1, 0.2, 0.3]]}'</code></pre>
+
+<p>Generate API keys: ME-LAB → Endpoint → API Keys → <strong>+ Generate</strong>. Each key has an optional expiry date and can be revoked anytime.</p>
+
+<h3>Endpoint Page Shows</h3>
+<ul>
+  <li><strong>Live metrics</strong> — inference count, last used time, average latency</li>
+  <li><strong>Required features</strong> — list of feature names the model expects</li>
+  <li><strong>Target column</strong> — the column being predicted (regression)</li>
+  <li><strong>Algorithm + Mode</strong> — what type of model</li>
+  <li><strong>Try it</strong> widget — paste raw data and test predictions instantly</li>
+</ul>
+
+<h3>Quotas (per user, set by admin)</h3>
+<ul>
+  <li><code>max_endpoints</code> (default 5)</li>
+  <li><code>max_folder_mb</code> (default 1000 MB)</li>
+  <li><code>max_apps</code> (default 10)</li>
+</ul>
+
+<h1 id="section-6">6. App Builder — Visual No-Code Apps</h1>
+<p>The <strong>App Builder</strong> lets you compose inference apps by dragging blocks onto a canvas. Each app gets a unique URL (<code>/apps/&lt;slug&gt;</code>) that you can share or embed.</p>
+
+<h3>Creating an App</h3>
+<ol>
+  <li>Dashboard → App Builder → <strong>+ New App</strong></li>
+  <li>Pick a template:</li>
+</ol>
+
+<table>
+  <tr><th>Template</th><th>What it does</th></tr>
+  <tr><td><strong>Regression Monitor</strong></td><td>CSV → predict continuous value, show line chart</td></tr>
+  <tr><td><strong>Anomaly Detector</strong></td><td>CSV → flag anomalies, show alert badges</td></tr>
+  <tr><td><strong>Classifier</strong></td><td>CSV → predict class label, show prediction table</td></tr>
+  <tr><td><strong>Live Regression</strong></td><td>MQTT stream → live continuous predictions</td></tr>
+  <tr><td><strong>Live Anomaly Detector</strong></td><td>MQTT stream → live alerts</td></tr>
+  <tr><td><strong>Live Classifier</strong></td><td>MQTT stream → live class predictions</td></tr>
+  <tr><td><strong>MQTT Recorder</strong></td><td>Record labeled sensor data via MQTT</td></tr>
+  <tr><td><strong>Multi-Model Regression</strong> (CSV / Live)</td><td>Compare up to 5 regression models</td></tr>
+  <tr><td><strong>Multi-Model Classification</strong> (CSV / Live)</td><td>Compare up to 5 classification models</td></tr>
+  <tr><td><strong>Blank</strong></td><td>Start from scratch — full creative control</td></tr>
+</table>
+
+<h3>BUILD Tab</h3>
+<p>Drag nodes from the left palette onto the canvas:</p>
+<ul>
+  <li><strong>Inputs</strong>: CSV Upload, Live Stream (MQTT)</li>
+  <li><strong>Transforms</strong>: Normalize, Windowing, Fill Missing, Feature Extract</li>
+  <li><strong>Models</strong>: any ME-LAB endpoint (filtered by mode)</li>
+  <li><strong>Outputs</strong>: Line Chart, Alert Badge, Table View, Signal Recorder, Multi-Model Compare</li>
+</ul>
+
+<p>Connect node outputs to inputs by dragging from <code>→</code> to <code>←</code> ports. The right panel shows the selected node's config.</p>
+
+<div class="callout callout-info">
+  <span class="callout-icon">⚙️</span>
+  <div><strong>Auto-Configure Feature Extract</strong> button: when you select a model node, click this to auto-fill the feature extract node with the exact features the model was trained on. For <strong>Raw Mode models</strong>, the windowing node auto-sets <code>window_size=1, stride=1</code>.</div>
+</div>
+
+<h3>PREVIEW Tab</h3>
+<p>Shows a browser-mockup of what the published app will look like — useful for sharing screenshots before publishing.</p>
+
+<h3>PUBLISH Tab</h3>
+<ul>
+  <li><strong>Access control</strong>: Public / Team / Private</li>
+  <li>Click <strong>Publish</strong> → get a shareable URL like <code>http://server-ip:3030/apps/my-classifier-a1b2c3</code></li>
+  <li>Stats: number of calls, last used time</li>
+</ul>
+
+<h1 id="section-7">7. MQTT Live Streaming</h1>
+<p>The built-in Mosquitto broker accepts sensor data over MQTT and feeds it into Live App Builder apps.</p>
+
+<h3>Publishing Sensor Data</h3>
+<p><strong>From IoT devices / gateways:</strong></p>
+<ul>
+  <li>Broker URL: <code>mqtt://&lt;server-ip&gt;:1883</code></li>
+  <li>Publish JSON like <code>{"accX": 1.2, "accY": 3.4, "accZ": 5.6}</code> to any topic (e.g., <code>sensors/machine1</code>)</li>
+</ul>
+
+<p><strong>From a browser-based app (e.g., SensorSpot mobile app):</strong></p>
+<ul>
+  <li>WebSocket URL: <code>ws://&lt;server-ip&gt;:9001/mqtt</code></li>
+</ul>
+
+<h4>Supported payload formats (auto-detected)</h4>
+<ol>
+  <li><code>{"accX": 1.2, "accY": 3.4, "accZ": 5.6}</code> — flat object</li>
+  <li><code>{"values": {"v0": 1.2, "v1": 3.4}}</code> — SensorSpot format</li>
+  <li><code>[1.2, 3.4, 5.6]</code> — bare array (channels named <code>ch0</code>, <code>ch1</code>, <code>ch2</code>)</li>
+</ol>
+
+<h3>Subscribing in an App Builder App</h3>
+<ol>
+  <li>Choose a <strong>Live …</strong> template</li>
+  <li>In the Live Stream node: set Broker URL, Topic (e.g., <code>sensors/#</code>), leave Channels blank for auto-detect</li>
+  <li>Publish the app → open the URL → click <strong>Connect</strong></li>
+  <li>Live stats show: messages, rate, buffer, inference count. Predictions accumulate on the chart (up to 200 most recent).</li>
+</ol>
+
+<h3>MQTT Test Publisher (built-in)</h3>
+<p>For testing without real sensors:</p>
+<ul>
+  <li>Dashboard → MQTT Broker → Test Publisher</li>
+  <li>Pick a CSV file, topic, and rate (msg/sec)</li>
+  <li>Click <strong>Start Publishing</strong> — the CSV streams row-by-row</li>
+</ul>
+
+<h3>Live Comparison with Ground Truth (Regression)</h3>
+<p>For Live Regression apps, a <strong>"Compare with column (actual)"</strong> dropdown lets you pick which MQTT field to treat as the ground-truth value. The app then plots actual vs predicted lines in real-time and computes live R²/RMSE/MAE.</p>
+
+<h1 id="section-8">8. Signal Recorder</h1>
+<p>Collect labeled sensor data via MQTT — useful for building your training dataset.</p>
+
+<ol>
+  <li>App Builder → <strong>MQTT Recorder</strong> template</li>
+  <li>Configure:
+    <ul>
+      <li><strong>Labels</strong> (comma-separated): e.g., <code>idle, wave, snake, updown</code></li>
+      <li><strong>Target Sample Rate (Hz)</strong>: e.g., 62.5</li>
+      <li><strong>Max Duration (seconds)</strong>: safety cap per recording</li>
+    </ul>
+  </li>
+  <li>Publish the app, connect to MQTT, then:
+    <ul>
+      <li>Click a label button to mark the <strong>current label</strong></li>
+      <li>Click <strong>REC</strong> to start, <strong>STOP</strong> to save</li>
+    </ul>
+  </li>
+  <li>CSV downloads with a <code>label</code> column populated per the active label at each moment</li>
+</ol>
+
+<h1 id="section-9">9. Multi-Model Comparison</h1>
+<p>Run up to <strong>5 different models on the same input data</strong> and compare their predictions side-by-side.</p>
+
+<h3>Creating a Comparison App</h3>
+<ol>
+  <li>App Builder → Pick one of: Multi-Model Regression (CSV / Live) or Multi-Model Classification (CSV / Live)</li>
+  <li>In the Multi-Model Compare node config:
+    <ul>
+      <li><strong>Model Mode</strong>: regression / classification / anomaly</li>
+      <li><strong>Model Endpoints</strong>: pick up to 5 active endpoints (filtered by mode)</li>
+      <li><strong>Target Column</strong>: ground truth column</li>
+    </ul>
+  </li>
+  <li>Click <strong>Auto-Configure Feature Extract</strong></li>
+  <li>Publish → open the URL</li>
+</ol>
+
+<h3>What You See</h3>
+<h4>Metrics Table</h4>
+<ul>
+  <li>Per-model R²/RMSE/MAE (regression) or Accuracy/Precision/F1 (classification)</li>
+  <li>🏆 trophy icon on the best-performing model</li>
+  <li>Red row + error message for failed models</li>
+  <li>Without ground truth: Latest Prediction + Window count per model</li>
+</ul>
+
+<h4>Chart</h4>
+<ul>
+  <li><strong>Regression</strong> → line chart with actual (cyan) and one line per model</li>
+  <li><strong>Classification</strong> → timeline chart with horizontal bands per model + Actual, colored rectangles by predicted class, red border on mismatches, sensor signal plotted below</li>
+</ul>
+
+<h4>Per-Window Predictions Table (collapsible)</h4>
+<ul>
+  <li>Side-by-side predictions for every window</li>
+  <li>Classification: green text if matches actual, red if mismatches</li>
+</ul>
+
+<p><strong>Download Comparison CSV</strong> button exports all predictions + actuals + metrics.</p>
+
+<h1 id="section-10">10. TI TinyML — MCU Deployment</h1>
+<p>For deploying models to <strong>TI MSP</strong> and <strong>TMS320</strong> microcontrollers (no OS, no Docker, just bare-metal C).</p>
+
+<h3>Workflow</h3>
+<ol>
+  <li>Run the standard training pipeline up to Feature Engineering</li>
+  <li>Training → <strong>TI TinyML tab</strong>:
+    <ul>
+      <li>Pick a TI Model Zoo architecture (MLP, Conv1D)</li>
+      <li>Choose target MCU (TMS320 F28379D, F280049C, F28P55x)</li>
+      <li>Configure: epochs, batch size, quantization (INT8 / float32)</li>
+    </ul>
+  </li>
+  <li>Click <strong>Train</strong> — request forwarded to the <code>cirame-ti-modelmaker</code> container</li>
+  <li>Click <strong>Export CCS Package</strong></li>
+  <li>ZIP downloads with: <code>model.c</code>, <code>model.h</code>, <code>cira_main.c</code> template, <code>README.md</code>, CCS project files</li>
+</ol>
+
+<p>Open the project in CCS, build, flash. Predictions stream over UART. Use the included serial test tool to verify.</p>
+
+<h1 id="section-11">11. Admin Panel</h1>
+<p>Dashboard → Admin (admin role only).</p>
+
+<h3>User Management</h3>
+<table>
+  <tr><th>Field</th><th>Notes</th></tr>
+  <tr><td><strong>Username</strong></td><td>Unique login name</td></tr>
+  <tr><td><strong>Role</strong></td><td><code>admin</code> (full access) or <code>annotator</code> (own data only)</td></tr>
+  <tr><td><strong>Private Folder</strong></td><td>Folder under <code>datasets/</code> that only this user can write to</td></tr>
+  <tr><td><strong>Active</strong></td><td>Disable login without deleting the account</td></tr>
+  <tr><td><strong>Quotas</strong></td><td><code>max_folder_mb</code>, <code>max_endpoints</code>, <code>max_apps</code></td></tr>
+</table>
+
+<h3>Folder Management</h3>
+<ul>
+  <li>Create new dataset folders (alphanumeric, underscore, hyphen only)</li>
+  <li>Cannot delete the <code>shared</code> folder</li>
+</ul>
+
+<h3>Storage Volumes</h3>
+<p>Shows all mounted Docker volumes with: name + size, container path, host path (open directly in File Explorer), disk space, file tree.</p>
+
+<h3>Dashboard Stats (any user)</h3>
+<p>Total users / models / endpoints, models by mode/algorithm, recent models, system info (CPU, memory, GPU, disk, uptime, PyTorch version).</p>
+
+<h1 id="section-12">12. Updating to a New Version</h1>
+
+<div class="callout callout-success">
+  <span class="callout-icon">✅</span>
+  <div><strong>Your data is always safe.</strong> Both update options preserve users, models, datasets, endpoints, apps, and MQTT history.</div>
+</div>
+
+<h3>Option A — In-place update (recommended)</h3>
+<p>Drop new <code>.tar</code> files in your existing deployment folder and run:</p>
+<pre><code>update.bat              (Windows)
+bash update.sh          (Linux / macOS)</code></pre>
+<p>Then run <code>start.bat</code>.</p>
+
+<h3>Option B — New folder</h3>
+<p>If you extracted the new release to a different folder, copy data from the old folder first:</p>
+<pre><code>migrate.bat "C:\path\to\old\deployment"        (Windows)
+bash migrate.sh /path/to/old/deployment        (Linux / macOS)</code></pre>
+<p>Then <code>install.bat</code> → <code>start.bat</code>.</p>
+
+<p>See <code>deployment/MIGRATION.md</code> for the full guide.</p>
+
+<h3>Data folders that survive every update</h3>
+<pre><code>deployment/
+├── data/database/      ← SQLite database (users, models, endpoints, apps)
+├── data/models/        ← Trained model files (.pkl, .onnx)
+├── data/ti-projects/   ← TI ModelMaker training projects
+├── data/mosquitto/     ← MQTT broker persistent data
+├── datasets/           ← User-uploaded datasets (shared + per-user)
+└── mosquitto/mosquitto.conf</code></pre>
+
+<p><strong>To back up everything</strong>: zip the entire deployment folder excluding <code>.tar</code> files.</p>
+
+<h1 id="section-13">13. Troubleshooting</h1>
+
+<h3>Cannot access from other machines</h3>
+<ol>
+  <li>Check Windows Firewall allows ports <strong>3030</strong>, <strong>1883</strong>, <strong>9001</strong></li>
+  <li>Use server IP (not <code>localhost</code>): <code>http://192.168.x.x:3030</code></li>
+</ol>
+
+<h3>"Object of type int64 is not JSON serializable" when applying windowing</h3>
+<p>Resolved in v1.1+ — update to the latest version.</p>
+
+<h3>Backend container unhealthy after install (Windows)</h3>
+<ul>
+  <li><strong>Old image version</strong>: rebuild with updated <code>requirements.txt</code> (Werkzeug&lt;3.1, pandas&lt;2.2.3, numpy&lt;2.0 pinned)</li>
+  <li><strong>GPU compose without NVIDIA toolkit</strong>: use <code>start-no-gpu.bat</code></li>
+</ul>
+
+<h3>CBOR file load fails with "PanicException"</h3>
+<p>Resolved in v1.1+ — <code>cbor2</code> library pinned to <code>&lt;6.0</code> (avoids Rust panic on signed CBOR files).</p>
+
+<h3>Multi-model classification shows accuracy 0%</h3>
+<ul>
+  <li>Check the dataset's <code>label</code> column matches the model's training classes</li>
+  <li>Edge Impulse CBOR files use the folder name as label — make sure the file is from a folder whose name matches one of the trained classes</li>
+</ul>
+
+<h3>MQTT live predictions are flat (constant value)</h3>
+<p>If using a model trained in <strong>Raw Mode</strong>: the App Builder needs to know — auto-detected as long as the model was trained with the <code>no_windowing</code> flag set. Retrain the model and select the latest endpoint.</p>
+
+<h3>Database / models lost after upgrade</h3>
+<p>You probably ran <code>install.bat</code> in a new folder. Run <code>migrate.bat &lt;old_folder&gt;</code> first, then <code>start.bat</code>.</p>
+
+<h3>Logs</h3>
+<table>
+  <tr><th>What</th><th>How</th></tr>
+  <tr><td>All services</td><td><code>docker compose logs -f</code> (or <code>logs.bat</code>)</td></tr>
+  <tr><td>Just backend</td><td><code>docker logs cirame-backend --tail 100</code></td></tr>
+  <tr><td>Container status</td><td><code>status.bat</code> / <code>bash status.sh</code></td></tr>
+</table>
+
+<h1 id="section-14">14. Glossary</h1>
+<table>
+  <tr><th>Term</th><th>Meaning</th></tr>
+  <tr><td><strong>Window</strong></td><td>A contiguous chunk of consecutive sensor readings used as one sample for the model</td></tr>
+  <tr><td><strong>Stride</strong></td><td>Number of samples to advance between window starts</td></tr>
+  <tr><td><strong>Feature</strong></td><td>A single numeric value computed from a window (e.g., mean, peak frequency)</td></tr>
+  <tr><td><strong>ME-LAB</strong></td><td>CiRA's Model-as-a-Service module — exposes trained models as REST endpoints</td></tr>
+  <tr><td><strong>Endpoint</strong></td><td>A deployed model with its own URL + API keys</td></tr>
+  <tr><td><strong>App Builder</strong></td><td>Visual editor for composing inference apps from blocks</td></tr>
+  <tr><td><strong>Pipeline</strong></td><td>The five-step training workflow: Data → Windowing → Features → Training → Deploy</td></tr>
+  <tr><td><strong>Raw Mode</strong></td><td>A mode that skips windowing and feature extraction — each CSV row is one sample</td></tr>
+  <tr><td><strong>Split Strategy</strong></td><td>How train/test data is divided: End Block, Interleaved, or Random</td></tr>
+  <tr><td><strong>Target Column</strong></td><td>The column to predict (regression) or the ground-truth label column</td></tr>
+  <tr><td><strong>TimesNet</strong></td><td>A deep-learning model architecture for time-series, trained with PyTorch</td></tr>
+  <tr><td><strong>TI TinyML</strong></td><td>Texas Instruments toolkit for running tiny models on microcontrollers</td></tr>
+  <tr><td><strong>Multi-Model Compare</strong></td><td>An App Builder feature for running 2–5 models on the same data</td></tr>
+  <tr><td><strong>CBOR</strong></td><td>Concise Binary Object Representation — compact binary alternative to JSON</td></tr>
+  <tr><td><strong>MQTT</strong></td><td>Lightweight pub-sub messaging protocol commonly used for IoT sensor data</td></tr>
+</table>
+
+<footer>
+  <p><strong>CiRA — Center of Innovative Robotics and Automation</strong></p>
+  <p>For bug reports, feature requests, or questions, contact your CiRA representative.</p>
+  <p style="margin-top:16px;font-style:italic;">This manual covers CiRA ME v1.1+ — last updated based on the latest deployment release.</p>
+</footer>
+
+</main>
+</div>
+</body>
+</html>

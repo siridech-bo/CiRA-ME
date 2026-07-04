@@ -87,6 +87,18 @@ const router = createRouter({
       meta: { requiresAuth: true }
     },
     {
+      path: '/projects',
+      name: 'projects-list',
+      component: () => import('@/views/ProjectsListView.vue'),
+      meta: { requiresAuth: true }
+    },
+    {
+      path: '/projects/:id',
+      name: 'projects-detail',
+      component: () => import('@/views/ProjectDetailView.vue'),
+      meta: { requiresAuth: true }
+    },
+    {
       path: '/wizard',
       name: 'wizard',
       component: () => import('@/views/MultiDatasetWizardView.vue'),

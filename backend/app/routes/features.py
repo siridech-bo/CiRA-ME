@@ -10,6 +10,10 @@ from ..services.feature_extractor import FeatureExtractor
 from ..services.llm_service import get_llm_service
 from ..services.data_loader import _data_sessions
 from ..config import Config
+from ..models import (
+    Project, FeatureSession, FeatureTemplate,
+    WindowedSession,
+)
 
 logger = logging.getLogger(__name__)
 features_bp = Blueprint('features', __name__)
@@ -207,7 +211,13 @@ def get_llm_status():
 @features_bp.route('/extract', methods=['POST'])
 @login_required
 def extract_features():
-    """Extract features from windowed data."""
+    """Extract features from windowed data.
+
+    F4: If a project_id is supplied and the project has a feature_template,
+    ONLY the template's features are extracted, preserving order. This
+    stabilizes the ME-LAB / App Builder payload contract across retrainings.
+    Persists a feature_sessions row on success.
+    """
     data = request.get_json()
 
     if not data:
@@ -217,9 +227,22 @@ def extract_features():
     selected_features = data.get('features', None)  # None means all features
     include_tsfresh = data.get('include_tsfresh', True)
     include_dsp = data.get('include_dsp', True)
+    project_id = data.get('project_id')
 
     if not session_id:
         return jsonify({'error': 'Session ID required'}), 400
+
+    # F4: if the project has a feature template, override the request-supplied
+    # feature list with the template. Template wins so a retrained model always
+    # gets the same feature contract.
+    template = None
+    if project_id:
+        try:
+            template = FeatureTemplate.get(int(project_id))
+            if template and template.get('ordered_feature_names'):
+                selected_features = template['ordered_feature_names']
+        except Exception:
+            pass
 
     try:
         extractor = FeatureExtractor()
@@ -237,6 +260,33 @@ def extract_features():
                 'num_windows': result.get('num_windows', 0),
                 'session_id': result.get('session_id')
             }), 400
+
+        # F4: persist feature_sessions row
+        if project_id:
+            try:
+                pid = int(project_id)
+                proj = Project.get_by_id(pid)
+                if proj and proj.get('user_id') == request.current_user['id']:
+                    # Find the most recent windowed_session row for this project
+                    wins = WindowedSession.get_by_project(pid)
+                    win_id = wins[0]['id'] if wins else None
+                    if win_id:
+                        FeatureSession.create(
+                            project_id=pid,
+                            windowed_session_id=win_id,
+                            method='tsfresh_dsp' if include_tsfresh and include_dsp else ('tsfresh' if include_tsfresh else 'dsp'),
+                            feature_names=result.get('feature_names', []),
+                            num_features=result.get('num_features'),
+                            selection={'template_version': template.get('version') if template else None},
+                        )
+                        Project.touch(pid, 'features')
+            except Exception as e:
+                logger.warning(f"[F4] Persisting feature state failed: {e}")
+
+        # Report template use back to frontend so the UI can badge it
+        if template:
+            result['feature_template_used'] = True
+            result['feature_template_version'] = template.get('version')
 
         return jsonify(result)
     except Exception as e:

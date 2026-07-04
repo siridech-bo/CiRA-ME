@@ -104,6 +104,10 @@ export const usePipelineStore = defineStore('pipeline', () => {
   // Current step
   const currentStep = ref<PipelineStep>('data')
 
+  // F4: Active project — threaded through Apply endpoints. Null means legacy /
+  // ad-hoc pipeline (no project persistence).
+  const projectId = ref<number | null>(null)
+
   // Data session
   const dataSession = ref<DataSession | null>(null)
 
@@ -233,11 +237,21 @@ export const usePipelineStore = defineStore('pipeline', () => {
       loading.value = true
       error.value = null
 
+      // Auto-create a project on first Windowing apply so F4 Projects list
+      // shows work-in-progress. Name uses dataset filename stem for locatability.
+      if (projectId.value === null) {
+        const stem = (dataSession.value.metadata?.filename || 'Pipeline')
+          .replace(/\.[^.]+$/, '')
+        const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ')
+        await createProjectAndAdopt(`${stem} ${stamp}`)
+      }
+
       const response = await api.post('/api/data/windowing', {
         session_id: dataSession.value.session_id,
         ...windowingConfig.value,
         target_column: targetColumn.value || undefined,
-        selected_columns: selectedColumns.value.length > 0 ? selectedColumns.value : undefined
+        selected_columns: selectedColumns.value.length > 0 ? selectedColumns.value : undefined,
+        project_id: projectId.value || undefined
       })
 
       windowedSession.value = response.data
@@ -267,7 +281,8 @@ export const usePipelineStore = defineStore('pipeline', () => {
 
       const response = await api.post('/api/features/extract', {
         session_id: windowedSession.value.session_id,
-        features: featureList
+        features: featureList,
+        project_id: projectId.value || undefined
       })
 
       featureSession.value = response.data
@@ -300,7 +315,8 @@ export const usePipelineStore = defineStore('pipeline', () => {
       const response = await api.post(endpoint, {
         feature_session_id: featureSession.value.session_id,
         algorithm: selectedAlgorithm.value,
-        hyperparameters: hyperparameters.value
+        hyperparameters: hyperparameters.value,
+        project_id: projectId.value || undefined
       })
 
       trainingSession.value = response.data
@@ -352,7 +368,8 @@ export const usePipelineStore = defineStore('pipeline', () => {
         epochs: config.epochs,
         batch_size: config.batch_size,
         learning_rate: config.learning_rate,
-        test_size: config.test_size || 0.2
+        test_size: config.test_size || 0.2,
+        project_id: projectId.value || undefined
       })
 
       trainingSession.value = response.data
@@ -388,7 +405,34 @@ export const usePipelineStore = defineStore('pipeline', () => {
       selectionResult: null,
       selectionApplied: false
     }
-    // Keep trainingApproach on reset - user preference
+    // Keep projectId and trainingApproach on reset - user preferences
+  }
+
+  async function setActiveProject(id: number | null) {
+    projectId.value = id
+    if (id !== null) {
+      try {
+        const res = await api.get(`/api/projects/${id}`)
+        if (res.data?.mode) {
+          mode.value = res.data.mode === 'mixed' ? mode.value : res.data.mode
+        }
+      } catch { /* ignore hydration errors */ }
+    }
+  }
+
+  async function createProjectAndAdopt(name: string): Promise<number | null> {
+    try {
+      const res = await api.post('/api/projects', {
+        name,
+        mode: mode.value,
+      })
+      const newId = res.data?.id
+      if (newId) {
+        projectId.value = newId
+        return newId
+      }
+    } catch { /* ignore */ }
+    return null
   }
 
   function setMode(newMode: PipelineMode) {
@@ -456,6 +500,9 @@ export const usePipelineStore = defineStore('pipeline', () => {
     mode,
     trainingApproach,
     currentStep,
+    projectId,
+    setActiveProject,
+    createProjectAndAdopt,
     dataSession,
     windowingConfig,
     windowedSession,

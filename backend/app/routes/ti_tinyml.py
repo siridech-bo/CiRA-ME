@@ -356,11 +356,29 @@ def ti_export_saved_model(model_id):
     import tempfile
     import shutil
 
-    from ..models import SavedModel
+    from ..models import SavedModel, DeployRecord as _DeployRecord, Project as _Project
 
     saved = SavedModel.get_by_id(model_id)
     if not saved:
         return jsonify({'error': 'Model not found'}), 404
+
+    # F4: record a ti_mcu deploy row up-front (Watch-out 6: never break the
+    # zip download because of a DB blip). We do this at the entry point so
+    # any of the multi-path returns below still credit the target.
+    try:
+        _pid = saved.get('project_id')
+        if _pid:
+            _DeployRecord.create(
+                project_id=_pid,
+                target='ti_mcu',
+                saved_model_id=model_id,
+                ref_id=f"ti_mcu_{saved.get('algorithm', 'model')}",
+                metadata={'algorithm': saved.get('algorithm'),
+                          'mode': saved.get('mode')},
+            )
+            _Project.touch(_pid, 'deploy')
+    except Exception:
+        pass
 
     model_path = saved.get('model_path', '')
     algorithm = saved.get('algorithm', 'model')

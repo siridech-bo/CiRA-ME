@@ -24,43 +24,95 @@ Each item lists commit SHAs where relevant. `git show <sha>` for details.
 
 ---
 
-### F4. End-to-end Project Status view
-**Status:** 📋 Ready to implement | **Effort:** ~6-7 days
-**Type:** feature | **Requested:** 2026-06-23
-
-**Summary:** A Projects sidebar entry showing pipeline stage progress
-(Data → Windowing → Features → Training → Deploy) for every body of work,
-not just App Builder.
-
-**Gap surfaced:** the `projects` DB table exists but only `training_sessions`
-has a FK to it. Data/windowing/feature sessions live only in Pinia +
-backend memory — lost on refresh. Need to persist these stages to DB and
-wire `project_id` through everywhere.
-
-**Decided design (all approved 2026-07-04):**
-
-| # | Decision | Rationale |
-|---|---|---|
-| F4.1 | **One aggregated ✅ deploy badge with hover-tooltip breakdown** (ME-LAB / App Builder / TI MCU / Jetson). | Row density: 4 badges × N projects is visual noise. Aggregate keeps it scannable. |
-| F4.2 | **Strict per-user visibility.** Admin sees all (same model as ME-LAB endpoints today). | Matches every other user-owned resource. Zero surprise. |
-| F4.3 | **One project = one dataset.** Dataset swap = clone the project. | Simpler DB schema. Already agreed in the June design. |
-
-**Also folded in:**
-- User-editable + reorderable feature selection (from July email)
-  becomes a per-project "feature template" so the API contract stays
-  stable across retrainings.
-- The "project folder" wording in the user manual (§3) refers to
-  `datasets/` subfolders — different from this new Project concept.
-  Rename "project folder" → "dataset folder" in the manual to avoid
-  clash. UI is already neutrally called "Folder Management".
-
-**Full plan:** [docs/PLAN_customer_feedback_2026-06.md](./PLAN_customer_feedback_2026-06.md)
+*(F4 moved to DONE — see T17 below.)*
 
 ---
 
 ## DONE — this round (July 2026)
 
 Ordered newest first. Every SHA is on the `master` branch.
+
+### T17. F4 End-to-end Project Status view (v1)
+**Status:** ✅ Done | **Shipped:** 2026-07-04
+Projects sidebar entry showing pipeline stage progress (Data →
+Windowing → Features → Training → Deploy) for every body of work.
+Three customer-facing decisions shipped verbatim: F4.1 aggregated
+Deploy badge with hover-tooltip breakdown (ME-LAB / App Builder /
+TI MCU / Jetson), F4.2 strict per-user visibility with admin
+`?all=1`, F4.3 one project = one dataset (swap = clone).
+
+Feature selection reordering shipped as a per-project **feature
+template** (stable ordered contract across retrainings) so the ME-LAB
+/ App Builder payload column order stays fixed even after retraining
+with different feature-extraction runs.
+
+Internal architecture decisions locked at implementation time (all 5
+user-approved 2026-07-04):
+- **Clone force-retrains** — only `projects.config` + `feature_templates`
+  copy across; `saved_models` / `training_sessions` do not. Rationale:
+  the whole point of a clone is a new dataset — copying stale metrics
+  would mislead.
+- **`current_stage` = latest-apply-wins.** If user re-windows a trained
+  project, list shows "windowing" not "training" — reflects reality.
+- **Legacy project: one per user, mixed-mode.** Adopts all pre-F4
+  orphan resources (saved_models / melab_endpoints / app_builder_apps /
+  training_sessions) — except folder_watchers, which per Q5 stay
+  detached (`project_id IS NULL`).
+- **Persist Data/Windowing/Features on Apply**, not on ingest — user who
+  browses a file and doesn't apply doesn't spam the DB.
+- **Folder Watchers left detached** — pre-F4 watchers never appear in
+  Deploy breakdown even after upgrade.
+
+Schema: 5 new tables (`data_sessions`, `windowed_sessions`,
+`feature_sessions`, `feature_templates`, `deploy_records`), 4 ALTERs
+adding `project_id` to `saved_models` / `melab_endpoints` /
+`app_builder_apps` / `folder_watchers`, and 1 ALTER adding
+`current_stage` to `projects`. All `try/except`-wrapped for idempotent
+boot. Explicit cascade in `Project.delete()` — child rows hard-deleted,
+external refs (saved_models etc.) detach via `project_id = NULL`
+(SQLite `PRAGMA foreign_keys` is off).
+
+Backend: new `/api/projects` blueprint with 10 routes (list, CRUD,
+clone, feature-template GET/PUT). `project_id` threaded through
+windowing, features, save-benchmark, ME-LAB endpoint create, App
+Builder publish, TI MCU export, deployment/package, cira-claw-package,
+and Jetson SSH deploy. TI + Jetson deploys now write `deploy_records`
+rows (wrapped in try/except so a DB blip doesn't sink the export).
+
+Frontend: `ProjectsListView.vue` with auto-refresh (15s, tab-visibility
+guard, mirrors F1 Folder Watcher pattern), 5-state stage chips
+(complete / in_progress / not_started / skipped / failed), aggregated
+Deploy badge with hover-tooltip breakdown. `ProjectDetailView.vue`
+with per-stage cards + inline feature-template up/down reorder editor
+(no new deps). Sidebar entry between Dashboard and PIPELINE subheader.
+Pinia `pipeline.ts` extended with `projectId`, `setActiveProject`,
+`createProjectAndAdopt`. Auto-create wired into `applyWindowing` —
+first Windowing apply of a fresh session materializes a project named
+`{dataset_stem} {timestamp}`. `project_id` sent on training, TimesNet,
+and save-benchmark calls so trained models attach to the active
+project.
+
+User manual: `docs/USER_MANUAL.md` "project folder" → "dataset folder"
+per plan §6.
+
+Verified via docker-exec suite:
+- All 5 new tables + 5 ALTERs present after fresh boot.
+- Legacy adoption idempotent — exactly 1 Legacy project per orphan-
+  owning user (34 total on the existing DB).
+- All 10 project routes registered; auth-gate returns 401.
+- Cascade delete: child rows (data/windowing/feature sessions +
+  deploy_records) hard-deleted; saved_model `project_id → NULL`, row
+  preserved.
+- `GET /api/projects` response shape matches plan §2b (stages dict,
+  deploy_breakdown per target, best_metric).
+- Frontend bundle contains `ProjectsListView-*.js` +
+  `ProjectDetailView-*.js` with the wire-in fixes applied.
+
+**Known gap deliberately not fixed in v1:**
+`/api/deployment/package/<id>` inserts `deploy_records` as
+`target='ti_mcu'` unconditionally — CCS packages are TI-family so this
+matches intent, but if Jetson-only packages ever flow through this
+endpoint they'll be miscounted. Triage-worthy but not a v1 blocker.
 
 ### T16. F2 Multi-Dataset Wizard (v1)
 **Status:** ✅ Done | **Shipped:** 2026-07-04

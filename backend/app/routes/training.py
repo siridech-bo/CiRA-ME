@@ -835,6 +835,25 @@ def save_benchmark():
         user_id=request.current_user['id']
     )
 
+    # F4: link saved model to project + advance current_stage
+    project_id = data.get('project_id')
+    if project_id:
+        try:
+            from ..models import Project as _Project, get_db as _get_db
+            pid = int(project_id)
+            proj = _Project.get_by_id(pid)
+            if proj and proj.get('user_id') == request.current_user['id']:
+                with _get_db() as _c:
+                    _cur = _c.cursor()
+                    _cur.execute(
+                        'UPDATE saved_models SET project_id = ? WHERE id = ?',
+                        (pid, model_id)
+                    )
+                    _c.commit()
+                _Project.touch(pid, 'training')
+        except Exception as _e:
+            logger.warning(f"[F4] link saved_model to project failed: {_e}")
+
     return jsonify({'id': model_id, 'name': name, 'message': 'Model saved as benchmark'})
 
 
