@@ -1429,6 +1429,15 @@ async function fetchFeaturePreview() {
       selectedFeatureForViz.value = extractedFeatureNames.value[0]
     }
   } catch (e: any) {
+    // Stale in-memory session (backend restart wipes _feature_sessions).
+    // Silently clear the stored extraction so the user just sees the empty
+    // Extract state again — a toast here would be noise, not signal.
+    if (e.response?.status === 404 || e.response?.data?.code === 'SESSION_NOT_FOUND') {
+      extractionResult.value = null
+      featurePreview.value = null
+      pipelineStore.setExtractionResult(null)
+      return
+    }
     notificationStore.showError('Failed to load feature preview')
   }
 }

@@ -410,6 +410,13 @@ def get_feature_preview():
         extractor = FeatureExtractor()
         result = extractor.get_feature_preview(session_id, num_rows)
         return jsonify(result)
+    except ValueError as e:
+        # Session not found — likely wiped by backend restart. 404 lets the
+        # frontend distinguish "please re-run Extract" from a real 400.
+        msg = str(e)
+        if 'not found' in msg.lower():
+            return jsonify({'error': msg, 'code': 'SESSION_NOT_FOUND'}), 404
+        return jsonify({'error': msg}), 400
     except Exception as e:
         return jsonify({'error': str(e)}), 400
 
