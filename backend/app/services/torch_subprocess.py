@@ -723,9 +723,17 @@ def predict_timesnet_classification(config: dict, data: dict) -> dict:
     else:
         predictions = pred_indices.tolist()
 
+    # Include per-sample confidence (max softmax) and full per-class
+    # probability vector so consumers (App Builder, ME-LAB, wizard)
+    # can render calibrated outputs, not just labels.
+    confidences = probs.max(axis=1).tolist()
+    probabilities = probs.tolist()
+
     result = {
         'success': True,
         'predictions': predictions,
+        'confidences': confidences,
+        'probabilities': probabilities,
     }
 
     if labels_raw is not None and label_classes:

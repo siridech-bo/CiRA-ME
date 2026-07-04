@@ -72,6 +72,102 @@ class ModelManager:
                 del _model_cache[model_path]
 
     @staticmethod
+    def _is_timesnet(model_data: Dict) -> bool:
+        """A TimesNet pickle has a torch state_dict, not a fitted estimator."""
+        return 'model_state' in model_data and 'model' not in model_data
+
+    @staticmethod
+    def _predict_timesnet(model_data: Dict, windows: np.ndarray, mode: str) -> List[Dict]:
+        """Inference for TimesNet (DL) models via the torch subprocess.
+
+        The subprocess pattern is reused from pipeline_replay so we get
+        consistent behavior across App Builder / ME-LAB / Wizard for
+        classification and anomaly. `windows` is a 3D tensor of shape
+        (n_windows, window_size, n_channels) — already windowed and
+        normalized by the pipeline runner upstream.
+
+        Note: subprocess spawn adds ~1-3s of cold-start latency per call.
+        For live MQTT streams that arrive faster than the subprocess can
+        return, the caller should batch windows before invoking.
+        """
+        import tempfile
+        from .pipeline_replay import _run_timesnet_subprocess
+
+        if not isinstance(windows, np.ndarray):
+            windows = np.asarray(windows, dtype=np.float32)
+        if windows.ndim == 2:
+            # Single window arriving as (window_size, n_channels) — batch it.
+            windows = windows[np.newaxis, ...]
+
+        # Dump model_data to a temp pickle so the subprocess reads torch
+        # tensors directly (avoids JSON serialization of state_dict).
+        tmp = tempfile.NamedTemporaryFile(mode='wb', suffix='_tn.pkl', delete=False)
+        try:
+            pickle.dump(model_data, tmp)
+            tmp_path = tmp.name
+        finally:
+            tmp.close()
+
+        config_dict = model_data.get('config', {}) or {}
+        if mode == 'anomaly':
+            task = 'predict_anomaly'
+            data_payload = {
+                'windows': windows.tolist(),
+                'labels': None,
+                'threshold': float(model_data.get('threshold', 0)),
+                'model_data_path': tmp_path,
+            }
+        else:
+            task = 'predict_classification'
+            data_payload = {
+                'windows': windows.tolist(),
+                'labels': None,
+                'label_classes': model_data.get('label_encoder_classes', []),
+                'model_data_path': tmp_path,
+            }
+
+        try:
+            result = _run_timesnet_subprocess(task, config_dict, data_payload)
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+        if not result.get('success'):
+            raise RuntimeError(result.get('error') or 'TimesNet subprocess failed')
+
+        preds = result.get('predictions') or []
+        confs = result.get('confidences') or []
+        probs_all = result.get('probabilities') or []
+        label_classes = model_data.get('label_encoder_classes') or []
+
+        out: List[Dict] = []
+        for i, p in enumerate(preds):
+            entry: Dict[str, Any] = {
+                'label': str(p),
+                'prediction': str(p),
+            }
+            if i < len(confs):
+                entry['confidence'] = float(confs[i])
+            if i < len(probs_all) and label_classes:
+                entry['probabilities'] = {
+                    str(label_classes[j]): float(probs_all[i][j])
+                    for j in range(min(len(label_classes), len(probs_all[i])))
+                }
+            if mode == 'anomaly':
+                # Anomaly subprocess emits 0/1; normalize to normal/anomaly label.
+                is_anom = int(p) == 1
+                entry['label'] = 'anomaly' if is_anom else 'normal'
+                entry['prediction'] = int(p)
+                if i < len(confs):
+                    # Reconstruction-error-derived confidence isn't calibrated
+                    # the same way as softmax — expose it as `score` too.
+                    entry['score'] = float(confs[i])
+            out.append(entry)
+        return out
+
+    @staticmethod
     def predict(model_data: Dict, features: np.ndarray, mode: str) -> List[Dict]:
         """Run inference on feature vectors.
 
@@ -83,6 +179,11 @@ class ModelManager:
         Returns:
             List of prediction dicts
         """
+        # TimesNet (DL) models don't fit the sklearn interface — dispatch
+        # to the subprocess-based inference path.
+        if ModelManager._is_timesnet(model_data):
+            return ModelManager._predict_timesnet(model_data, features, mode)
+
         model = model_data['model']
         scaler = model_data.get('scaler')
 
