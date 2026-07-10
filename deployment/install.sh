@@ -74,9 +74,12 @@ echo "  Free space: ${FREE_GB} GB — ok."
 
 # 5. Verify tarballs are present and non-empty BEFORE we start tearing down
 #    the previous install. A missing tarball halfway through leaves the box
-#    in a broken state.
+#    in a broken state. All 4 are required — TI + Mosquitto were previously
+#    optional but customers reported the case-sensitive `if -f` guard was
+#    silently skipping them on some hosts, leaving MQTT and TI MCU features
+#    broken with no error to point at. Better to fail loudly here.
 missing_required=""
-for tar in cirame-backend.tar cirame-frontend.tar; do
+for tar in cirame-backend.tar cirame-frontend.tar cirame-ti-modelmaker.tar cirame-mosquitto.tar; do
     if [ ! -f "$tar" ]; then
         missing_required="$missing_required $tar"
     elif [ ! -s "$tar" ]; then
@@ -133,23 +136,21 @@ load_and_verify() {
     echo "  $label loaded ($tag)."
 }
 
+# All 4 images are required (see pre-flight check above). Each load is
+# followed by docker image inspect to catch a truncated tarball that
+# succeeded at load-time but produced no tagged image.
 load_and_verify cirame-backend.tar cirame-backend:latest "backend" || {
     echo "ERROR: cirame-backend.tar missing"; exit 1;
 }
 load_and_verify cirame-frontend.tar cirame-frontend:latest "frontend" || {
     echo "ERROR: cirame-frontend.tar missing"; exit 1;
 }
-# Optional
-if [ -f cirame-ti-modelmaker.tar ]; then
-    load_and_verify cirame-ti-modelmaker.tar cirame-ti-modelmaker:latest "TI ModelMaker"
-else
-    echo "  Skipped: TI ModelMaker (cirame-ti-modelmaker.tar not found)"
-fi
-if [ -f cirame-mosquitto.tar ]; then
-    load_and_verify cirame-mosquitto.tar eclipse-mosquitto:2 "Mosquitto MQTT"
-else
-    echo "  Skipped: Mosquitto MQTT (cirame-mosquitto.tar not found)"
-fi
+load_and_verify cirame-ti-modelmaker.tar cirame-ti-modelmaker:latest "TI ModelMaker" || {
+    echo "ERROR: cirame-ti-modelmaker.tar missing"; exit 1;
+}
+load_and_verify cirame-mosquitto.tar eclipse-mosquitto:2 "Mosquitto MQTT" || {
+    echo "ERROR: cirame-mosquitto.tar missing"; exit 1;
+}
 
 echo
 

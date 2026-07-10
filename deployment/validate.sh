@@ -145,10 +145,15 @@ for port_and_svc in "3030:frontend" "5100:backend" "5200:ti-modelmaker" "1883:mo
     fi
 done
 
-# ─── Tarballs (only when validating an install, not a start) ──────
+# ─── Tarballs — all 4 are required for a tarball install ────────────
+# TI + Mosquitto used to be optional. Customers reported the silent-skip
+# guard was leaving MQTT and TI features broken with no error to point at,
+# so both are now mandatory. If you're building from source, ignore this
+# section — no tarballs is a valid state for developers.
 echo
 echo "== Release tarballs =="
 tarballs_found=0
+required_missing=""
 for tar in cirame-backend.tar cirame-frontend.tar cirame-ti-modelmaker.tar cirame-mosquitto.tar; do
     if [ -f "$tar" ]; then
         tarballs_found=$((tarballs_found + 1))
@@ -158,12 +163,14 @@ for tar in cirame-backend.tar cirame-frontend.tar cirame-ti-modelmaker.tar ciram
             size=$(du -h "$tar" | awk '{print $1}')
             pass "$tar present ($size)"
         fi
+    else
+        required_missing="$required_missing $tar"
     fi
 done
 if [ "$tarballs_found" -eq 0 ]; then
     warn "no release tarballs in this folder — this is fine if you plan to build from source"
-elif [ ! -f "cirame-backend.tar" ] || [ ! -f "cirame-frontend.tar" ]; then
-    fail "some tarballs missing — backend and frontend are required"
+elif [ -n "$required_missing" ]; then
+    fail "required tarballs missing:$required_missing"
 fi
 
 # ─── Summary ───────────────────────────────────────────────────────

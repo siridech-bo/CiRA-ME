@@ -10,8 +10,8 @@
 |---|---|---|---|
 | `cirame-backend.tar` | ~14 GB | Yes | Flask API + ML pipeline + F1-F4 features |
 | `cirame-frontend.tar` | ~93 MB | Yes | Vue 3 web UI |
-| `cirame-ti-modelmaker.tar` | ~11.5 GB | Optional | TI TMS320 MCU export |
-| `cirame-mosquitto.tar` | ~36 MB | Optional | MQTT broker for live streaming |
+| `cirame-ti-modelmaker.tar` | ~11.5 GB | Yes | TI TMS320 MCU export |
+| `cirame-mosquitto.tar` | ~36 MB | Yes | MQTT broker for live streaming |
 | `docker-compose.yml` | — | GPU | Deployment config with NVIDIA passthrough |
 | `docker-compose-no-gpu.yml` | — | CPU | Deployment config, CPU-only |
 | `data/` | — | | User data (created on first run) |
@@ -289,7 +289,7 @@ Password: admin123
 |---|---|---|
 | **3030** | Frontend (nginx) | Web application |
 | 5100 | Backend (Flask) | REST API |
-| 5200 | TI ModelMaker | TI MCU training (optional) |
+| 5200 | TI ModelMaker | TI MCU training |
 | **1883** | Mosquitto | MQTT TCP (for sensors/devices) |
 | **9001** | Mosquitto | MQTT WebSocket (for browsers) |
 
@@ -307,8 +307,6 @@ User private folders are stored in `datasets/<folder_name>/` — each user with 
 
 ## MQTT Live Streaming
 
-If `cirame-mosquitto.tar` is installed:
-
 1. IoT devices/sensors connect to `mqtt://server-ip:1883`
 2. Published apps connect to `ws://server-ip:9001/mqtt` (auto-resolved in browser)
 3. Manage broker at the "MQTT Broker" page in CiRA ME
@@ -317,8 +315,6 @@ If `cirame-mosquitto.tar` is installed:
 ---
 
 ## TI MCU Support
-
-If `cirame-ti-modelmaker.tar` is installed:
 
 1. Train TI model zoo models (Conv1D, MLP) in the Training page
 2. Export C code packages for Code Composer Studio

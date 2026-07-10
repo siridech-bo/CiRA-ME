@@ -48,7 +48,9 @@ fi
 
 # Verify the new tar files exist AND are non-empty. A truncated download
 # would otherwise take down the running app and leave nothing to boot with.
-for tar in cirame-backend.tar cirame-frontend.tar; do
+# All 4 are required (see install.sh for the rationale on why TI + Mosquitto
+# are no longer optional).
+for tar in cirame-backend.tar cirame-frontend.tar cirame-ti-modelmaker.tar cirame-mosquitto.tar; do
     if [ ! -f "$tar" ]; then
         echo "ERROR: $tar not found. Copy the new .tar files here before running update."
         exit 1
@@ -115,15 +117,15 @@ echo "[4/5] Loading new frontend image..."
 load_and_verify cirame-frontend.tar cirame-frontend:latest "frontend"
 echo
 
-# Load optional images if present
-if [ -f "cirame-ti-modelmaker.tar" ]; then
-    load_and_verify cirame-ti-modelmaker.tar cirame-ti-modelmaker:latest "TI ModelMaker"
-    echo
-fi
-if [ -f "cirame-mosquitto.tar" ]; then
-    load_and_verify cirame-mosquitto.tar eclipse-mosquitto:2 "Mosquitto MQTT"
-    echo
-fi
+# All 4 images required — TI + Mosquitto were previously optional but
+# silent-skip bugs caused broken MQTT / TI features with no user-visible
+# error. Fail loudly here if either is missing.
+echo "     Loading new TI ModelMaker image..."
+load_and_verify cirame-ti-modelmaker.tar cirame-ti-modelmaker:latest "TI ModelMaker"
+echo
+echo "     Loading new Mosquitto MQTT broker..."
+load_and_verify cirame-mosquitto.tar eclipse-mosquitto:2 "Mosquitto MQTT"
+echo
 
 # ─── [5/5] Cleanup ─────────────────────────────────────────────────
 echo "[5/5] Cleaning up old image layers..."

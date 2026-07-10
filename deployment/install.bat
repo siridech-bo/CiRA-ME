@@ -75,9 +75,15 @@ if not defined FREE_BYTES (
 )
 
 REM 4. Verify tarballs are present before we tear down the previous install.
+REM All 4 are required — TI + Mosquitto were previously optional but customers
+REM reported the `if exist` guard was silently skipping them on some hosts
+REM (case-sensitivity, working-directory quirks), leaving MQTT and TI MCU
+REM features broken with no error to point at. Better to fail loudly here.
 set "MISSING="
 if not exist "cirame-backend.tar" set "MISSING=!MISSING! cirame-backend.tar"
 if not exist "cirame-frontend.tar" set "MISSING=!MISSING! cirame-frontend.tar"
+if not exist "cirame-ti-modelmaker.tar" set "MISSING=!MISSING! cirame-ti-modelmaker.tar"
+if not exist "cirame-mosquitto.tar" set "MISSING=!MISSING! cirame-mosquitto.tar"
 if defined MISSING (
     echo ERROR: Required tarballs missing:!MISSING!
     echo Make sure you extracted the full release ZIP and are running install.bat
@@ -140,39 +146,36 @@ if %errorlevel% neq 0 (
 )
 echo   Frontend loaded.
 
-REM Optional images
-if exist "cirame-ti-modelmaker.tar" (
-    echo   Loading TI ModelMaker image (this may take several minutes)...
-    docker load -i cirame-ti-modelmaker.tar
-    if %errorlevel% neq 0 (
-        echo ERROR: Failed to load TI ModelMaker image.
-        pause
-        exit /b 1
-    )
-    docker image inspect cirame-ti-modelmaker:latest >nul 2>&1
-    if %errorlevel% neq 0 (
-        echo ERROR: cirame-ti-modelmaker.tar corrupt. Re-download.
-        pause
-        exit /b 1
-    )
-    echo   TI ModelMaker loaded.
-) else (
-    echo   Skipped: TI ModelMaker (cirame-ti-modelmaker.tar not found)
+REM TI ModelMaker and Mosquitto are both required (see pre-flight check above).
+echo   Loading TI ModelMaker image (this may take several minutes)...
+docker load -i cirame-ti-modelmaker.tar
+if %errorlevel% neq 0 (
+    echo ERROR: Failed to load TI ModelMaker image.
+    pause
+    exit /b 1
 )
+docker image inspect cirame-ti-modelmaker:latest >nul 2>&1
+if %errorlevel% neq 0 (
+    echo ERROR: cirame-ti-modelmaker.tar corrupt. Re-download.
+    pause
+    exit /b 1
+)
+echo   TI ModelMaker loaded.
 
-if exist "cirame-mosquitto.tar" (
-    echo   Loading Mosquitto MQTT broker...
-    docker load -i cirame-mosquitto.tar
-    docker image inspect eclipse-mosquitto:2 >nul 2>&1
-    if %errorlevel% neq 0 (
-        echo ERROR: Mosquitto image did not land after load.
-        pause
-        exit /b 1
-    )
-    echo   Mosquitto loaded.
-) else (
-    echo   Skipped: Mosquitto MQTT (cirame-mosquitto.tar not found)
+echo   Loading Mosquitto MQTT broker...
+docker load -i cirame-mosquitto.tar
+if %errorlevel% neq 0 (
+    echo ERROR: Failed to load Mosquitto image.
+    pause
+    exit /b 1
 )
+docker image inspect eclipse-mosquitto:2 >nul 2>&1
+if %errorlevel% neq 0 (
+    echo ERROR: Mosquitto image did not land after load.
+    pause
+    exit /b 1
+)
+echo   Mosquitto loaded.
 echo.
 
 REM Create folders and config

@@ -57,7 +57,9 @@ if not defined DOCKER_COMPOSE (
 )
 
 REM Verify tarballs present + non-empty BEFORE tearing down the current app.
-for %%T in (cirame-backend.tar cirame-frontend.tar) do (
+REM All 4 are required (see install.bat for the rationale on why TI + Mosquitto
+REM are no longer optional).
+for %%T in (cirame-backend.tar cirame-frontend.tar cirame-ti-modelmaker.tar cirame-mosquitto.tar) do (
     if not exist "%%T" (
         echo ERROR: %%T not found. Copy the new .tar files here before running update.
         pause
@@ -146,34 +148,36 @@ if !errorlevel! neq 0 (
 echo   Frontend loaded.
 echo.
 
-REM Load optional images if present
-if exist "cirame-ti-modelmaker.tar" (
-    echo Loading TI ModelMaker image...
-    docker load -i cirame-ti-modelmaker.tar
-    docker image inspect cirame-ti-modelmaker:latest >nul 2>&1
-    if !errorlevel! neq 0 (
-        echo ERROR: TI ModelMaker image did not land after load.
-        pause
-        exit /b 1
-    )
-    echo   TI ModelMaker loaded.
-) else (
-    echo Skipped: cirame-ti-modelmaker.tar not found (optional)
+REM TI ModelMaker and Mosquitto are both required (see pre-flight check above).
+echo Loading TI ModelMaker image...
+docker load -i cirame-ti-modelmaker.tar
+if !errorlevel! neq 0 (
+    echo ERROR: Failed to load TI ModelMaker image.
+    pause
+    exit /b 1
 )
+docker image inspect cirame-ti-modelmaker:latest >nul 2>&1
+if !errorlevel! neq 0 (
+    echo ERROR: TI ModelMaker image did not land after load.
+    pause
+    exit /b 1
+)
+echo   TI ModelMaker loaded.
 
-if exist "cirame-mosquitto.tar" (
-    echo Loading Mosquitto MQTT broker...
-    docker load -i cirame-mosquitto.tar
-    docker image inspect eclipse-mosquitto:2 >nul 2>&1
-    if !errorlevel! neq 0 (
-        echo ERROR: Mosquitto image did not land after load.
-        pause
-        exit /b 1
-    )
-    echo   Mosquitto loaded.
-) else (
-    echo Skipped: cirame-mosquitto.tar not found (optional)
+echo Loading Mosquitto MQTT broker...
+docker load -i cirame-mosquitto.tar
+if !errorlevel! neq 0 (
+    echo ERROR: Failed to load Mosquitto image.
+    pause
+    exit /b 1
 )
+docker image inspect eclipse-mosquitto:2 >nul 2>&1
+if !errorlevel! neq 0 (
+    echo ERROR: Mosquitto image did not land after load.
+    pause
+    exit /b 1
+)
+echo   Mosquitto loaded.
 echo.
 
 REM ─── [5/5] Cleanup ─────────────────────────────────────────────

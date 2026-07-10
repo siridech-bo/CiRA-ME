@@ -137,7 +137,10 @@ for %%P in (3030:frontend 5100:backend 5200:ti-modelmaker 1883:mosquitto-mqtt 90
     )
 )
 
-REM ─── Release tarballs ─────────────────────────────────────────
+REM ─── Release tarballs — all 4 are required for a tarball install ──
+REM TI + Mosquitto used to be optional. Customers reported the silent-skip
+REM guard was leaving MQTT and TI features broken with no error to point at,
+REM so both are now mandatory.
 echo.
 echo == Release tarballs ==
 set /a TARS_FOUND=0
@@ -156,12 +159,10 @@ for %%T in (cirame-backend.tar cirame-frontend.tar cirame-ti-modelmaker.tar cira
 if !TARS_FOUND! equ 0 (
     call :warn "no release tarballs in this folder — this is fine if you plan to build from source"
 ) else (
-    if not exist cirame-backend.tar (
-        call :fail "cirame-backend.tar missing — required"
-    )
-    if not exist cirame-frontend.tar (
-        call :fail "cirame-frontend.tar missing — required"
-    )
+    if not exist cirame-backend.tar        call :fail "cirame-backend.tar missing — required"
+    if not exist cirame-frontend.tar       call :fail "cirame-frontend.tar missing — required"
+    if not exist cirame-ti-modelmaker.tar  call :fail "cirame-ti-modelmaker.tar missing — required"
+    if not exist cirame-mosquitto.tar      call :fail "cirame-mosquitto.tar missing — required"
 )
 
 REM ─── Summary ─────────────────────────────────────────────────
