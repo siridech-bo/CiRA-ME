@@ -69,6 +69,17 @@
                 </div>
               </template>
             </v-radio>
+
+            <v-radio value="url">
+              <template #label>
+                <div>
+                  <div class="font-weight-medium">Load from URL</div>
+                  <div class="text-caption text-medium-emphasis">
+                    Fetch a CSV / text file over HTTPS (max 100 MB). Includes Loghub catalog.
+                  </div>
+                </div>
+              </template>
+            </v-radio>
           </v-radio-group>
 
           <!-- Format Info -->
@@ -85,7 +96,7 @@
       </v-col>
 
       <!-- File Browser -->
-      <v-col cols="12" md="8">
+      <v-col v-if="!isUrlFormat" cols="12" md="8">
         <v-card class="pa-4">
           <div class="d-flex align-center mb-4 flex-wrap">
             <h3 class="text-subtitle-1 font-weight-bold">Browse Files</h3>
@@ -361,6 +372,236 @@
           >
             <div class="font-weight-medium">Selected: {{ selectedFile.name }}</div>
             <div class="text-caption">{{ selectedFile.path }}</div>
+          </v-alert>
+        </v-card>
+      </v-col>
+
+      <!-- URL Loader (shown when File Format = Load from URL) -->
+      <v-col v-if="isUrlFormat" cols="12" md="8">
+        <v-card class="pa-4">
+          <div class="d-flex align-center mb-4 flex-wrap">
+            <h3 class="text-subtitle-1 font-weight-bold">Fetch from URL</h3>
+            <v-spacer />
+            <v-btn
+              variant="tonal"
+              size="small"
+              color="info"
+              prepend-icon="mdi-information-outline"
+              @click="showFormatGuide = true"
+            >
+              Format Guide
+            </v-btn>
+          </div>
+
+          <p class="text-body-2 text-medium-emphasis mb-3">
+            Paste a direct <code>https://</code> link to a CSV or delimited text file.
+            The file is streamed to a temporary buffer (100 MB hard cap) and never written to disk.
+          </p>
+
+          <v-text-field
+            v-model="urlLoader.url"
+            label="File URL"
+            placeholder="https://…"
+            density="compact"
+            variant="outlined"
+            hide-details="auto"
+            hint="HTTPS only. Some hosts (e.g. GitHub) may require a raw-content URL."
+            class="mb-3"
+          />
+
+          <v-row>
+            <v-col cols="12" md="4">
+              <v-select
+                v-model="urlLoader.format"
+                :items="[
+                  { title: 'CSV', value: 'csv' },
+                  { title: 'Text (delimited)', value: 'text' },
+                ]"
+                item-title="title"
+                item-value="value"
+                label="Format"
+                density="compact"
+                variant="outlined"
+                hide-details
+              />
+            </v-col>
+
+            <template v-if="urlLoader.format === 'text'">
+              <v-col cols="6" md="3">
+                <v-text-field
+                  v-model="urlLoader.delimiter"
+                  label="Delimiter"
+                  placeholder="auto"
+                  maxlength="4"
+                  density="compact"
+                  variant="outlined"
+                  hide-details
+                />
+              </v-col>
+              <v-col cols="6" md="2">
+                <v-text-field
+                  v-model.number="urlLoader.headerRow"
+                  type="number"
+                  label="Header row"
+                  min="0"
+                  density="compact"
+                  variant="outlined"
+                  hide-details
+                />
+              </v-col>
+              <v-col cols="6" md="3">
+                <v-text-field
+                  v-model.number="urlLoader.skipRows"
+                  type="number"
+                  label="Skip rows"
+                  min="0"
+                  density="compact"
+                  variant="outlined"
+                  hide-details
+                />
+              </v-col>
+            </template>
+          </v-row>
+
+          <div class="d-flex align-center mt-4">
+            <v-btn
+              color="primary"
+              size="small"
+              :loading="urlLoader.loading"
+              :disabled="!urlLoader.url.trim()"
+              prepend-icon="mdi-cloud-download-outline"
+              @click="fetchFromUrl"
+            >
+              Fetch &amp; Preview
+            </v-btn>
+            <v-spacer />
+            <span v-if="dataPreview?.metadata?.source_url" class="text-caption text-medium-emphasis text-truncate" style="max-width: 60%;">
+              <v-icon size="small" class="mr-1">mdi-link-variant</v-icon>
+              {{ dataPreview.metadata.source_url }}
+            </span>
+          </div>
+
+          <v-divider class="my-4" />
+
+          <!-- Loghub Quick-Pick chips -->
+          <div class="mb-2">
+            <div class="text-subtitle-2 font-weight-medium">
+              <v-icon size="small" color="primary" class="mr-1">mdi-lightning-bolt</v-icon>
+              Quick-pick from Loghub samples
+              <span class="text-caption text-medium-emphasis ml-1">(~200-400 KB each)</span>
+            </div>
+          </div>
+          <div class="mb-2">
+            <v-chip
+              v-for="key in LOGHUB_QUICK_PICK_KEYS"
+              :key="key"
+              class="mr-2 mb-1"
+              color="primary"
+              variant="tonal"
+              size="small"
+              prepend-icon="mdi-database-outline"
+              @click="pickLoghubSample(key)"
+            >
+              {{ key }}
+            </v-chip>
+          </div>
+
+          <!-- Loghub Full Catalog (expansion panel) -->
+          <v-expansion-panels variant="accordion" class="mt-3">
+            <v-expansion-panel>
+              <v-expansion-panel-title>
+                <v-icon class="mr-2" color="secondary">mdi-book-open-variant</v-icon>
+                Loghub — Full Dataset Catalog
+                <v-chip size="x-small" color="secondary" variant="tonal" class="ml-2">
+                  {{ LOGHUB_CATALOG.length }} datasets
+                </v-chip>
+              </v-expansion-panel-title>
+              <v-expansion-panel-text>
+                <v-alert
+                  type="info"
+                  variant="tonal"
+                  density="compact"
+                  class="mb-3"
+                  icon="mdi-license"
+                >
+                  Loghub datasets are freely available for research or academic work.
+                  Confirm your license needs before commercial use.
+                </v-alert>
+
+                <div
+                  v-for="category in loghubCategories"
+                  :key="category"
+                  class="mb-4"
+                >
+                  <div class="text-caption text-medium-emphasis font-weight-medium mb-1">
+                    {{ category }}
+                  </div>
+                  <v-table density="compact" class="loghub-table">
+                    <thead>
+                      <tr>
+                        <th>Dataset</th>
+                        <th>Description</th>
+                        <th class="text-center">Labeled</th>
+                        <th class="text-right">#Lines</th>
+                        <th class="text-right">Raw Size</th>
+                        <th class="text-center">Sample (200 KB)</th>
+                        <th class="text-center">Full download</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr
+                        v-for="entry in loghubByCategory[category]"
+                        :key="entry.key"
+                      >
+                        <td class="font-weight-medium">{{ entry.key }}</td>
+                        <td>{{ entry.description }}</td>
+                        <td class="text-center">
+                          <v-icon v-if="entry.labeled" size="small" color="success">mdi-check</v-icon>
+                          <span v-else class="text-medium-emphasis">—</span>
+                        </td>
+                        <td class="text-right">{{ entry.lines.toLocaleString() }}</td>
+                        <td class="text-right">{{ entry.sizeRaw }}</td>
+                        <td class="text-center">
+                          <v-btn
+                            v-if="entry.sampleUrl"
+                            size="x-small"
+                            variant="tonal"
+                            color="primary"
+                            @click="pickLoghubSample(entry.key)"
+                          >
+                            Use
+                          </v-btn>
+                          <span v-else class="text-caption text-medium-emphasis">N/A</span>
+                        </td>
+                        <td class="text-center">
+                          <a
+                            :href="entry.fullUrl"
+                            target="_blank"
+                            rel="noopener"
+                            class="text-caption"
+                          >
+                            Zenodo
+                            <v-icon size="x-small">mdi-open-in-new</v-icon>
+                          </a>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </v-table>
+                </div>
+              </v-expansion-panel-text>
+            </v-expansion-panel>
+          </v-expansion-panels>
+
+          <v-alert
+            v-if="urlLoader.error"
+            type="error"
+            variant="tonal"
+            density="compact"
+            class="mt-4"
+            closable
+            @click:close="urlLoader.error = ''"
+          >
+            {{ urlLoader.error }}
           </v-alert>
         </v-card>
       </v-col>
@@ -897,6 +1138,10 @@
               <v-list-item class="px-0">
                 <template #prepend><v-icon size="small" color="primary">mdi-file-document-outline</v-icon></template>
                 <v-list-item-title class="text-body-2"><strong>Text file</strong> — any delimited text file (<code>.txt</code>, <code>.tsv</code>, <code>.dat</code>, <code>.log</code>). The Text Import wizard auto-detects the delimiter and lets you tweak header row / skip rows with a live preview before loading.</v-list-item-title>
+              </v-list-item>
+              <v-list-item class="px-0">
+                <template #prepend><v-icon size="small" color="primary">mdi-cloud-download-outline</v-icon></template>
+                <v-list-item-title class="text-body-2"><strong>Load from URL</strong> — fetch a CSV / text file over <code>https://</code> (max 100 MB, streamed to memory only). Includes a hardcoded catalog of Loghub log datasets with one-click samples for quick experimentation.</v-list-item-title>
               </v-list-item>
             </v-list>
           </div>
@@ -1614,6 +1859,8 @@ const formatInfo = computed(() => {
       return 'Select a dataset folder with train/test subfolders. Classes are auto-detected from filenames.'
     case 'text':
       return 'Pick a delimited text file (.txt, .tsv, .dat, .log). The Text Import wizard lets you tweak delimiter, header row, and skipped rows with a live preview before loading.'
+    case 'url':
+      return 'Fetch a CSV or delimited text file over HTTPS. Streamed to memory only (never written to disk) with a 100 MB hard cap. Quick-pick chips below load small Loghub samples.'
     default:
       return ''
   }
@@ -1625,6 +1872,170 @@ const isCborFormat = computed(() => {
 
 const isCsvFormat = computed(() => selectedFormat.value === 'csv')
 const isTextFormat = computed(() => selectedFormat.value === 'text')
+const isUrlFormat = computed(() => selectedFormat.value === 'url')
+
+// --- Load from URL state --------------------------------------------------
+interface UrlLoaderState {
+  url: string
+  format: 'csv' | 'text'
+  delimiter: string
+  headerRow: number
+  skipRows: number
+  loading: boolean
+  error: string
+}
+
+const urlLoader = ref<UrlLoaderState>({
+  url: '',
+  format: 'csv',
+  delimiter: '',
+  headerRow: 1,
+  skipRows: 0,
+  loading: false,
+  error: '',
+})
+
+// --- Loghub catalog (hardcoded, from loghub README) -----------------------
+interface LoghubEntry {
+  key: string
+  category: string
+  description: string
+  labeled: boolean
+  lines: number
+  sizeRaw: string
+  sampleUrl: string | null
+  fullUrl: string
+}
+
+const LOGHUB_CATALOG: LoghubEntry[] = [
+  // Distributed systems
+  { key: 'HDFS_v1', category: 'Distributed systems', description: 'Hadoop distributed file system log', labeled: true, lines: 11175629, sizeRaw: '1.47 GiB',
+    sampleUrl: 'https://raw.githubusercontent.com/logpai/loghub/master/HDFS/HDFS_2k.log_structured.csv',
+    fullUrl: 'https://zenodo.org/records/8196385/files/HDFS_v1.zip?download=1' },
+  { key: 'HDFS_v2', category: 'Distributed systems', description: 'Hadoop distributed file system log', labeled: false, lines: 71118073, sizeRaw: '16.06 GiB',
+    sampleUrl: null,
+    fullUrl: 'https://zenodo.org/records/8196385/files/HDFS_v2.zip?download=1' },
+  { key: 'HDFS_v3', category: 'Distributed systems', description: 'Instrumented HDFS trace log (TraceBench)', labeled: true, lines: 14778079, sizeRaw: '2.96 GiB',
+    sampleUrl: null,
+    fullUrl: 'https://zenodo.org/records/8196385/files/HDFS_v3_TraceBench.zip?download=1' },
+  { key: 'Hadoop', category: 'Distributed systems', description: 'Hadoop MapReduce job log', labeled: true, lines: 394308, sizeRaw: '48.61 MiB',
+    sampleUrl: 'https://raw.githubusercontent.com/logpai/loghub/master/Hadoop/Hadoop_2k.log_structured.csv',
+    fullUrl: 'https://zenodo.org/records/8196385/files/Hadoop.zip?download=1' },
+  { key: 'Spark', category: 'Distributed systems', description: 'Spark job log', labeled: false, lines: 33236604, sizeRaw: '2.75 GiB',
+    sampleUrl: 'https://raw.githubusercontent.com/logpai/loghub/master/Spark/Spark_2k.log_structured.csv',
+    fullUrl: 'https://zenodo.org/records/8196385/files/Spark.tar.gz?download=1' },
+  { key: 'Zookeeper', category: 'Distributed systems', description: 'ZooKeeper service log', labeled: false, lines: 74380, sizeRaw: '9.95 MiB',
+    sampleUrl: 'https://raw.githubusercontent.com/logpai/loghub/master/Zookeeper/Zookeeper_2k.log_structured.csv',
+    fullUrl: 'https://zenodo.org/records/8196385/files/Zookeeper.tar.gz?download=1' },
+  { key: 'OpenStack', category: 'Distributed systems', description: 'OpenStack infrastructure log', labeled: true, lines: 207820, sizeRaw: '58.61 MiB',
+    sampleUrl: 'https://raw.githubusercontent.com/logpai/loghub/master/OpenStack/OpenStack_2k.log_structured.csv',
+    fullUrl: 'https://zenodo.org/records/8196385/files/OpenStack.tar.gz?download=1' },
+  // Super computers
+  { key: 'BGL', category: 'Super computers', description: 'Blue Gene/L supercomputer log', labeled: true, lines: 4747963, sizeRaw: '708.76 MiB',
+    sampleUrl: 'https://raw.githubusercontent.com/logpai/loghub/master/BGL/BGL_2k.log_structured.csv',
+    fullUrl: 'https://zenodo.org/records/8196385/files/BGL.zip?download=1' },
+  { key: 'HPC', category: 'Super computers', description: 'High performance cluster log', labeled: false, lines: 433489, sizeRaw: '32.00 MiB',
+    sampleUrl: 'https://raw.githubusercontent.com/logpai/loghub/master/HPC/HPC_2k.log_structured.csv',
+    fullUrl: 'https://zenodo.org/records/8196385/files/HPC.zip?download=1' },
+  { key: 'Thunderbird', category: 'Super computers', description: 'Thunderbird supercomputer log', labeled: true, lines: 211212192, sizeRaw: '29.60 GiB',
+    sampleUrl: 'https://raw.githubusercontent.com/logpai/loghub/master/Thunderbird/Thunderbird_2k.log_structured.csv',
+    fullUrl: 'https://zenodo.org/records/8196385/files/Thunderbird.tar.gz?download=1' },
+  // Operating systems
+  { key: 'Windows', category: 'Operating systems', description: 'Windows event log', labeled: false, lines: 114608388, sizeRaw: '26.09 GiB',
+    sampleUrl: 'https://raw.githubusercontent.com/logpai/loghub/master/Windows/Windows_2k.log_structured.csv',
+    fullUrl: 'https://zenodo.org/records/8196385/files/Windows.tar.gz?download=1' },
+  { key: 'Linux', category: 'Operating systems', description: 'Linux system log', labeled: false, lines: 25567, sizeRaw: '2.25 MiB',
+    sampleUrl: 'https://raw.githubusercontent.com/logpai/loghub/master/Linux/Linux_2k.log_structured.csv',
+    fullUrl: 'https://zenodo.org/records/8196385/files/Linux.tar.gz?download=1' },
+  { key: 'Mac', category: 'Operating systems', description: 'Mac OS log', labeled: false, lines: 117283, sizeRaw: '16.09 MiB',
+    sampleUrl: 'https://raw.githubusercontent.com/logpai/loghub/master/Mac/Mac_2k.log_structured.csv',
+    fullUrl: 'https://zenodo.org/records/8196385/files/Mac.tar.gz?download=1' },
+  // Mobile systems
+  { key: 'Android_v1', category: 'Mobile systems', description: 'Android framework log', labeled: false, lines: 1555005, sizeRaw: '183.37 MiB',
+    sampleUrl: 'https://raw.githubusercontent.com/logpai/loghub/master/Android/Android_2k.log_structured.csv',
+    fullUrl: 'https://zenodo.org/records/8196385/files/Android_v1.zip?download=1' },
+  { key: 'Android_v2', category: 'Mobile systems', description: 'Android framework log', labeled: false, lines: 30348042, sizeRaw: '3.38 GiB',
+    sampleUrl: null,
+    fullUrl: 'https://zenodo.org/records/8196385/files/Android_v2.zip?download=1' },
+  { key: 'HealthApp', category: 'Mobile systems', description: 'Health app log', labeled: false, lines: 253395, sizeRaw: '22.44 MiB',
+    sampleUrl: 'https://raw.githubusercontent.com/logpai/loghub/master/HealthApp/HealthApp_2k.log_structured.csv',
+    fullUrl: 'https://zenodo.org/records/8196385/files/HealthApp.tar.gz?download=1' },
+  // Server applications
+  { key: 'Apache', category: 'Server applications', description: 'Apache web server error log', labeled: false, lines: 56481, sizeRaw: '4.90 MiB',
+    sampleUrl: 'https://raw.githubusercontent.com/logpai/loghub/master/Apache/Apache_2k.log_structured.csv',
+    fullUrl: 'https://zenodo.org/records/8196385/files/Apache.tar.gz?download=1' },
+  { key: 'OpenSSH', category: 'Server applications', description: 'OpenSSH server log', labeled: false, lines: 655146, sizeRaw: '70.02 MiB',
+    sampleUrl: 'https://raw.githubusercontent.com/logpai/loghub/master/OpenSSH/OpenSSH_2k.log_structured.csv',
+    fullUrl: 'https://zenodo.org/records/8196385/files/SSH.tar.gz?download=1' },
+  // Standalone software
+  { key: 'Proxifier', category: 'Standalone software', description: 'Proxifier software log', labeled: false, lines: 21329, sizeRaw: '2.42 MiB',
+    sampleUrl: 'https://raw.githubusercontent.com/logpai/loghub/master/Proxifier/Proxifier_2k.log_structured.csv',
+    fullUrl: 'https://zenodo.org/records/8196385/files/Proxifier.tar.gz?download=1' },
+]
+
+const LOGHUB_QUICK_PICK_KEYS = [
+  'Apache', 'Linux', 'Mac', 'HealthApp', 'OpenSSH',
+  'Proxifier', 'HDFS_v1', 'Zookeeper', 'Hadoop',
+]
+
+const loghubCategories = computed(() => {
+  const seen: string[] = []
+  for (const e of LOGHUB_CATALOG) {
+    if (!seen.includes(e.category)) seen.push(e.category)
+  }
+  return seen
+})
+
+const loghubByCategory = computed(() => {
+  const groups: Record<string, LoghubEntry[]> = {}
+  for (const e of LOGHUB_CATALOG) {
+    if (!groups[e.category]) groups[e.category] = []
+    groups[e.category].push(e)
+  }
+  return groups
+})
+
+function pickLoghubSample(key: string) {
+  const entry = LOGHUB_CATALOG.find(e => e.key === key)
+  if (!entry || !entry.sampleUrl) return
+  urlLoader.value.url = entry.sampleUrl
+  urlLoader.value.format = 'csv'
+  urlLoader.value.error = ''
+}
+
+async function fetchFromUrl() {
+  const url = urlLoader.value.url.trim()
+  if (!url) return
+
+  try {
+    urlLoader.value.loading = true
+    urlLoader.value.error = ''
+
+    const payload: any = {
+      url,
+      format: urlLoader.value.format,
+    }
+    if (urlLoader.value.format === 'text') {
+      payload.delimiter = urlLoader.value.delimiter || null
+      payload.header_row = Math.floor(Number(urlLoader.value.headerRow) || 0)
+      payload.skip_rows = Math.max(0, Math.floor(Number(urlLoader.value.skipRows) || 0))
+    }
+
+    const response = await api.post('/api/data/load-from-url', payload)
+    dataPreview.value = response.data
+    // Clear file-based selection state so proceedToWindowing takes the
+    // "non-folder data" branch (stores dataPreview directly).
+    selectedFile.value = null
+    selectedFiles.value = []
+    notificationStore.showSuccess('File loaded from URL')
+  } catch (e: any) {
+    if (!tryShowValidationError(e)) {
+      urlLoader.value.error = e.response?.data?.error || 'Failed to fetch URL'
+    }
+  } finally {
+    urlLoader.value.loading = false
+  }
+}
 
 const TEXT_FILE_EXTS = ['.txt', '.tsv', '.dat', '.log']
 function isTextExtension(ext: string | null | undefined): boolean {
@@ -2320,13 +2731,37 @@ async function confirmTextImport() {
 
 async function loadMorePreview() {
   if (!dataPreview.value) return
-  if (!selectedFile.value && selectedFiles.value.length === 0) return
+  const sourceUrl = dataPreview.value.metadata?.source_url as string | undefined
+  if (!selectedFile.value && selectedFiles.value.length === 0 && !sourceUrl) return
 
   try {
     loadingMore.value = true
 
     const currentRows = dataPreview.value.preview.length
     const newRowCount = Math.min(currentRows + 100, maxPreviewRows)
+
+    // URL-loaded data: re-fetch. Cheaper alternative would need a backend
+    // "session preview" endpoint; keep it simple and reuse load-from-url.
+    if (sourceUrl) {
+      const payload: any = {
+        url: sourceUrl,
+        format: dataPreview.value.metadata?.source_format === 'text' ? 'text' : 'csv',
+      }
+      if (payload.format === 'text') {
+        payload.delimiter = dataPreview.value.metadata?.delimiter || null
+        payload.header_row = dataPreview.value.metadata?.header_row ?? 1
+        payload.skip_rows = dataPreview.value.metadata?.skip_rows ?? 0
+      }
+      const response = await api.post('/api/data/load-from-url', payload)
+      // Splice more rows out of the reloaded preview (backend caps at 10).
+      // Since load_csv/load_text keep the full dataframe in-session but only
+      // return .head(10), we can only surface those 10 rows for URL loads
+      // without a session-preview endpoint. Merge to at most newRowCount.
+      const merged = response.data.preview.slice(0, newRowCount)
+      dataPreview.value = { ...response.data, preview: merged }
+      notificationStore.showSuccess(`Loaded ${merged.length} rows`)
+      return
+    }
 
     // Multi-CSV load more
     if (dataPreview.value.metadata?.is_multi_csv && selectedFiles.value.length > 1) {
@@ -2437,6 +2872,8 @@ watch(selectedFormat, () => {
   datasetScan.value = null
   selectedCategory.value = null
   selectedLabel.value = null
+  urlLoader.value.error = ''
+  urlLoader.value.loading = false
 })
 
 // Upload methods

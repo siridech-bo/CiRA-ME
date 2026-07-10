@@ -4,7 +4,11 @@ Handles CSV, Edge Impulse JSON, Edge Impulse CBOR, and CiRA CBOR formats
 """
 
 import os
+import tempfile
 import uuid
+from urllib.parse import urlsplit
+
+import requests
 from flask import Blueprint, request, jsonify, current_app, send_file
 from werkzeug.utils import secure_filename
 from ..auth import login_required, validate_path, get_user_folders, _is_path_within
@@ -730,6 +734,149 @@ def preview_data():
         }), 400
     except Exception as e:
         return jsonify({'error': str(e)}), 400
+
+
+@data_sources_bp.route('/load-from-url', methods=['POST'])
+@login_required
+def load_from_url():
+    """
+    Fetch a remote CSV / text file over HTTPS and load it directly into a session.
+
+    Streams to a temp file (100 MB hard cap), dispatches to load_csv or load_text,
+    and always deletes the temp file. No file is persisted to server storage —
+    the caller sees a normal Data Preview response with ``metadata.source_url`` set.
+    """
+    data = request.get_json() or {}
+
+    url = (data.get('url') or '').strip()
+    fmt = (data.get('format') or 'csv').lower()
+    delimiter = data.get('delimiter')
+    header_row = data.get('header_row', 1)
+    skip_rows = data.get('skip_rows', 0)
+
+    # --- URL validation --------------------------------------------------
+    if not url:
+        return jsonify({
+            'error': 'URL is required.',
+            'error_code': 'INVALID_URL',
+            'hint': 'Paste a direct https:// link to a CSV or text file.',
+        }), 400
+
+    if not url.lower().startswith('https://'):
+        return jsonify({
+            'error': 'Only https:// URLs are allowed.',
+            'error_code': 'INVALID_URL',
+            'hint': 'Use a secure https:// link. http:// and other schemes are blocked for safety.',
+        }), 400
+
+    if fmt not in ('csv', 'text'):
+        return jsonify({
+            'error': f"Unsupported format '{fmt}'.",
+            'error_code': 'INVALID_URL',
+            'hint': "Format must be 'csv' or 'text'.",
+        }), 400
+
+    max_bytes = 100 * 1024 * 1024  # 100 MB
+
+    # Derive a suffix from the URL basename so pandas' auto-parsers see the
+    # right extension when they sniff the temp file.
+    try:
+        url_basename = os.path.basename(urlsplit(url).path) or ''
+    except Exception:
+        url_basename = ''
+    suffix = os.path.splitext(url_basename)[1].lower()
+    if suffix not in ('.csv', '.txt', '.tsv', '.dat', '.log'):
+        suffix = '.csv' if fmt == 'csv' else '.txt'
+
+    temp_path = None
+    resp = None
+    try:
+        try:
+            resp = requests.get(url, stream=True, timeout=30)
+            resp.raise_for_status()
+        except requests.RequestException as e:
+            return jsonify({
+                'error': f'Failed to fetch URL: {e}',
+                'error_code': 'URL_FETCH_FAILED',
+                'hint': 'Check the URL is reachable and returns a direct file (not an HTML page).',
+            }), 400
+
+        # Pre-flight size check via Content-Length (server may lie / omit).
+        content_length = resp.headers.get('Content-Length')
+        if content_length:
+            try:
+                declared = int(content_length)
+                if declared > max_bytes:
+                    return jsonify({
+                        'error': (
+                            f'Remote file is {declared // (1024*1024)} MB, '
+                            f'which exceeds the {max_bytes // (1024*1024)} MB limit.'
+                        ),
+                        'error_code': 'URL_TOO_LARGE',
+                        'hint': 'Download the file manually and upload it via the Upload dialog.',
+                    }), 400
+            except (TypeError, ValueError):
+                pass  # Ignore non-integer Content-Length; enforce during stream.
+
+        # Stream to temp file with running-total enforcement.
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            temp_path = tmp.name
+            downloaded = 0
+            for chunk in resp.iter_content(chunk_size=64 * 1024):
+                if not chunk:
+                    continue
+                downloaded += len(chunk)
+                if downloaded > max_bytes:
+                    return jsonify({
+                        'error': (
+                            f'Download exceeded the {max_bytes // (1024*1024)} MB limit '
+                            'during streaming.'
+                        ),
+                        'error_code': 'URL_TOO_LARGE',
+                        'hint': 'Download the file manually and upload it via the Upload dialog.',
+                    }), 400
+                tmp.write(chunk)
+
+        # Dispatch to the existing loader — no changes to data_loader.py.
+        loader = DataLoader()
+        try:
+            if fmt == 'text':
+                result = loader.load_text(
+                    temp_path,
+                    delimiter=delimiter,
+                    header_row=header_row if header_row is not None else 1,
+                    skip_rows=skip_rows if skip_rows is not None else 0,
+                )
+            else:
+                result = loader.load_csv(temp_path)
+        except DataValidationError as e:
+            return jsonify({
+                'error': e.message,
+                'error_code': e.code,
+                'hint': e.hint,
+            }), 400
+
+        # Overwrite the temp path in metadata so it doesn't leak, and add
+        # source_url so the frontend can display provenance.
+        meta = result.get('metadata') or {}
+        meta['source_url'] = url
+        meta['file_path'] = url  # hide the temp path from downstream UI
+        result['metadata'] = meta
+
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+    finally:
+        if resp is not None:
+            try:
+                resp.close()
+            except Exception:
+                pass
+        if temp_path:
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
 
 
 @data_sources_bp.route('/text-sniff', methods=['POST'])
