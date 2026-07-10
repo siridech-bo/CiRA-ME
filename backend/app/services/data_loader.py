@@ -149,6 +149,47 @@ class DataLoader:
 
         return None
 
+    def _check_mixed_type_sensor(self, df, columns, exclude_cols) -> None:
+        """Raise NON_NUMERIC_SENSOR when a column looks like a corrupted sensor.
+
+        A non-excluded, object-dtype column is treated as a corrupted sensor
+        if it is >=80% numerically coercible AND has at least one value that
+        fails to coerce. The error names the column, the first offending row
+        (1-based, accounting for the header row), and the bad value itself.
+        """
+        for col in columns:
+            if col in exclude_cols:
+                continue
+            series = df[col]
+            if pd.api.types.is_numeric_dtype(series):
+                continue
+            n_total = len(series)
+            if n_total == 0:
+                continue
+            coerced = pd.to_numeric(series, errors='coerce')
+            n_numeric = int(coerced.notna().sum())
+            if n_numeric == 0:
+                continue  # Fully non-numeric → treat as intentional string column.
+            ratio_numeric = n_numeric / n_total
+            if ratio_numeric < 0.8:
+                continue
+            bad_mask = coerced.isna() & series.notna()
+            if not bad_mask.any():
+                # All NaN failures are blanks — different problem, let downstream handle.
+                continue
+            first_bad_pos = int(bad_mask.to_numpy().nonzero()[0][0])
+            first_bad_val = series.iloc[first_bad_pos]
+            file_row = first_bad_pos + 2  # +1 for header, +1 for 1-based
+            raise DataValidationError(
+                code='NON_NUMERIC_SENSOR',
+                message=f"Column `{col}` has a non-numeric value on row {file_row}: `{first_bad_val}`.",
+                hint=(
+                    f"Column `{col}` is {ratio_numeric:.0%} numeric — it looks like a sensor "
+                    f"column with dirty data. Replace `{first_bad_val}` in row {file_row} "
+                    f"with a number (or blank) and re-upload."
+                ),
+            )
+
     def _detect_label_column(self, columns: List[str]) -> Optional[str]:
         """Detect label column by matching common naming patterns."""
         columns_lower = {col.lower().strip(): col for col in columns}
@@ -212,6 +253,11 @@ class DataLoader:
             exclude_cols.add(label_col)
         if timestamp_col:
             exclude_cols.add(timestamp_col)
+
+        # Catch columns that look like corrupted sensors (mostly numeric but a
+        # few stray text values). Runs BEFORE the empty check so it fires even
+        # when other, clean numeric columns exist.
+        self._check_mixed_type_sensor(df, columns, exclude_cols)
 
         # Get sensor columns (numeric, excluding label and time)
         sensor_cols = [
@@ -382,6 +428,9 @@ class DataLoader:
             exclude_cols.add(label_col)
         if timestamp_col:
             exclude_cols.add(timestamp_col)
+
+        # Catch corrupted-sensor columns (mostly numeric with stray text).
+        self._check_mixed_type_sensor(df, columns, exclude_cols)
 
         sensor_cols = [
             col for col in columns
