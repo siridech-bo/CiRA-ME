@@ -52,6 +52,69 @@
             <v-icon start size="small">mdi-open-in-new</v-icon>
             Open Standalone
           </v-btn>
+          <v-menu v-if="dashboardMode" :close-on-content-click="false">
+            <template #activator="{ props }">
+              <v-btn
+                v-bind="props"
+                size="small"
+                variant="tonal"
+                color="grey"
+                class="mr-2"
+                title="Display settings"
+              >
+                <v-icon size="small">mdi-cog-outline</v-icon>
+              </v-btn>
+            </template>
+            <v-card min-width="280" class="pa-3">
+              <div class="text-subtitle-2 mb-2">Display</div>
+              <div class="text-caption text-medium-emphasis mb-1">Font size</div>
+              <v-btn-toggle
+                v-model="displayFontSize"
+                density="compact"
+                mandatory
+                divided
+                variant="outlined"
+                class="mb-3 d-block"
+              >
+                <v-btn value="S" size="x-small">S</v-btn>
+                <v-btn value="M" size="x-small">M</v-btn>
+                <v-btn value="L" size="x-small">L</v-btn>
+                <v-btn value="XL" size="x-small">XL</v-btn>
+              </v-btn-toggle>
+              <div class="text-caption text-medium-emphasis mb-1">Decimal places</div>
+              <v-btn-toggle
+                v-model="displayPrecision"
+                density="compact"
+                mandatory
+                divided
+                variant="outlined"
+                class="mb-3 d-block"
+              >
+                <v-btn :value="0" size="x-small">0</v-btn>
+                <v-btn :value="1" size="x-small">1</v-btn>
+                <v-btn :value="2" size="x-small">2</v-btn>
+                <v-btn :value="3" size="x-small">3</v-btn>
+                <v-btn :value="4" size="x-small">4</v-btn>
+                <v-btn :value="6" size="x-small">6</v-btn>
+              </v-btn-toggle>
+              <div class="text-caption text-medium-emphasis mb-1">View</div>
+              <v-btn-toggle
+                v-model="displayView"
+                density="compact"
+                mandatory
+                divided
+                variant="outlined"
+                class="d-block"
+              >
+                <v-btn value="chart" size="x-small">
+                  <v-icon size="14" start>mdi-chart-line</v-icon>Chart
+                </v-btn>
+                <v-btn value="table" size="x-small">
+                  <v-icon size="14" start>mdi-table</v-icon>Table
+                </v-btn>
+              </v-btn-toggle>
+            </v-card>
+          </v-menu>
           <v-btn
             size="small"
             variant="tonal"
@@ -474,8 +537,12 @@
             <!-- Big prediction card -->
             <div v-if="livePrediction !== null" class="dash-prediction-card" :style="{ borderColor: modeColor + '55' }">
               <div class="live-prediction-label">Latest Prediction</div>
-              <div class="dash-prediction-value" :style="{ color: modeColor }">
-                {{ livePrediction }}
+              <div
+                class="dash-prediction-value"
+                :class="['fs-' + displayFontSize]"
+                :style="{ color: modeColor }"
+              >
+                {{ displayedPrediction }}
               </div>
               <div v-if="liveLastUpdated" class="live-prediction-time">
                 {{ liveLastUpdatedText }}
@@ -500,42 +567,76 @@
               </div>
             </div>
 
-            <!-- Live chart -->
-            <div v-if="chartData.length > 0" class="chart-container dash-chart-container">
-              <div class="chart-header">
-                <span class="chart-title-text">{{ actualData.length > 0 ? 'Actual vs Predicted' : 'Predictions over Time' }}</span>
+            <!-- Live chart OR table (view is persisted per-app in localStorage) -->
+            <template v-if="displayView === 'chart'">
+              <div v-if="chartData.length > 0" class="chart-container dash-chart-container">
+                <div class="chart-header">
+                  <span class="chart-title-text">{{ actualData.length > 0 ? 'Actual vs Predicted' : 'Predictions over Time' }}</span>
+                </div>
+                <svg :viewBox="`0 0 ${chartWidth} ${chartHeight}`" preserveAspectRatio="none" class="prediction-chart dash-svg-chart">
+                  <line v-for="i in 4" :key="'g'+i"
+                    :x1="chartPadding" :y1="chartPadding + (i-1) * (chartInnerH / 3)"
+                    :x2="chartWidth - chartPadding" :y2="chartPadding + (i-1) * (chartInnerH / 3)"
+                    stroke="#21262d" stroke-width="0.5" />
+                  <text v-for="i in 4" :key="'y'+i"
+                    :x="chartPadding - 4" :y="chartPadding + (i-1) * (chartInnerH / 3) + 3"
+                    text-anchor="end" fill="#8b949e" font-size="8" font-family="monospace">
+                    {{ chartYLabel(i-1) }}
+                  </text>
+                  <path :d="chartAreaPath" fill="url(#pred-gradient-d)" />
+                  <path v-if="actualLinePath" :d="actualLinePath" fill="none" stroke="#22d3ee" stroke-width="1.5" />
+                  <path :d="chartLinePath" fill="none" stroke="#a78bfa" stroke-width="1.5" :stroke-dasharray="actualLinePath ? '4,2' : 'none'" />
+                  <defs>
+                    <linearGradient id="pred-gradient-d" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stop-color="#a78bfa" stop-opacity="0.15" />
+                      <stop offset="100%" stop-color="#a78bfa" stop-opacity="0" />
+                    </linearGradient>
+                  </defs>
+                </svg>
+                <div class="chart-legend-items" style="margin-top:8px">
+                  <span v-if="actualData.length > 0" class="chart-legend-dot" style="background: #22d3ee"></span>
+                  <span v-if="actualData.length > 0" class="chart-legend-label">Actual</span>
+                  <span class="chart-legend-dot" style="background: #a78bfa"></span>
+                  <span class="chart-legend-label">Predicted</span>
+                </div>
               </div>
-              <svg :viewBox="`0 0 ${chartWidth} ${chartHeight}`" preserveAspectRatio="none" class="prediction-chart dash-svg-chart">
-                <line v-for="i in 4" :key="'g'+i"
-                  :x1="chartPadding" :y1="chartPadding + (i-1) * (chartInnerH / 3)"
-                  :x2="chartWidth - chartPadding" :y2="chartPadding + (i-1) * (chartInnerH / 3)"
-                  stroke="#21262d" stroke-width="0.5" />
-                <text v-for="i in 4" :key="'y'+i"
-                  :x="chartPadding - 4" :y="chartPadding + (i-1) * (chartInnerH / 3) + 3"
-                  text-anchor="end" fill="#8b949e" font-size="8" font-family="monospace">
-                  {{ chartYLabel(i-1) }}
-                </text>
-                <path :d="chartAreaPath" fill="url(#pred-gradient-d)" />
-                <path v-if="actualLinePath" :d="actualLinePath" fill="none" stroke="#22d3ee" stroke-width="1.5" />
-                <path :d="chartLinePath" fill="none" stroke="#a78bfa" stroke-width="1.5" :stroke-dasharray="actualLinePath ? '4,2' : 'none'" />
-                <defs>
-                  <linearGradient id="pred-gradient-d" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stop-color="#a78bfa" stop-opacity="0.15" />
-                    <stop offset="100%" stop-color="#a78bfa" stop-opacity="0" />
-                  </linearGradient>
-                </defs>
-              </svg>
-              <div class="chart-legend-items" style="margin-top:8px">
-                <span v-if="actualData.length > 0" class="chart-legend-dot" style="background: #22d3ee"></span>
-                <span v-if="actualData.length > 0" class="chart-legend-label">Actual</span>
-                <span class="chart-legend-dot" style="background: #a78bfa"></span>
-                <span class="chart-legend-label">Predicted</span>
+              <div v-else class="dash-placeholder dash-chart-container">
+                <v-icon size="40" color="grey">mdi-chart-line-variant</v-icon>
+                <div class="text-caption text-medium-emphasis mt-2">Chart appears once inferences begin</div>
               </div>
-            </div>
-            <div v-else class="dash-placeholder dash-chart-container">
-              <v-icon size="40" color="grey">mdi-chart-line-variant</v-icon>
-              <div class="text-caption text-medium-emphasis mt-2">Chart appears once inferences begin</div>
-            </div>
+            </template>
+            <template v-else>
+              <div v-if="dashboardTableRows.length > 0" class="dash-table-container">
+                <table class="dash-table">
+                  <thead>
+                    <tr>
+                      <th style="width: 100px;">Time</th>
+                      <th>Prediction</th>
+                      <th v-if="appMode === 'classification' && dashboardTableRows.some(r => r.hasConfidence)" style="width: 110px;">Confidence</th>
+                      <th v-if="dashboardTableRows.some(r => r.hasActual)" style="width: 110px;">Actual</th>
+                      <th v-if="appMode === 'regression' && dashboardTableRows.some(r => r.hasActual)" style="width: 110px;">Error</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="row in dashboardTableRows" :key="row.i">
+                      <td>{{ row.timeText }}</td>
+                      <td>{{ row.predText }}</td>
+                      <td v-if="appMode === 'classification' && dashboardTableRows.some(r => r.hasConfidence)">
+                        {{ row.confidenceText }}
+                      </td>
+                      <td v-if="dashboardTableRows.some(r => r.hasActual)">{{ row.actualText }}</td>
+                      <td v-if="appMode === 'regression' && dashboardTableRows.some(r => r.hasActual)">
+                        {{ row.errorText }}
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <div v-else class="dash-placeholder dash-chart-container">
+                <v-icon size="40" color="grey">mdi-table</v-icon>
+                <div class="text-caption text-medium-emphasis mt-2">Table appears once inferences begin</div>
+              </div>
+            </template>
           </div>
         </div>
       </div>
@@ -1462,6 +1563,97 @@ const modeColor = computed(() => MODE_COLORS[appMode.value] || '#94a3b8')
 // CSV upload apps and narrow viewports fall back to the classic stacked layout.
 const dashboardMode = computed(() => {
   return isWideScreen.value && (isLiveStream.value || isRecorderMode.value)
+})
+
+// ── Dashboard display preferences (persisted per-app in localStorage) ───────
+const displayPrecision = ref(3)
+const displayFontSize = ref('L') // 'S' | 'M' | 'L' | 'XL'
+const displayView = ref('chart')  // 'chart' | 'table'
+const DASH_TABLE_ROWS = 20
+
+function _prefsKey() { return `dash-prefs-${slug.value || 'app'}` }
+function loadDisplayPrefs() {
+  const key = _prefsKey()
+  const stored = localStorage.getItem(key)
+  const mode = appMode.value
+  const defaultView = (mode === 'classification') ? 'table' : 'chart'
+  if (stored) {
+    try {
+      const p = JSON.parse(stored)
+      displayPrecision.value = typeof p.precision === 'number' ? p.precision : 3
+      displayFontSize.value = p.fontSize || 'L'
+      displayView.value = p.view || defaultView
+      return
+    } catch { /* fall through */ }
+  }
+  displayPrecision.value = 3
+  displayFontSize.value = 'L'
+  displayView.value = defaultView
+}
+function saveDisplayPrefs() {
+  const key = _prefsKey()
+  localStorage.setItem(key, JSON.stringify({
+    precision: displayPrecision.value,
+    fontSize: displayFontSize.value,
+    view: displayView.value,
+  }))
+}
+watch(slug, () => { if (slug.value) loadDisplayPrefs() })
+watch(() => appMode.value, () => { if (slug.value) loadDisplayPrefs() }, { immediate: false })
+watch([displayPrecision, displayFontSize, displayView], () => { saveDisplayPrefs() })
+
+// Precision-formatted latest prediction (used in the dashboard card).
+const displayedPrediction = computed(() => {
+  const v = livePrediction.value
+  if (v === null || v === undefined) return ''
+  if (typeof v === 'number' && Number.isFinite(v)) {
+    return v.toFixed(displayPrecision.value)
+  }
+  return String(v)
+})
+
+function _fmtNum(v, decimals) {
+  if (v === null || v === undefined || v === '') return '—'
+  const n = typeof v === 'number' ? v : Number(v)
+  if (!Number.isFinite(n)) return String(v)
+  return n.toFixed(decimals ?? displayPrecision.value)
+}
+
+// Rows for the dashboard's Table view — newest first, up to DASH_TABLE_ROWS.
+const dashboardTableRows = computed(() => {
+  const preds = livePredictionHistory.value || []
+  const actuals = liveActualHistory.value || []
+  const full = livePredictionHistoryFull.value || []
+  const startTs = liveLastUpdated.value ? Number(liveLastUpdated.value) : Date.now()
+  const total = preds.length
+  const rows = []
+  const end = total
+  const begin = Math.max(0, total - DASH_TABLE_ROWS)
+  for (let i = end - 1; i >= begin; i--) {
+    const pred = preds[i]
+    const actual = actuals[i]
+    let confidence = null
+    const fullEntry = full[i]
+    if (fullEntry && typeof fullEntry === 'object' && 'confidence' in fullEntry
+        && typeof fullEntry.confidence === 'number') {
+      confidence = fullEntry.confidence
+    }
+    const isNumericPred = typeof pred === 'number' && Number.isFinite(pred)
+    rows.push({
+      i,
+      // Approximate timestamp: infer from position back from last update.
+      timeText: new Date(startTs - (total - 1 - i) * 1000).toLocaleTimeString(),
+      predText: isNumericPred ? _fmtNum(pred) : String(pred ?? '—'),
+      actualText: actual !== undefined ? _fmtNum(actual) : '—',
+      hasActual: actual !== undefined && actual !== null,
+      confidenceText: confidence != null ? (confidence * 100).toFixed(1) + '%' : '—',
+      hasConfidence: confidence != null,
+      errorText: (isNumericPred && typeof actual === 'number' && Number.isFinite(actual))
+        ? _fmtNum(actual - pred)
+        : '—',
+    })
+  }
+  return rows
 })
 
 const appAlgorithm = computed(() => {
@@ -3514,6 +3706,47 @@ async function runPipeline() {
   line-height: 1.05;
   margin: 8px 0 4px;
   word-break: break-word;
+}
+.dash-prediction-value.fs-S { font-size: 32px; }
+.dash-prediction-value.fs-M { font-size: 48px; }
+.dash-prediction-value.fs-L { font-size: 68px; }
+.dash-prediction-value.fs-XL { font-size: 96px; line-height: 1; }
+.dash-table-container {
+  flex: 1;
+  overflow: auto;
+  border: 1px solid #21262d;
+  border-radius: 8px;
+  background: #0d1117;
+  padding: 0;
+}
+.dash-table {
+  width: 100%;
+  border-collapse: collapse;
+  color: #e6edf3;
+  font-family: monospace;
+  font-size: 13px;
+}
+.dash-table th {
+  background: #161b22;
+  padding: 8px 10px;
+  text-align: left;
+  border-bottom: 1px solid #21262d;
+  color: #8b949e;
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.5px;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+.dash-table td {
+  padding: 6px 10px;
+  border-bottom: 1px solid rgba(33, 38, 45, 0.5);
+}
+.dash-table tbody tr:first-child td {
+  color: #a78bfa;
+  font-weight: 700;
 }
 .dash-confidence {
   width: 100%;
