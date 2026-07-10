@@ -33,6 +33,23 @@ def _safe_labels(series):
     return [v.item() if hasattr(v, 'item') else v for v in series.unique()]
 
 
+def _safe_records(df):
+    """Return df as JSON-safe dict-records with NaN / +/-Inf swapped for None.
+
+    Standard JSON does not permit NaN or Infinity tokens; Flask's default
+    jsonify writes literal NaN and the browser then fails to parse the
+    response body. First swap ±inf → NaN, then object-cast + where(notna,
+    None) yields Python None for every non-finite float.
+    """
+    cleaned = df.replace([np.inf, -np.inf], np.nan)
+    return cleaned.astype(object).where(cleaned.notna(), None).to_dict(orient='records')
+
+
+def _safe_preview_records(df):
+    """Convenience wrapper: safe_records(df.head(10))."""
+    return _safe_records(df.head(10))
+
+
 # Global session storage for loaded data
 # NOTE: This is in-process memory — the WSGI server MUST run with a single
 # worker process (threads are fine) so all requests share this dict.
@@ -351,7 +368,7 @@ class DataLoader:
         return {
             'session_id': session_id,
             'metadata': metadata,
-            'preview': df.head(10).to_dict(orient='records')
+            'preview': _safe_preview_records(df)
         }
 
     def _sniff_text_delimiter(self, file_path: str, sample_bytes: int = 4096) -> str:
@@ -530,7 +547,7 @@ class DataLoader:
         return {
             'session_id': session_id,
             'metadata': metadata,
-            'preview': df.head(10).to_dict(orient='records')
+            'preview': _safe_preview_records(df)
         }
 
     def load_csv_multiple(self, file_paths: List[str]) -> Dict[str, Any]:
@@ -676,7 +693,7 @@ class DataLoader:
         return {
             'session_id': session_id,
             'metadata': metadata,
-            'preview': preview.to_dict(orient='records')
+            'preview': _safe_records(preview)
         }
 
     def load_edge_impulse_json(self, file_path: str) -> Dict[str, Any]:
@@ -758,7 +775,7 @@ class DataLoader:
         return {
             'session_id': session_id,
             'metadata': metadata,
-            'preview': df.head(10).to_dict(orient='records')
+            'preview': _safe_preview_records(df)
         }
 
     def load_edge_impulse_cbor(self, file_path: str) -> Dict[str, Any]:
@@ -834,7 +851,7 @@ class DataLoader:
         return {
             'session_id': session_id,
             'metadata': metadata,
-            'preview': df.head(10).to_dict(orient='records')
+            'preview': _safe_preview_records(df)
         }
 
     def load_edge_impulse_cbor_folder(self, folder_path: str) -> Dict[str, Any]:
@@ -980,7 +997,7 @@ class DataLoader:
         return {
             'session_id': session_id,
             'metadata': metadata,
-            'preview': df.head(10).to_dict(orient='records')
+            'preview': _safe_preview_records(df)
         }
 
     def scan_dataset_folder(self, folder_path: str) -> Dict[str, Any]:
@@ -1255,7 +1272,7 @@ class DataLoader:
         return {
             'session_id': session_id,
             'metadata': metadata,
-            'preview': df.iloc[:rows].to_dict(orient='records')
+            'preview': _safe_records(df.iloc[:rows])
         }
 
     def load_full_dataset(self, folder_path: str, format_hint: str = None, preview_session_id: str = None) -> Dict[str, Any]:
@@ -1410,7 +1427,7 @@ class DataLoader:
         return {
             'session_id': session_id,
             'metadata': metadata,
-            'preview': df.head(10).to_dict(orient='records')
+            'preview': _safe_preview_records(df)
         }
 
     def load_cira_cbor_folder(self, folder_path: str) -> Dict[str, Any]:
@@ -1529,7 +1546,7 @@ class DataLoader:
         return {
             'session_id': session_id,
             'metadata': metadata,
-            'preview': df.head(10).to_dict(orient='records')
+            'preview': _safe_preview_records(df)
         }
 
     def preview(self, file_path: str, rows: int = 10, format_hint: str = None) -> Dict[str, Any]:
@@ -1561,7 +1578,7 @@ class DataLoader:
         # Limit preview rows
         session = self._get_session(result['session_id'])
         if session:
-            result['preview'] = session['data'].head(rows).to_dict(orient='records')
+            result['preview'] = _safe_records(session['data'].head(rows))
 
         return result
 
@@ -1624,9 +1641,9 @@ class DataLoader:
                                 ['category', 'sample_id'] if has_category else \
                                 ['sample_id', 'timestamp'] if 'timestamp' in preview_df.columns else ['sample_id']
                     preview_df = preview_df.sort_values(sort_cols)
-                result['preview'] = preview_df.head(rows).to_dict(orient='records')
+                result['preview'] = _safe_records(preview_df.head(rows))
             else:
-                result['preview'] = df.head(rows).to_dict(orient='records')
+                result['preview'] = _safe_records(df.head(rows))
 
         return result
 
