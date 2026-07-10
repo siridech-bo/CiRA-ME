@@ -110,6 +110,27 @@
                 icon
                 size="x-small"
                 variant="text"
+                color="purple"
+                title="Open public monitor view"
+                :href="monitorUrl(w)"
+                target="_blank"
+              >
+                <v-icon size="small">mdi-monitor-dashboard</v-icon>
+              </v-btn>
+              <v-btn
+                icon
+                size="x-small"
+                variant="text"
+                color="grey"
+                title="Copy monitor URL"
+                @click="copyMonitorUrl(w)"
+              >
+                <v-icon size="small">mdi-content-copy</v-icon>
+              </v-btn>
+              <v-btn
+                icon
+                size="x-small"
+                variant="text"
                 color="info"
                 title="Edit"
                 @click="editWatcher(w)"
@@ -461,6 +482,36 @@ const loadPreview = async () => {
     preview.value = null
   } finally {
     previewLoading.value = false
+  }
+}
+
+// Build an absolute URL to the public monitor view. Uses window.location.origin
+// so it works whether the SPA is served on localhost, a LAN IP, or a domain.
+const monitorUrl = (w: Watcher): string => {
+  const base = typeof window !== 'undefined' ? window.location.origin : ''
+  return `${base}/watcher-view/${w.id}`
+}
+
+const copyMonitorUrl = async (w: Watcher) => {
+  const url = monitorUrl(w)
+  try {
+    if (navigator?.clipboard?.writeText) {
+      await navigator.clipboard.writeText(url)
+    } else {
+      // Fallback for insecure contexts (http on LAN) — Clipboard API is
+      // https-only in most browsers.
+      const ta = document.createElement('textarea')
+      ta.value = url
+      ta.style.position = 'fixed'
+      ta.style.opacity = '0'
+      document.body.appendChild(ta)
+      ta.select()
+      document.execCommand('copy')
+      document.body.removeChild(ta)
+    }
+    notify.showSuccess('Monitor URL copied to clipboard')
+  } catch {
+    notify.showError('Could not copy URL. Copy manually: ' + url)
   }
 }
 

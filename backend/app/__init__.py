@@ -87,7 +87,7 @@ def create_app(config=None):
     if (not _reloader_active) or _is_reloader_child:
         try:
             from .services import folder_watcher_service
-            folder_watcher_service.rehydrate_running_watchers()
+            folder_watcher_service.rehydrate_running_watchers(flask_app=app)
         except Exception as e:
             import logging
             logging.getLogger(__name__).exception(

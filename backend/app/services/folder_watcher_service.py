@@ -3,6 +3,19 @@
 Per-watcher worker thread polls its input folder every N seconds, reads
 each file row-by-row, runs each row through the associated ME-LAB
 endpoint's model, writes an output CSV alongside, deletes the input.
+
+The parse layer supports three modes:
+  csv     — one row per comma-separated line (legacy default).
+  regex   — user-supplied Python regex with named capture groups.
+            Each matching line becomes a row; non-matching lines skipped.
+  json    — each line is a JSON object; keys become columns.
+
+Optional prediction sinks (per-watcher):
+  MQTT    — one message per row, published to a configurable topic.
+  Daily   — an aggregated CSV per day at
+            <SHARED_FOLDER_PATH>/log_watcher/<safe_name>/<YYYY-MM-DD>.csv.
+Both sink failures are swallowed so a broker outage / disk hiccup can't
+brick the worker.
 """
 
 import threading
@@ -10,9 +23,13 @@ import time
 import os
 import csv
 import glob
+import json
+import re
 import logging
 from datetime import datetime
-from typing import Dict
+from typing import Dict, List
+
+from flask import current_app
 
 from ..models import FolderWatcher, MeLabEndpoint, SavedModel
 from .melab_service import ModelManager
@@ -26,18 +43,41 @@ _workers_lock = threading.Lock()
 # Skip files whose mtime is within this window — probably still being written.
 MTIME_QUIET_SECONDS = 5.0
 
+# Per-file locks for the daily-aggregated-CSV sink so concurrent worker ticks
+# (across watchers writing to overlapping files) don't interleave rows.
+_daily_csv_locks: Dict[str, threading.Lock] = {}
+_daily_csv_locks_guard = threading.Lock()
+
+
+def _get_daily_csv_lock(path: str) -> threading.Lock:
+    with _daily_csv_locks_guard:
+        lock = _daily_csv_locks.get(path)
+        if lock is None:
+            lock = threading.Lock()
+            _daily_csv_locks[path] = lock
+        return lock
+
 
 class _WatcherWorker(threading.Thread):
-    def __init__(self, watcher_id: int):
+    def __init__(self, watcher_id: int, flask_app=None):
         super().__init__(daemon=True, name=f"folder-watcher-{watcher_id}")
         self.watcher_id = watcher_id
         self._stop_flag = threading.Event()
+        # Capture the Flask app object so the worker thread can push an
+        # app context — required for current_app.config reads inside the
+        # MQTT / daily-CSV sink helpers.
+        self._flask_app = flask_app
 
     def stop(self):
         self._stop_flag.set()
 
     def run(self):
         # Main loop: check stop flag, poll folder, sleep for poll_interval_s.
+        # An app context is pushed so current_app.config['SHARED_FOLDER_PATH']
+        # etc. work inside sink helpers, matching how the Flask request layer
+        # would provide it during a normal HTTP call.
+        if self._flask_app is not None:
+            self._flask_app.app_context().push()
         while not self._stop_flag.is_set():
             try:
                 self._tick()
@@ -114,9 +154,9 @@ class _WatcherWorker(threading.Thread):
                 self._process_file(path, output_dir, watcher)
                 try:
                     os.remove(path)
-                except OSError as re:
+                except OSError as re_:
                     logger.warning(
-                        f"[FolderWatcher {self.watcher_id}] could not delete {path}: {re}"
+                        f"[FolderWatcher {self.watcher_id}] could not delete {path}: {re_}"
                     )
             except Exception as e:
                 logger.exception(
@@ -154,40 +194,31 @@ class _WatcherWorker(threading.Thread):
             raise RuntimeError(
                 f"model file missing for endpoint {watcher['endpoint_id']}"
             )
-        mode = endpoint.get('mode', 'classification')
 
-        # Detect / respect header mode
-        header_mode = watcher.get('header_mode', 'auto')
-        with open(path, 'r', encoding='utf-8', errors='replace') as f:
-            first_line = f.readline().rstrip('\r\n')
-        parts = first_line.split(',')
-        if header_mode == 'auto':
-            is_headered = bool(parts) and not all(_is_float(p) for p in parts)
-        elif header_mode == 'headered':
-            is_headered = True
+        # ── Dispatch on parse_mode ─────────────────────────────────────────
+        # rows_raw is List[Dict[col_name, value]] — column_names is the header
+        # for the output CSV in insertion order.
+        parse_mode = (watcher.get('parse_mode') or 'csv').lower()
+        if parse_mode == 'regex':
+            column_names, rows_raw = _parse_regex(path, watcher.get('parse_regex') or '')
+        elif parse_mode == 'json':
+            column_names, rows_raw = _parse_json(path)
         else:
-            is_headered = False
+            column_names, rows_raw = _parse_csv(path, watcher.get('header_mode', 'auto'))
 
-        # Read all rows
-        import numpy as np
-        rows = []
-        with open(path, 'r', encoding='utf-8', errors='replace') as f:
-            if is_headered:
-                f.readline()  # skip header
-            for line in f:
-                line = line.rstrip('\r\n')
-                if not line:
-                    continue
-                vals = line.split(',')
-                try:
-                    rows.append([float(v) for v in vals])
-                except ValueError:
-                    continue  # skip non-numeric rows
-
-        if not rows:
+        if not rows_raw:
             return  # nothing to predict
 
-        features = np.array(rows, dtype=np.float64)
+        # Build the numeric feature matrix in the ORDER of column_names. Any
+        # non-numeric value is dropped from that row (replaced with 0) so the
+        # matrix is rectangular, matching the model's expected feature width.
+        # In practice regex/json filter to numeric columns upstream so this
+        # only matters for CSV rows that hit `_parse_csv` with mixed content.
+        import numpy as np
+        features = np.array(
+            [[_to_float(r.get(c, '')) for c in column_names] for r in rows_raw],
+            dtype=np.float64,
+        )
         # Use the canonical endpoint-scoped inference so label decoding +
         # counter bookkeeping stay in one place (see ModelManager.predict_by_endpoint).
         preds = ModelManager.predict_by_endpoint(watcher['endpoint_id'], features)
@@ -214,43 +245,259 @@ class _WatcherWorker(threading.Thread):
         # gets SIGKILL'd mid-write. Input is NOT deleted here — the caller
         # (_tick) deletes only after this method returns cleanly.
         tmp_path = out_path + '.tmp'
+        ts = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+        source_basename = os.path.basename(path)
         with open(tmp_path, 'w', newline='', encoding='utf-8') as f:
             w = csv.writer(f)
             w.writerow([
                 'source_file', 'record_index', 'sensor_values',
                 'prediction', 'confidence', 'predicted_at',
             ])
-            ts = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
-            for i, (row, p) in enumerate(zip(rows, preds), start=1):
-                sensor_str = '|'.join(str(v) for v in row)
-                if isinstance(p, dict):
-                    # ModelManager.predict returns dicts with 'label' (cls/anom)
-                    # or 'value' (regression).
-                    if 'label' in p:
-                        label = p.get('label')
-                    elif 'value' in p:
-                        label = p.get('value')
-                    else:
-                        label = ''
-                    conf = p.get('confidence', '')
-                    if conf == '' and 'score' in p:
-                        conf = p.get('score', '')
-                else:
-                    label = str(p)
-                    conf = ''
+            for i, (row, p) in enumerate(zip(rows_raw, preds), start=1):
+                sensor_str = '|'.join(f"{c}={row.get(c, '')}" for c in column_names)
+                label, conf = _extract_label_and_conf(p)
                 w.writerow([
-                    os.path.basename(path), i, sensor_str, label, conf, ts,
+                    source_basename, i, sensor_str, label, conf, ts,
                 ])
 
         # Atomic-rename tmp → final. os.replace is portable and overwrites
         # cleanly on all platforms.
         os.replace(tmp_path, out_path)
 
+        # ── Prediction sinks ────────────────────────────────────────────
+        # Both are best-effort — failures logged, never raised, so a broker
+        # outage / disk hiccup can't derail the pipeline.
+        try:
+            self._emit_sinks(watcher, source_basename, column_names, rows_raw, preds)
+        except Exception as e:
+            logger.warning(
+                f"[FolderWatcher {self.watcher_id}] sink dispatch failed: {e}"
+            )
+
         # Increment counters atomically
         FolderWatcher.increment_counters(
-            self.watcher_id, files_delta=1, rows_delta=len(rows)
+            self.watcher_id, files_delta=1, rows_delta=len(rows_raw)
         )
 
+    # ------------------------------------------------------------------
+    # Sinks: MQTT publish + daily aggregated CSV
+    # ------------------------------------------------------------------
+    def _emit_sinks(
+        self,
+        watcher: dict,
+        source_basename: str,
+        column_names: List[str],
+        rows_raw: List[dict],
+        preds: list,
+    ):
+        mqtt_enabled = bool(watcher.get('mqtt_enabled'))
+        daily_enabled = bool(watcher.get('daily_csv_enabled'))
+        if not mqtt_enabled and not daily_enabled:
+            return
+
+        watcher_name = watcher.get('name') or f"watcher_{watcher['id']}"
+        raw_topic = watcher.get('mqtt_topic') or f'alerts/{watcher_name}'
+        topic = str(raw_topic).replace('{name}', _slug(watcher_name))
+
+        # Resolve the daily-CSV directory once. current_app.config reads
+        # require the app context which run() pushes at thread start.
+        daily_dir = None
+        if daily_enabled:
+            try:
+                datasets_root = current_app.config['DATASETS_ROOT_PATH']
+                shared_folder = current_app.config['SHARED_FOLDER_PATH']
+                daily_dir = os.path.join(
+                    datasets_root, shared_folder, 'log_watcher', _slug(watcher_name)
+                )
+                os.makedirs(daily_dir, exist_ok=True)
+            except Exception as e:
+                logger.warning(
+                    f"[FolderWatcher {self.watcher_id}] daily-CSV dir setup failed: {e}"
+                )
+                daily_dir = None
+
+        # One dedicated MQTT client for the whole file: cheaper than one
+        # ephemeral connect per row, still short-lived per file.
+        mqtt_client = None
+        if mqtt_enabled:
+            try:
+                mqtt_client = _mqtt_connect()
+            except Exception as e:
+                logger.warning(
+                    f"[FolderWatcher {self.watcher_id}] MQTT connect failed: {e}"
+                )
+                mqtt_client = None
+
+        try:
+            for idx, (row, p) in enumerate(zip(rows_raw, preds), start=1):
+                label, conf = _extract_label_and_conf(p)
+                iso_ts = datetime.utcnow().isoformat() + 'Z'
+                # Publish payload built once and reused by both sinks.
+                payload = {
+                    'timestamp': iso_ts,
+                    'watcher_name': watcher_name,
+                    'source_file': source_basename,
+                    'record_index': idx,
+                    'prediction': label,
+                    'confidence': conf if conf != '' else None,
+                    'row': {c: row.get(c) for c in column_names},
+                }
+
+                if mqtt_client is not None:
+                    try:
+                        mqtt_client.publish(
+                            topic, json.dumps(payload, default=str), qos=0
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            f"[FolderWatcher {self.watcher_id}] MQTT publish row {idx} failed: {e}"
+                        )
+
+                if daily_dir is not None:
+                    try:
+                        _append_daily_row(daily_dir, watcher_name, payload, column_names)
+                    except Exception as e:
+                        logger.warning(
+                            f"[FolderWatcher {self.watcher_id}] daily-CSV append row {idx} failed: {e}"
+                        )
+        finally:
+            if mqtt_client is not None:
+                try:
+                    mqtt_client.loop_stop()
+                except Exception:
+                    pass
+                try:
+                    mqtt_client.disconnect()
+                except Exception:
+                    pass
+
+
+# ---------------------------------------------------------------------------
+# Parsers — each returns (column_names, rows) where rows is List[Dict].
+# ---------------------------------------------------------------------------
+
+def _parse_csv(path: str, header_mode: str):
+    """Legacy CSV parser. Non-numeric rows are skipped.
+    Column names are either the first-row header or auto-generated (col_0..).
+    """
+    with open(path, 'r', encoding='utf-8', errors='replace') as f:
+        first_line = f.readline().rstrip('\r\n')
+    parts = first_line.split(',')
+    if header_mode == 'auto':
+        is_headered = bool(parts) and not all(_is_float(p) for p in parts)
+    elif header_mode == 'headered':
+        is_headered = True
+    else:
+        is_headered = False
+
+    if is_headered:
+        column_names = [p.strip() or f'col_{i}' for i, p in enumerate(parts)]
+    else:
+        column_names = [f'col_{i}' for i in range(len(parts))]
+
+    rows: List[dict] = []
+    with open(path, 'r', encoding='utf-8', errors='replace') as f:
+        if is_headered:
+            f.readline()  # skip header
+        for line in f:
+            line = line.rstrip('\r\n')
+            if not line:
+                continue
+            vals = line.split(',')
+            try:
+                floats = [float(v) for v in vals]
+            except ValueError:
+                continue  # skip non-numeric rows
+            row = {}
+            for i, v in enumerate(floats):
+                name = column_names[i] if i < len(column_names) else f'col_{i}'
+                row[name] = v
+            rows.append(row)
+    return column_names, rows
+
+
+def _parse_regex(path: str, pattern: str):
+    """Regex parser. Each matching line's named groups become a row.
+    Non-matching lines are skipped. Non-numeric captures are dropped.
+
+    Column order is the order named groups first appear in the pattern; a row
+    is emitted only if it retains at least one numeric column.
+    """
+    if not pattern:
+        return [], []
+    compiled = re.compile(pattern)
+    # Named groups in definition order — used as the canonical column list so
+    # the output CSV has a stable header even if some rows omit groups.
+    ordered_names = [
+        n for n, i in sorted(compiled.groupindex.items(), key=lambda x: x[1])
+    ]
+    if not ordered_names:
+        # Regex with no named groups can't yield columns; treat as empty.
+        return [], []
+    rows: List[dict] = []
+    seen_columns: List[str] = []
+    seen_set = set()
+    with open(path, 'r', encoding='utf-8', errors='replace') as f:
+        for line in f:
+            line = line.rstrip('\r\n')
+            if not line:
+                continue
+            m = compiled.search(line)
+            if not m:
+                continue
+            row = {}
+            for name in ordered_names:
+                v = m.group(name) if name in m.groupdict() else None
+                if v is None:
+                    continue
+                fv = _try_float(v)
+                if fv is None:
+                    continue  # drop non-numeric
+                row[name] = fv
+                if name not in seen_set:
+                    seen_set.add(name)
+                    seen_columns.append(name)
+            if row:
+                rows.append(row)
+    return seen_columns, rows
+
+
+def _parse_json(path: str):
+    """JSON-lines parser. Each line is one JSON object; keys become columns.
+    Non-numeric values are dropped. Column order follows first-seen key order.
+    """
+    rows: List[dict] = []
+    seen_columns: List[str] = []
+    seen_set = set()
+    with open(path, 'r', encoding='utf-8', errors='replace') as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(obj, dict):
+                continue
+            row = {}
+            for k, v in obj.items():
+                fv = _try_float(v)
+                if fv is None:
+                    continue
+                key = str(k)
+                row[key] = fv
+                if key not in seen_set:
+                    seen_set.add(key)
+                    seen_columns.append(key)
+            if row:
+                rows.append(row)
+    return seen_columns, rows
+
+
+# ---------------------------------------------------------------------------
+# Small helpers
+# ---------------------------------------------------------------------------
 
 def _is_float(s: str) -> bool:
     try:
@@ -260,8 +507,122 @@ def _is_float(s: str) -> bool:
         return False
 
 
-def start_watcher(watcher_id: int):
-    """Start (or restart) a watcher. Idempotent within one process."""
+def _try_float(v):
+    """Return float(v) or None if it doesn't parse. Booleans are NOT coerced
+    (Python `True`→1.0 would silently poison feature vectors)."""
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        try:
+            return float(v)
+        except (ValueError, TypeError):
+            return None
+    if isinstance(v, str):
+        try:
+            return float(v.strip())
+        except (ValueError, TypeError):
+            return None
+    return None
+
+
+def _to_float(v):
+    """Feature-matrix coercion: unknown → 0.0. Used only when a column is
+    present in the header but missing on a specific row."""
+    f = _try_float(v)
+    return 0.0 if f is None else f
+
+
+def _extract_label_and_conf(p):
+    """ModelManager returns dicts (label/value + optional confidence/score)
+    for structured outputs and raw scalars/strings for simple algorithms.
+    Normalize to (label_str, confidence_str) for CSV + MQTT payloads."""
+    if isinstance(p, dict):
+        if 'label' in p:
+            label = p.get('label')
+        elif 'value' in p:
+            label = p.get('value')
+        else:
+            label = ''
+        conf = p.get('confidence', '')
+        if conf == '' and 'score' in p:
+            conf = p.get('score', '')
+        return label, conf
+    return str(p), ''
+
+
+_SLUG_RE = re.compile(r'[^A-Za-z0-9._-]+')
+
+
+def _slug(name: str) -> str:
+    """Filesystem-safe watcher slug for daily-CSV subdirs. Also safe as MQTT
+    topic segment."""
+    if not name:
+        return 'watcher'
+    return _SLUG_RE.sub('_', name).strip('_') or 'watcher'
+
+
+def _mqtt_connect():
+    """Open a live paho.mqtt client. Caller must call loop_stop + disconnect.
+    Reuses the broker host/port env vars matching Batch B's app_builder sink."""
+    import paho.mqtt.client as paho_mqtt
+
+    broker_host = os.environ.get('MQTT_BROKER_HOST', 'cirame-mosquitto')
+    broker_port = int(os.environ.get('MQTT_BROKER_PORT', '1883'))
+    client = paho_mqtt.Client(paho_mqtt.CallbackAPIVersion.VERSION2)
+    client.connect(broker_host, broker_port, keepalive=5)
+    client.loop_start()
+    return client
+
+
+def _append_daily_row(
+    daily_dir: str, watcher_name: str, payload: dict, column_names: List[str]
+):
+    """Append one row to <daily_dir>/<YYYY-MM-DD>.csv.
+    Header is written on first-touch of that day's file. Uses a per-path
+    lock so concurrent worker ticks don't interleave writes."""
+    day = datetime.utcnow().strftime('%Y-%m-%d')
+    file_path = os.path.join(daily_dir, f'{day}.csv')
+
+    row = {
+        'timestamp': payload.get('timestamp', ''),
+        'watcher_name': payload.get('watcher_name', watcher_name),
+        'source_file': payload.get('source_file', ''),
+        'record_index': payload.get('record_index', ''),
+        'prediction': payload.get('prediction', ''),
+        'confidence': payload.get('confidence', ''),
+    }
+    input_row = payload.get('row') or {}
+    for c in column_names:
+        row[f'in_{c}'] = input_row.get(c, '')
+
+    lock = _get_daily_csv_lock(file_path)
+    with lock:
+        file_exists = os.path.exists(file_path)
+        with open(file_path, 'a', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=list(row.keys()))
+            if not file_exists or os.path.getsize(file_path) == 0:
+                writer.writeheader()
+            writer.writerow(row)
+
+
+# ---------------------------------------------------------------------------
+# Worker lifecycle
+# ---------------------------------------------------------------------------
+
+def start_watcher(watcher_id: int, flask_app=None):
+    """Start (or restart) a watcher. Idempotent within one process.
+
+    `flask_app` may be passed explicitly (e.g. from the app factory's
+    rehydration call, which runs outside a request/app context). If omitted,
+    we fall back to `current_app` — which is available during any HTTP
+    request that triggers /start.
+    """
+    if flask_app is None:
+        try:
+            flask_app = current_app._get_current_object()  # type: ignore[attr-defined]
+        except RuntimeError:
+            flask_app = None
+
     with _workers_lock:
         # Garbage-collect any stale dead entry from a previous run.
         existing = _workers.get(watcher_id)
@@ -270,7 +631,7 @@ def start_watcher(watcher_id: int):
         if existing:
             _workers.pop(watcher_id, None)
         FolderWatcher.update(watcher_id, status='running', last_error=None)
-        worker = _WatcherWorker(watcher_id)
+        worker = _WatcherWorker(watcher_id, flask_app=flask_app)
         _workers[watcher_id] = worker
         worker.start()
 
@@ -292,13 +653,17 @@ def stop_watcher(watcher_id: int):
     FolderWatcher.update(watcher_id, status='stopped')
 
 
-def rehydrate_running_watchers():
+def rehydrate_running_watchers(flask_app=None):
     """Called from app.__init__.py at startup. Any watcher whose persisted
-    status is 'running' gets its worker thread respawned."""
+    status is 'running' gets its worker thread respawned.
+
+    `flask_app` should be the Flask app object; it's threaded through so each
+    worker's context-push at run() can succeed (rehydration itself doesn't
+    execute inside an app context)."""
     try:
         for w in FolderWatcher.get_all_running():
             try:
-                start_watcher(w['id'])
+                start_watcher(w['id'], flask_app=flask_app)
                 logger.info(
                     f"[FolderWatcher] Rehydrated watcher {w['id']} ({w['name']})"
                 )

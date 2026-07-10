@@ -570,6 +570,22 @@ const TEMPLATES = [
       { id: 'n7', type: 'output.table', config: { max_rows: 100, show_confidence: true } },
     ],
   },
+  // ── Log Watcher (external — hands off to Folder Watcher config) ──
+  // Clicking "Create" for this tile skips the App Builder graph and jumps
+  // straight to the Folder Watcher creation page — Log Watcher IS a folder
+  // watcher, just with regex / json parsing + MQTT + daily-CSV sinks.
+  {
+    id: 'log_watcher',
+    name: 'Log Watcher',
+    description: 'Continuously monitor a folder for log files, parse lines, run AI decisions, and publish alerts.',
+    icon: 'mdi-file-search-outline',
+    tags: ['Folder', 'Log', 'Watcher', 'Alerts'],
+    color: '#f97316',
+    nodeLabels: ['Folder', 'Parse', 'Model', 'MQTT / CSV'],
+    external_route: { name: 'folder-watcher-new' },
+    nodes: [],
+    edges: [],
+  },
   // ── Blank ──
   {
     id: 'blank',
@@ -766,6 +782,15 @@ async function createApp() {
   creating.value = true
   try {
     const tpl = TEMPLATES.find(t => t.id === selectedTemplate.value)
+
+    // External-route templates (e.g. Log Watcher) don't produce an App Builder
+    // graph. Bail out to the target route instead of hitting /api/app-builder.
+    if (tpl && (tpl as any).external_route) {
+      closeCreateDialog()
+      router.push((tpl as any).external_route)
+      return
+    }
+
     const nodes = tpl ? JSON.parse(JSON.stringify(tpl.nodes)) : []
 
     // Auto-insert first active ME-LAB endpoint as model node (between feature_extract and output)

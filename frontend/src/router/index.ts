@@ -87,6 +87,14 @@ const router = createRouter({
       meta: { requiresAuth: true }
     },
     {
+      // Alias for the App Builder "Log Watcher" template — jumps into the
+      // Folder Watcher edit view with no :id, i.e. "new watcher" mode.
+      path: '/folder-watcher/new',
+      name: 'folder-watcher-new',
+      component: () => import('@/views/FolderWatcherEditView.vue'),
+      meta: { requiresAuth: true }
+    },
+    {
       path: '/projects',
       name: 'projects-list',
       component: () => import('@/views/ProjectsListView.vue'),
@@ -127,6 +135,14 @@ const router = createRouter({
       name: 'standalone-app',
       component: () => import('@/views/PublishedAppView.vue'),
       meta: { requiresAuth: false, standalone: true }
+    },
+    {
+      // Public-ish monitor view for a folder watcher. Backend endpoint is
+      // still auth-gated; a future PR can add a public token model.
+      path: '/watcher-view/:id',
+      name: 'published-folder-watcher',
+      component: () => import('@/views/PublishedFolderWatcherView.vue'),
+      meta: { requiresAuth: true }
     },
     {
       path: '/:pathMatch(.*)*',

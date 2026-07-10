@@ -108,6 +108,75 @@
           <v-radio label="Headerless" value="headerless" />
         </v-radio-group>
 
+        <!-- ── Log Watcher: parse mode + optional regex ───────────────── -->
+        <v-select
+          v-model="form.parse_mode"
+          :items="parseModeOptions"
+          item-title="label"
+          item-value="value"
+          label="Parse mode"
+          variant="outlined"
+          density="comfortable"
+          class="mb-4"
+          hint="How each line inside a file is turned into a row"
+          persistent-hint
+        />
+
+        <v-textarea
+          v-if="form.parse_mode === 'regex'"
+          v-model="form.parse_regex"
+          label="Parse regex"
+          placeholder="(?P<time>\S+)\s+temp=(?P<temperature>\d+\.\d+)\s+vib=(?P<vibration>\d+\.\d+)"
+          variant="outlined"
+          density="comfortable"
+          rows="2"
+          auto-grow
+          class="mb-4"
+          style="font-family: monospace;"
+          hint="Python regex with named capture groups. Each match becomes a row."
+          persistent-hint
+          :rules="[
+            v => form.parse_mode !== 'regex' || (!!v && !!v.trim()) || 'Regex is required'
+          ]"
+        />
+
+        <!-- ── Log Watcher: MQTT publish sink ─────────────────────────── -->
+        <v-switch
+          v-model="form.mqtt_enabled"
+          label="Publish predictions to MQTT"
+          color="primary"
+          density="comfortable"
+          hide-details
+          class="mb-2"
+        />
+        <v-text-field
+          v-if="form.mqtt_enabled"
+          v-model="form.mqtt_topic"
+          label="MQTT topic"
+          placeholder="alerts/{name}"
+          variant="outlined"
+          density="comfortable"
+          class="mb-4"
+          hint="{name} is replaced with the watcher's slug at publish time"
+          persistent-hint
+          :rules="[
+            v => !form.mqtt_enabled || (!!v && !!String(v).trim()) || 'Topic is required'
+          ]"
+        />
+
+        <!-- ── Log Watcher: daily aggregated CSV sink ─────────────────── -->
+        <v-switch
+          v-model="form.daily_csv_enabled"
+          label="Write daily aggregated CSV"
+          color="primary"
+          density="comfortable"
+          hide-details
+          class="mb-2"
+          :hint="dailyCsvHint"
+          persistent-hint
+        />
+        <div class="mb-6" />
+
         <div class="d-flex align-center justify-end gap-2">
           <v-btn variant="text" :disabled="saving" @click="cancel">Cancel</v-btn>
           <v-btn
@@ -165,7 +234,24 @@ const form = ref({
   poll_interval_s: 60,
   file_glob: '*.txt',
   header_mode: 'auto' as 'auto' | 'headered' | 'headerless',
+  parse_mode: 'csv' as 'csv' | 'regex' | 'json',
+  parse_regex: '',
+  mqtt_enabled: false,
+  mqtt_topic: 'alerts/{name}',
+  daily_csv_enabled: false,
 })
+
+const parseModeOptions = [
+  { value: 'csv',   label: 'CSV (comma-separated rows)' },
+  { value: 'regex', label: 'Regex (named groups per line)' },
+  { value: 'json',  label: 'JSON (one JSON object per line)' },
+]
+
+const dailyCsvHint = computed(() =>
+  form.value.daily_csv_enabled
+    ? `Appends to shared/log_watcher/${nameSlug.value}/<YYYY-MM-DD>.csv on the server`
+    : 'When enabled, every prediction is appended to a per-day aggregated CSV'
+)
 
 // Track whether the user has manually edited the folder fields — used to
 // decide when it's safe to keep autofilling from the name field.
@@ -225,6 +311,11 @@ const loadWatcher = async () => {
       poll_interval_s: w.poll_interval_s,
       file_glob: w.file_glob,
       header_mode: w.header_mode,
+      parse_mode: (w.parse_mode as any) || 'csv',
+      parse_regex: w.parse_regex || '',
+      mqtt_enabled: !!w.mqtt_enabled,
+      mqtt_topic: w.mqtt_topic || 'alerts/{name}',
+      daily_csv_enabled: !!w.daily_csv_enabled,
     }
   } catch (e: any) {
     notify.showError(e.response?.data?.error || 'Watcher not found')
@@ -244,6 +335,18 @@ const save = async () => {
     const payload: Record<string, any> = { ...form.value }
     if (!payload.input_folder) payload.input_folder = defaultInputFolder.value
     if (!payload.output_folder) payload.output_folder = defaultOutputFolder.value
+
+    // Don't ship an unused regex when the mode isn't regex — keeps the DB
+    // row tidy and lets the backend's PATCH validator skip the compile check.
+    if (payload.parse_mode !== 'regex') {
+      payload.parse_regex = null
+    }
+    // Same for MQTT topic: only send when the sink is on. Empty strings would
+    // otherwise trip the "required when mqtt_enabled" validator on a two-step
+    // edit that toggled off in the same submit.
+    if (!payload.mqtt_enabled) {
+      payload.mqtt_topic = null
+    }
 
     if (isEdit.value) {
       // endpoint_id is immutable on the backend PATCH route. Don't send it,

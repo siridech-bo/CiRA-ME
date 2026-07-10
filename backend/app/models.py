@@ -168,6 +168,11 @@ def init_db(db_path: str):
                 poll_interval_s INTEGER NOT NULL DEFAULT 60,
                 file_glob TEXT NOT NULL DEFAULT '*.txt',
                 header_mode TEXT NOT NULL DEFAULT 'auto',
+                parse_mode TEXT NOT NULL DEFAULT 'csv',
+                parse_regex TEXT,
+                mqtt_enabled INTEGER NOT NULL DEFAULT 0,
+                mqtt_topic TEXT,
+                daily_csv_enabled INTEGER NOT NULL DEFAULT 0,
                 status TEXT NOT NULL DEFAULT 'stopped',
                 last_run_at TEXT,
                 last_error TEXT,
@@ -178,6 +183,20 @@ def init_db(db_path: str):
                 FOREIGN KEY (endpoint_id) REFERENCES melab_endpoints(id)
             )
         ''')
+
+        # Log Watcher additions (migration-safe): parse_mode / regex + MQTT + daily CSV.
+        # Existing installs get these columns added with the same defaults as CREATE.
+        for _alter in (
+            "ALTER TABLE folder_watchers ADD COLUMN parse_mode TEXT NOT NULL DEFAULT 'csv'",
+            "ALTER TABLE folder_watchers ADD COLUMN parse_regex TEXT",
+            "ALTER TABLE folder_watchers ADD COLUMN mqtt_enabled INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE folder_watchers ADD COLUMN mqtt_topic TEXT",
+            "ALTER TABLE folder_watchers ADD COLUMN daily_csv_enabled INTEGER NOT NULL DEFAULT 0",
+        ):
+            try:
+                cursor.execute(_alter)
+            except Exception:
+                pass  # column already exists
 
         # Add quota columns to users table (migration-safe)
         try:
@@ -1445,7 +1464,9 @@ class FolderWatcher:
 
     _ALLOWED_UPDATE_FIELDS = (
         'name', 'input_folder', 'output_folder', 'poll_interval_s',
-        'file_glob', 'header_mode', 'status', 'last_run_at', 'last_error',
+        'file_glob', 'header_mode', 'parse_mode', 'parse_regex',
+        'mqtt_enabled', 'mqtt_topic', 'daily_csv_enabled',
+        'status', 'last_run_at', 'last_error',
         'files_processed', 'rows_processed',
     )
 
@@ -1454,16 +1475,26 @@ class FolderWatcher:
         poll_interval_s = int(kwargs.get('poll_interval_s', 60) or 60)
         file_glob = kwargs.get('file_glob') or '*.txt'
         header_mode = kwargs.get('header_mode') or 'auto'
+        parse_mode = kwargs.get('parse_mode') or 'csv'
+        parse_regex = kwargs.get('parse_regex')
+        mqtt_enabled = 1 if kwargs.get('mqtt_enabled') else 0
+        mqtt_topic = kwargs.get('mqtt_topic')
+        daily_csv_enabled = 1 if kwargs.get('daily_csv_enabled') else 0
         with get_db() as conn:
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT INTO folder_watchers
                 (user_id, name, endpoint_id, input_folder, output_folder,
-                 poll_interval_s, file_glob, header_mode, status, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'stopped', ?)
+                 poll_interval_s, file_glob, header_mode,
+                 parse_mode, parse_regex,
+                 mqtt_enabled, mqtt_topic, daily_csv_enabled,
+                 status, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'stopped', ?)
             ''', (
                 user_id, name, endpoint_id, input_folder, output_folder,
                 poll_interval_s, file_glob, header_mode,
+                parse_mode, parse_regex,
+                mqtt_enabled, mqtt_topic, daily_csv_enabled,
                 datetime.utcnow().isoformat()
             ))
             conn.commit()
@@ -1504,6 +1535,10 @@ class FolderWatcher:
         }
         if not updates:
             return
+        # Coerce bool → int for the flag columns stored as INTEGER in SQLite.
+        for _bool_col in ('mqtt_enabled', 'daily_csv_enabled'):
+            if _bool_col in updates:
+                updates[_bool_col] = 1 if updates[_bool_col] else 0
         with get_db() as conn:
             cursor = conn.cursor()
             set_clause = ', '.join(f'{k} = ?' for k in updates.keys())

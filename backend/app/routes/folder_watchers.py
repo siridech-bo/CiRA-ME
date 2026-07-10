@@ -4,6 +4,7 @@ Per-user watchers that poll a container-visible folder, run each row of
 each file through a ME-LAB endpoint, and write results to an output CSV.
 """
 
+import re
 import logging
 from flask import Blueprint, request, jsonify
 
@@ -18,8 +19,11 @@ folder_watchers_bp = Blueprint('folder_watchers', __name__)
 _MUTABLE_FIELDS = (
     'name', 'input_folder', 'output_folder',
     'poll_interval_s', 'file_glob', 'header_mode',
+    'parse_mode', 'parse_regex',
+    'mqtt_enabled', 'mqtt_topic', 'daily_csv_enabled',
 )
 _VALID_HEADER_MODES = ('auto', 'headered', 'headerless')
+_VALID_PARSE_MODES = ('csv', 'regex', 'json')
 
 
 def _serialize(watcher: dict) -> dict:
@@ -27,6 +31,10 @@ def _serialize(watcher: dict) -> dict:
     if not watcher:
         return watcher
     result = dict(watcher)
+    # Normalize INTEGER flag columns to booleans for the frontend.
+    for _flag in ('mqtt_enabled', 'daily_csv_enabled'):
+        if _flag in result:
+            result[_flag] = bool(result.get(_flag))
     try:
         ep = MeLabEndpoint.get_by_id(watcher['endpoint_id'])
         if ep:
@@ -98,6 +106,30 @@ def create_watcher():
 
     file_glob = (data.get('file_glob') or '*.txt').strip() or '*.txt'
 
+    # ── Log Watcher parse mode + regex validation ─────────────────────────
+    parse_mode = (data.get('parse_mode') or 'csv').strip().lower()
+    if parse_mode not in _VALID_PARSE_MODES:
+        return jsonify({'error': f'parse_mode must be one of {_VALID_PARSE_MODES}'}), 400
+    parse_regex = data.get('parse_regex')
+    if parse_mode == 'regex':
+        if not parse_regex or not str(parse_regex).strip():
+            return jsonify({'error': 'parse_regex is required when parse_mode="regex"'}), 400
+        try:
+            re.compile(parse_regex)
+        except re.error as e:
+            return jsonify({'error': f'parse_regex is not a valid Python regex: {e}'}), 400
+    else:
+        parse_regex = None  # ignore any incoming regex for non-regex modes
+
+    # ── MQTT publish sink ─────────────────────────────────────────────────
+    mqtt_enabled = bool(data.get('mqtt_enabled'))
+    mqtt_topic = (data.get('mqtt_topic') or '').strip() or None
+    if mqtt_enabled and not mqtt_topic:
+        return jsonify({'error': 'mqtt_topic is required when mqtt_enabled=true'}), 400
+
+    # ── Daily aggregated CSV sink ─────────────────────────────────────────
+    daily_csv_enabled = bool(data.get('daily_csv_enabled'))
+
     watcher_id = FolderWatcher.create(
         user_id=request.current_user['id'],
         name=name,
@@ -107,6 +139,11 @@ def create_watcher():
         poll_interval_s=poll_interval_s,
         file_glob=file_glob,
         header_mode=header_mode,
+        parse_mode=parse_mode,
+        parse_regex=parse_regex,
+        mqtt_enabled=mqtt_enabled,
+        mqtt_topic=mqtt_topic,
+        daily_csv_enabled=daily_csv_enabled,
     )
     watcher = FolderWatcher.get_by_id(watcher_id)
     return jsonify(_serialize(watcher)), 201
@@ -157,6 +194,55 @@ def update_watcher(watcher_id):
     # Validate header_mode
     if 'header_mode' in updates and updates['header_mode'] not in _VALID_HEADER_MODES:
         return jsonify({'error': f'header_mode must be one of {_VALID_HEADER_MODES}'}), 400
+
+    # ── Log Watcher fields ────────────────────────────────────────────────
+    # We validate the *effective* parse_mode (post-patch) against parse_regex
+    # so a two-step edit (regex first, then swap to csv) can succeed without
+    # regex validation failing on an empty pattern.
+    effective_parse_mode = updates.get('parse_mode', watcher.get('parse_mode') or 'csv')
+    if 'parse_mode' in updates:
+        pm = str(updates['parse_mode']).strip().lower()
+        if pm not in _VALID_PARSE_MODES:
+            return jsonify({'error': f'parse_mode must be one of {_VALID_PARSE_MODES}'}), 400
+        updates['parse_mode'] = pm
+        effective_parse_mode = pm
+
+    if 'parse_regex' in updates:
+        pr = updates['parse_regex']
+        if pr is not None and not isinstance(pr, str):
+            return jsonify({'error': 'parse_regex must be a string'}), 400
+        pr = (pr or '').strip() or None
+        updates['parse_regex'] = pr
+
+    if effective_parse_mode == 'regex':
+        # Resolve the pattern that will actually be stored (updated value if
+        # present, else the existing one). Require it to compile.
+        eff_regex = updates.get('parse_regex', watcher.get('parse_regex'))
+        if not eff_regex:
+            return jsonify({'error': 'parse_regex is required when parse_mode="regex"'}), 400
+        try:
+            re.compile(eff_regex)
+        except re.error as e:
+            return jsonify({'error': f'parse_regex is not a valid Python regex: {e}'}), 400
+
+    # MQTT enable / topic — same "effective post-patch" gate as regex.
+    if 'mqtt_enabled' in updates:
+        updates['mqtt_enabled'] = bool(updates['mqtt_enabled'])
+    if 'mqtt_topic' in updates:
+        mt = updates['mqtt_topic']
+        if mt is not None and not isinstance(mt, str):
+            return jsonify({'error': 'mqtt_topic must be a string'}), 400
+        updates['mqtt_topic'] = (mt or '').strip() or None
+    effective_mqtt_enabled = updates.get(
+        'mqtt_enabled', bool(watcher.get('mqtt_enabled'))
+    )
+    if effective_mqtt_enabled:
+        eff_topic = updates.get('mqtt_topic', watcher.get('mqtt_topic'))
+        if not eff_topic:
+            return jsonify({'error': 'mqtt_topic is required when mqtt_enabled=true'}), 400
+
+    if 'daily_csv_enabled' in updates:
+        updates['daily_csv_enabled'] = bool(updates['daily_csv_enabled'])
 
     # Trim strings
     for k in ('name', 'input_folder', 'output_folder', 'file_glob'):
