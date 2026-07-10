@@ -2424,6 +2424,23 @@ function toggleSelectAllCsv() {
   }
 }
 
+// Row-click on a CSV file → single-select (replace whole selection with this file).
+// Matches Windows Explorer / Finder behavior. Multi-select is via the checkbox.
+function selectSingleCsvFile(item: FileItem) {
+  multiCsvError.value = null
+  const wasOnlySelection = selectedFiles.value.length === 1 && selectedFiles.value[0].path === item.path
+  if (wasOnlySelection) {
+    // Clicking the already-selected file deselects it.
+    selectedFiles.value = []
+    selectedFile.value = null
+    dataPreview.value = null
+    return
+  }
+  selectedFiles.value = [item]
+  selectedFile.value = item
+  previewFile(item)
+}
+
 function toggleCsvFile(item: FileItem) {
   multiCsvError.value = null
   const idx = selectedFiles.value.findIndex(f => f.path === item.path)
@@ -2493,8 +2510,8 @@ async function handleItemClick(item: FileItem) {
     multiCsvError.value = null
     await loadFolders()
   } else if (isCsvFormat.value && item.extension === '.csv') {
-    // CSV multi-select mode
-    toggleCsvFile(item)
+    // Row-click = single-select (replace). Checkbox click still toggles multi-select.
+    selectSingleCsvFile(item)
   } else if (isTextFormat.value && isTextExtension(item.extension)) {
     // Text file — open the Text Import wizard before parsing
     selectedFile.value = item
