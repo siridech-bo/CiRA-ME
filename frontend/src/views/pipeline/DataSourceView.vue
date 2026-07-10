@@ -619,11 +619,11 @@
     </v-row>
 
     <!-- Data Preview -->
-    <v-card v-if="dataPreview" class="mt-6 pa-4">
+    <v-card v-if="dataPreview?.metadata" class="mt-6 pa-4">
       <div class="d-flex align-center mb-4">
         <h3 class="text-subtitle-1 font-weight-bold">Data Preview</h3>
         <v-chip
-          v-if="dataPreview.metadata.is_partition_preview"
+          v-if="dataPreview.metadata?.is_partition_preview"
           size="small"
           color="warning"
           variant="tonal"
@@ -2034,7 +2034,12 @@ async function fetchFromUrl() {
     }
 
     const response = await api.post('/api/data/load-from-url', payload)
-    dataPreview.value = response.data
+    const body = response.data
+    if (!body || !body.metadata || !body.preview) {
+      urlLoader.value.error = body?.error || 'Response was missing preview data. Check the URL points to a plain CSV or text file (not an HTML page or ZIP).'
+      return
+    }
+    dataPreview.value = body
     // Clear file-based selection state so proceedToWindowing takes the
     // "non-folder data" branch (stores dataPreview directly).
     selectedFile.value = null
