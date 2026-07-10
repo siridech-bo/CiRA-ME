@@ -75,7 +75,7 @@
                 <div>
                   <div class="font-weight-medium">Load from URL</div>
                   <div class="text-caption text-medium-emphasis">
-                    Fetch a CSV / text file over HTTPS (max 100 MB). Includes Loghub catalog.
+                    Fetch a CSV / text file over HTTPS (max 100 MB). Includes Factory / PdM catalog.
                   </div>
                 </div>
               </template>
@@ -483,37 +483,37 @@
 
           <v-divider class="my-4" />
 
-          <!-- Loghub Quick-Pick chips -->
+          <!-- Factory / PdM Quick-Pick chips -->
           <div class="mb-2">
             <div class="text-subtitle-2 font-weight-medium">
-              <v-icon size="small" color="primary" class="mr-1">mdi-lightning-bolt</v-icon>
-              Quick-pick from Loghub samples
-              <span class="text-caption text-medium-emphasis ml-1">(~200-400 KB each)</span>
+              <v-icon size="small" color="primary" class="mr-1">mdi-factory</v-icon>
+              Quick-pick from Factory / PdM samples
+              <span class="text-caption text-medium-emphasis ml-1">(~1-10 MB each)</span>
             </div>
           </div>
           <div class="mb-2">
             <v-chip
-              v-for="key in LOGHUB_QUICK_PICK_KEYS"
+              v-for="key in PDM_QUICK_PICK_KEYS"
               :key="key"
               class="mr-2 mb-1"
               color="primary"
               variant="tonal"
               size="small"
               prepend-icon="mdi-database-outline"
-              @click="pickLoghubSample(key)"
+              @click="pickPdmSample(key)"
             >
               {{ key }}
             </v-chip>
           </div>
 
-          <!-- Loghub Full Catalog (expansion panel) -->
+          <!-- Factory / PdM Full Catalog (expansion panel) -->
           <v-expansion-panels variant="accordion" class="mt-3">
             <v-expansion-panel>
               <v-expansion-panel-title>
                 <v-icon class="mr-2" color="secondary">mdi-book-open-variant</v-icon>
-                Loghub — Full Dataset Catalog
+                Factory / Predictive-Maintenance Catalog
                 <v-chip size="x-small" color="secondary" variant="tonal" class="ml-2">
-                  {{ LOGHUB_CATALOG.length }} datasets
+                  {{ PDM_CATALOG.length }} datasets
                 </v-chip>
               </v-expansion-panel-title>
               <v-expansion-panel-text>
@@ -524,12 +524,13 @@
                   class="mb-3"
                   icon="mdi-license"
                 >
-                  Loghub datasets are freely available for research or academic work.
-                  Confirm your license needs before commercial use.
+                  All datasets are direct-URL CSV or space-delimited TXT streamed to memory
+                  (no server storage). Numeric multi-sensor data — fits the CiRA ME pipeline.
+                  Licenses vary per row; commercial use permitted for CC BY 4.0, MIT, and US Gov works.
                 </v-alert>
 
                 <div
-                  v-for="category in loghubCategories"
+                  v-for="category in pdmCategories"
                   :key="category"
                   class="mb-4"
                 >
@@ -542,15 +543,17 @@
                         <th>Dataset</th>
                         <th>Description</th>
                         <th class="text-center">Labeled</th>
-                        <th class="text-right">#Lines</th>
+                        <th class="text-right">#Rows</th>
                         <th class="text-right">Raw Size</th>
-                        <th class="text-center">Sample (200 KB)</th>
-                        <th class="text-center">Full download</th>
+                        <th class="text-center">Format</th>
+                        <th class="text-center">License</th>
+                        <th class="text-center">Load</th>
+                        <th class="text-center">Source</th>
                       </tr>
                     </thead>
                     <tbody>
                       <tr
-                        v-for="entry in loghubByCategory[category]"
+                        v-for="entry in pdmByCategory[category]"
                         :key="entry.key"
                       >
                         <td class="font-weight-medium">{{ entry.key }}</td>
@@ -559,30 +562,38 @@
                           <v-icon v-if="entry.labeled" size="small" color="success">mdi-check</v-icon>
                           <span v-else class="text-medium-emphasis">—</span>
                         </td>
-                        <td class="text-right">{{ entry.lines.toLocaleString() }}</td>
+                        <td class="text-right">{{ entry.rows?.toLocaleString() ?? '—' }}</td>
                         <td class="text-right">{{ entry.sizeRaw }}</td>
                         <td class="text-center">
+                          <v-chip size="x-small" :color="entry.format === 'csv' ? 'success' : 'info'" variant="flat">
+                            {{ entry.format === 'csv' ? 'CSV' : 'TXT' }}
+                          </v-chip>
+                        </td>
+                        <td class="text-center">
+                          <span class="text-caption text-medium-emphasis">{{ entry.license }}</span>
+                        </td>
+                        <td class="text-center">
                           <v-btn
-                            v-if="entry.sampleUrl"
                             size="x-small"
                             variant="tonal"
                             color="primary"
-                            @click="pickLoghubSample(entry.key)"
+                            @click="pickPdmSample(entry.key)"
                           >
                             Use
                           </v-btn>
-                          <span v-else class="text-caption text-medium-emphasis">N/A</span>
                         </td>
                         <td class="text-center">
                           <a
-                            :href="entry.fullUrl"
+                            v-if="entry.sourceUrl"
+                            :href="entry.sourceUrl"
                             target="_blank"
                             rel="noopener"
                             class="text-caption"
                           >
-                            Zenodo
+                            Info
                             <v-icon size="x-small">mdi-open-in-new</v-icon>
                           </a>
+                          <span v-else class="text-caption text-medium-emphasis">—</span>
                         </td>
                       </tr>
                     </tbody>
@@ -1141,7 +1152,7 @@
               </v-list-item>
               <v-list-item class="px-0">
                 <template #prepend><v-icon size="small" color="primary">mdi-cloud-download-outline</v-icon></template>
-                <v-list-item-title class="text-body-2"><strong>Load from URL</strong> — fetch a CSV / text file over <code>https://</code> (max 100 MB, streamed to memory only). Includes a hardcoded catalog of Loghub log datasets with one-click samples for quick experimentation.</v-list-item-title>
+                <v-list-item-title class="text-body-2"><strong>Load from URL</strong> — fetch a CSV / text file over <code>https://</code> (max 100 MB, streamed to memory only). Includes a hardcoded catalog of factory / predictive-maintenance datasets (AI4I 2020, NASA CMAPSS turbofan, Azure PdM) with one-click samples.</v-list-item-title>
               </v-list-item>
             </v-list>
           </div>
@@ -1863,7 +1874,7 @@ const formatInfo = computed(() => {
     case 'text':
       return 'Pick a delimited text file (.txt, .tsv, .dat, .log). The Text Import wizard lets you tweak delimiter, header row, and skipped rows with a live preview before loading.'
     case 'url':
-      return 'Fetch a CSV or delimited text file over HTTPS. Streamed to memory only (never written to disk) with a 100 MB hard cap. Quick-pick chips below load small Loghub samples.'
+      return 'Fetch a CSV or delimited text file over HTTPS. Streamed to memory only (never written to disk) with a 100 MB hard cap. Quick-pick chips below load small factory / predictive-maintenance samples.'
     default:
       return ''
   }
@@ -1898,111 +1909,109 @@ const urlLoader = ref<UrlLoaderState>({
   error: '',
 })
 
-// --- Loghub catalog (hardcoded, from loghub README) -----------------------
-interface LoghubEntry {
+// --- Factory / Predictive-Maintenance catalog (hardcoded, direct-URL CSVs/TXTs) ---
+interface PdmEntry {
   key: string
   category: string
   description: string
   labeled: boolean
-  lines: number
+  rows: number | null
   sizeRaw: string
-  sampleUrl: string | null
-  fullUrl: string
+  format: 'csv' | 'text'
+  headerRow?: number // 0 = headerless (CMAPSS)
+  sampleUrl: string
+  sourceUrl?: string  // Optional link to original / paper
+  license: string
 }
 
-const LOGHUB_CATALOG: LoghubEntry[] = [
-  // Distributed systems
-  { key: 'HDFS_v1', category: 'Distributed systems', description: 'Hadoop distributed file system log', labeled: true, lines: 11175629, sizeRaw: '1.47 GiB',
-    sampleUrl: 'https://raw.githubusercontent.com/logpai/loghub/master/HDFS/HDFS_2k.log_structured.csv',
-    fullUrl: 'https://zenodo.org/records/8196385/files/HDFS_v1.zip?download=1' },
-  { key: 'HDFS_v2', category: 'Distributed systems', description: 'Hadoop distributed file system log', labeled: false, lines: 71118073, sizeRaw: '16.06 GiB',
-    sampleUrl: null,
-    fullUrl: 'https://zenodo.org/records/8196385/files/HDFS_v2.zip?download=1' },
-  { key: 'HDFS_v3', category: 'Distributed systems', description: 'Instrumented HDFS trace log (TraceBench)', labeled: true, lines: 14778079, sizeRaw: '2.96 GiB',
-    sampleUrl: null,
-    fullUrl: 'https://zenodo.org/records/8196385/files/HDFS_v3_TraceBench.zip?download=1' },
-  { key: 'Hadoop', category: 'Distributed systems', description: 'Hadoop MapReduce job log', labeled: true, lines: 394308, sizeRaw: '48.61 MiB',
-    sampleUrl: 'https://raw.githubusercontent.com/logpai/loghub/master/Hadoop/Hadoop_2k.log_structured.csv',
-    fullUrl: 'https://zenodo.org/records/8196385/files/Hadoop.zip?download=1' },
-  { key: 'Spark', category: 'Distributed systems', description: 'Spark job log', labeled: false, lines: 33236604, sizeRaw: '2.75 GiB',
-    sampleUrl: 'https://raw.githubusercontent.com/logpai/loghub/master/Spark/Spark_2k.log_structured.csv',
-    fullUrl: 'https://zenodo.org/records/8196385/files/Spark.tar.gz?download=1' },
-  { key: 'Zookeeper', category: 'Distributed systems', description: 'ZooKeeper service log', labeled: false, lines: 74380, sizeRaw: '9.95 MiB',
-    sampleUrl: 'https://raw.githubusercontent.com/logpai/loghub/master/Zookeeper/Zookeeper_2k.log_structured.csv',
-    fullUrl: 'https://zenodo.org/records/8196385/files/Zookeeper.tar.gz?download=1' },
-  { key: 'OpenStack', category: 'Distributed systems', description: 'OpenStack infrastructure log', labeled: true, lines: 207820, sizeRaw: '58.61 MiB',
-    sampleUrl: 'https://raw.githubusercontent.com/logpai/loghub/master/OpenStack/OpenStack_2k.log_structured.csv',
-    fullUrl: 'https://zenodo.org/records/8196385/files/OpenStack.tar.gz?download=1' },
-  // Super computers
-  { key: 'BGL', category: 'Super computers', description: 'Blue Gene/L supercomputer log', labeled: true, lines: 4747963, sizeRaw: '708.76 MiB',
-    sampleUrl: 'https://raw.githubusercontent.com/logpai/loghub/master/BGL/BGL_2k.log_structured.csv',
-    fullUrl: 'https://zenodo.org/records/8196385/files/BGL.zip?download=1' },
-  { key: 'HPC', category: 'Super computers', description: 'High performance cluster log', labeled: false, lines: 433489, sizeRaw: '32.00 MiB',
-    sampleUrl: 'https://raw.githubusercontent.com/logpai/loghub/master/HPC/HPC_2k.log_structured.csv',
-    fullUrl: 'https://zenodo.org/records/8196385/files/HPC.zip?download=1' },
-  { key: 'Thunderbird', category: 'Super computers', description: 'Thunderbird supercomputer log', labeled: true, lines: 211212192, sizeRaw: '29.60 GiB',
-    sampleUrl: 'https://raw.githubusercontent.com/logpai/loghub/master/Thunderbird/Thunderbird_2k.log_structured.csv',
-    fullUrl: 'https://zenodo.org/records/8196385/files/Thunderbird.tar.gz?download=1' },
-  // Operating systems
-  { key: 'Windows', category: 'Operating systems', description: 'Windows event log', labeled: false, lines: 114608388, sizeRaw: '26.09 GiB',
-    sampleUrl: 'https://raw.githubusercontent.com/logpai/loghub/master/Windows/Windows_2k.log_structured.csv',
-    fullUrl: 'https://zenodo.org/records/8196385/files/Windows.tar.gz?download=1' },
-  { key: 'Linux', category: 'Operating systems', description: 'Linux system log', labeled: false, lines: 25567, sizeRaw: '2.25 MiB',
-    sampleUrl: 'https://raw.githubusercontent.com/logpai/loghub/master/Linux/Linux_2k.log_structured.csv',
-    fullUrl: 'https://zenodo.org/records/8196385/files/Linux.tar.gz?download=1' },
-  { key: 'Mac', category: 'Operating systems', description: 'Mac OS log', labeled: false, lines: 117283, sizeRaw: '16.09 MiB',
-    sampleUrl: 'https://raw.githubusercontent.com/logpai/loghub/master/Mac/Mac_2k.log_structured.csv',
-    fullUrl: 'https://zenodo.org/records/8196385/files/Mac.tar.gz?download=1' },
-  // Mobile systems
-  { key: 'Android_v1', category: 'Mobile systems', description: 'Android framework log', labeled: false, lines: 1555005, sizeRaw: '183.37 MiB',
-    sampleUrl: 'https://raw.githubusercontent.com/logpai/loghub/master/Android/Android_2k.log_structured.csv',
-    fullUrl: 'https://zenodo.org/records/8196385/files/Android_v1.zip?download=1' },
-  { key: 'Android_v2', category: 'Mobile systems', description: 'Android framework log', labeled: false, lines: 30348042, sizeRaw: '3.38 GiB',
-    sampleUrl: null,
-    fullUrl: 'https://zenodo.org/records/8196385/files/Android_v2.zip?download=1' },
-  { key: 'HealthApp', category: 'Mobile systems', description: 'Health app log', labeled: false, lines: 253395, sizeRaw: '22.44 MiB',
-    sampleUrl: 'https://raw.githubusercontent.com/logpai/loghub/master/HealthApp/HealthApp_2k.log_structured.csv',
-    fullUrl: 'https://zenodo.org/records/8196385/files/HealthApp.tar.gz?download=1' },
-  // Server applications
-  { key: 'Apache', category: 'Server applications', description: 'Apache web server error log', labeled: false, lines: 56481, sizeRaw: '4.90 MiB',
-    sampleUrl: 'https://raw.githubusercontent.com/logpai/loghub/master/Apache/Apache_2k.log_structured.csv',
-    fullUrl: 'https://zenodo.org/records/8196385/files/Apache.tar.gz?download=1' },
-  { key: 'OpenSSH', category: 'Server applications', description: 'OpenSSH server log', labeled: false, lines: 655146, sizeRaw: '70.02 MiB',
-    sampleUrl: 'https://raw.githubusercontent.com/logpai/loghub/master/OpenSSH/OpenSSH_2k.log_structured.csv',
-    fullUrl: 'https://zenodo.org/records/8196385/files/SSH.tar.gz?download=1' },
-  // Standalone software
-  { key: 'Proxifier', category: 'Standalone software', description: 'Proxifier software log', labeled: false, lines: 21329, sizeRaw: '2.42 MiB',
-    sampleUrl: 'https://raw.githubusercontent.com/logpai/loghub/master/Proxifier/Proxifier_2k.log_structured.csv',
-    fullUrl: 'https://zenodo.org/records/8196385/files/Proxifier.tar.gz?download=1' },
+const PDM_CATALOG: PdmEntry[] = [
+  // UCI mirror
+  { key: 'AI4I_2020_full', category: 'UCI — Predictive Maintenance', description: 'Milling machine: temp, torque, speed, tool wear + fault labels (TWF/HDF/PWF/OSF/RNF)',
+    labeled: true, rows: 10000, sizeRaw: '522 KB', format: 'csv',
+    sampleUrl: 'https://raw.githubusercontent.com/m-kenny/predictive_maintenance/main/ai4i2020.csv',
+    sourceUrl: 'https://archive.ics.uci.edu/dataset/601/ai4i+2020+predictive+maintenance+dataset',
+    license: 'CC BY 4.0' },
+  // NASA CMAPSS mirror — space-delimited, headerless
+  { key: 'CMAPSS_FD001_train', category: 'NASA CMAPSS Turbofan', description: 'Turbofan engine sensors — 1 fault mode, 1 op condition (train)',
+    labeled: true, rows: 20631, sizeRaw: '3.5 MB', format: 'text', headerRow: 0,
+    sampleUrl: 'https://raw.githubusercontent.com/hankroark/Turbofan-Engine-Degradation/master/CMAPSSData/train_FD001.txt',
+    sourceUrl: 'https://www.nasa.gov/intelligent-systems-division/discovery-and-systems-health/pcoe/pcoe-data-set-repository/',
+    license: 'Public domain (US Gov work)' },
+  { key: 'CMAPSS_FD001_test', category: 'NASA CMAPSS Turbofan', description: 'Turbofan test set — matched to FD001_train',
+    labeled: true, rows: 13096, sizeRaw: '2.2 MB', format: 'text', headerRow: 0,
+    sampleUrl: 'https://raw.githubusercontent.com/hankroark/Turbofan-Engine-Degradation/master/CMAPSSData/test_FD001.txt',
+    license: 'Public domain (US Gov work)' },
+  { key: 'CMAPSS_FD002_train', category: 'NASA CMAPSS Turbofan', description: '6 operating conditions, 1 fault mode (train)',
+    labeled: true, rows: 53759, sizeRaw: '9.1 MB', format: 'text', headerRow: 0,
+    sampleUrl: 'https://raw.githubusercontent.com/hankroark/Turbofan-Engine-Degradation/master/CMAPSSData/train_FD002.txt',
+    license: 'Public domain (US Gov work)' },
+  { key: 'CMAPSS_FD003_train', category: 'NASA CMAPSS Turbofan', description: '1 op condition, 2 fault modes (train)',
+    labeled: true, rows: 24720, sizeRaw: '4.2 MB', format: 'text', headerRow: 0,
+    sampleUrl: 'https://raw.githubusercontent.com/hankroark/Turbofan-Engine-Degradation/master/CMAPSSData/train_FD003.txt',
+    license: 'Public domain (US Gov work)' },
+  { key: 'CMAPSS_FD004_train', category: 'NASA CMAPSS Turbofan', description: '6 op conditions, 2 fault modes — most complex (train)',
+    labeled: true, rows: 61249, sizeRaw: '10.4 MB', format: 'text', headerRow: 0,
+    sampleUrl: 'https://raw.githubusercontent.com/hankroark/Turbofan-Engine-Degradation/master/CMAPSSData/train_FD004.txt',
+    license: 'Public domain (US Gov work)' },
+  // Azure Predictive Maintenance case study mirror
+  { key: 'Azure_PdM_telemetry', category: 'Microsoft Azure PdM Case Study', description: 'Full sensor telemetry (voltage, rotation, pressure, vibration) per machine, hourly for a year',
+    labeled: false, rows: 876100, sizeRaw: '79 MB', format: 'csv',
+    sampleUrl: 'https://raw.githubusercontent.com/ashishpatel26/Predictive_Maintenance_using_Machine-Learning_Microsoft_Casestudy/master/data/PdM_telemetry.csv',
+    sourceUrl: 'https://learn.microsoft.com/en-us/azure/architecture/industries/manufacturing/predictive-maintenance-overview',
+    license: 'MIT (mirror)' },
+  { key: 'Azure_PdM_failures', category: 'Microsoft Azure PdM Case Study', description: 'Failure event log (machineID, datetime, failure component)',
+    labeled: true, rows: 761, sizeRaw: '23 KB', format: 'csv',
+    sampleUrl: 'https://raw.githubusercontent.com/ashishpatel26/Predictive_Maintenance_using_Machine-Learning_Microsoft_Casestudy/master/data/PdM_failures.csv',
+    license: 'MIT (mirror)' },
+  { key: 'Azure_PdM_errors', category: 'Microsoft Azure PdM Case Study', description: 'Error event log (machineID, datetime, errorID)',
+    labeled: false, rows: 3919, sizeRaw: '125 KB', format: 'csv',
+    sampleUrl: 'https://raw.githubusercontent.com/ashishpatel26/Predictive_Maintenance_using_Machine-Learning_Microsoft_Casestudy/master/data/PdM_errors.csv',
+    license: 'MIT (mirror)' },
+  { key: 'Azure_PdM_maint', category: 'Microsoft Azure PdM Case Study', description: 'Maintenance log (machineID, datetime, component)',
+    labeled: false, rows: 3286, sizeRaw: '101 KB', format: 'csv',
+    sampleUrl: 'https://raw.githubusercontent.com/ashishpatel26/Predictive_Maintenance_using_Machine-Learning_Microsoft_Casestudy/master/data/PdM_maint.csv',
+    license: 'MIT (mirror)' },
+  { key: 'Azure_PdM_machines', category: 'Microsoft Azure PdM Case Study', description: 'Machine metadata (machineID, model, age)',
+    labeled: false, rows: 100, sizeRaw: '1.5 KB', format: 'csv',
+    sampleUrl: 'https://raw.githubusercontent.com/ashishpatel26/Predictive_Maintenance_using_Machine-Learning_Microsoft_Casestudy/master/data/PdM_machines.csv',
+    license: 'MIT (mirror)' },
 ]
 
-const LOGHUB_QUICK_PICK_KEYS = [
-  'Apache', 'Linux', 'Mac', 'HealthApp', 'OpenSSH',
-  'Proxifier', 'HDFS_v1', 'Zookeeper', 'Hadoop',
+const PDM_QUICK_PICK_KEYS = [
+  'AI4I_2020_full',
+  'CMAPSS_FD001_train', 'CMAPSS_FD001_test',
+  'CMAPSS_FD002_train', 'CMAPSS_FD003_train', 'CMAPSS_FD004_train',
+  'Azure_PdM_failures', 'Azure_PdM_errors', 'Azure_PdM_maint',
 ]
 
-const loghubCategories = computed(() => {
+const pdmCategories = computed(() => {
   const seen: string[] = []
-  for (const e of LOGHUB_CATALOG) {
+  for (const e of PDM_CATALOG) {
     if (!seen.includes(e.category)) seen.push(e.category)
   }
   return seen
 })
 
-const loghubByCategory = computed(() => {
-  const groups: Record<string, LoghubEntry[]> = {}
-  for (const e of LOGHUB_CATALOG) {
+const pdmByCategory = computed(() => {
+  const groups: Record<string, PdmEntry[]> = {}
+  for (const e of PDM_CATALOG) {
     if (!groups[e.category]) groups[e.category] = []
     groups[e.category].push(e)
   }
   return groups
 })
 
-function pickLoghubSample(key: string) {
-  const entry = LOGHUB_CATALOG.find(e => e.key === key)
-  if (!entry || !entry.sampleUrl) return
+function pickPdmSample(key: string) {
+  const entry = PDM_CATALOG.find(e => e.key === key)
+  if (!entry) return
   urlLoader.value.url = entry.sampleUrl
-  urlLoader.value.format = 'csv'
+  urlLoader.value.format = entry.format
+  if (entry.format === 'text') {
+    // CMAPSS is headerless (space-delimited). Preserve any other text defaults.
+    urlLoader.value.headerRow = entry.headerRow ?? 1
+    urlLoader.value.delimiter = ''
+    urlLoader.value.skipRows = 0
+  }
   urlLoader.value.error = ''
 }
 
