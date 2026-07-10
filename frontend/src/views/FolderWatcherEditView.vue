@@ -534,6 +534,29 @@ async function runPreview() {
   previewResult.value = null
   try {
     previewLoading.value = true
+
+    // If key_value mode has no columns yet but we have a sample, auto-detect
+    // before running the preview so the user doesn't hit PARSE_COLUMNS_REQUIRED.
+    if (
+      form.value.parse_mode === 'key_value' &&
+      !(form.value.parse_columns || '').trim() &&
+      (form.value.samplePreviewText || '').trim()
+    ) {
+      try {
+        const detectRes = await api.post('/api/folder-watchers/detect-columns', {
+          sample_content: form.value.samplePreviewText,
+        })
+        const cols: string[] = detectRes.data?.columns || []
+        if (cols.length > 0) {
+          form.value.parse_columns = cols.join(', ')
+          notify.showSuccess(
+            `Auto-detected ${cols.length} column${cols.length === 1 ? '' : 's'}: ${cols.join(', ')}. ` +
+            `Edit the Column names field to remove non-sensor keys.`
+          )
+        }
+      } catch { /* fall through — the preview endpoint will report the same error */ }
+    }
+
     const payload: Record<string, any> = {
       parse_mode: form.value.parse_mode,
       sample_content: form.value.samplePreviewText || '',
