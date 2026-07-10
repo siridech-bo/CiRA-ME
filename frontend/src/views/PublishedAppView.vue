@@ -1,5 +1,5 @@
 <template>
-  <div class="published-app">
+  <div class="published-app" :class="{ 'dashboard-mode': dashboardMode }">
     <!-- Loading -->
     <div v-if="loading" class="app-loading">
       <v-progress-circular indeterminate color="purple" />
@@ -16,7 +16,7 @@
 
     <!-- App content -->
     <div v-else class="app-content">
-      <!-- Header -->
+      <!-- Header (shared between dashboard + fallback layouts) -->
       <div class="app-header">
         <div class="app-header-left">
           <img src="/logo.svg" alt="CiRA" class="app-logo" />
@@ -30,6 +30,12 @@
                 {{ appMode?.toUpperCase() }}
               </span>
               <span class="app-algo">{{ appAlgorithm }}</span>
+              <!-- Inline pipeline chips (dashboard header) -->
+              <template v-if="dashboardMode && pipelineInfo">
+                <v-chip size="x-small" color="info" variant="tonal" class="ml-2">W {{ pipelineInfo.window_size }}</v-chip>
+                <v-chip size="x-small" color="info" variant="tonal">S {{ pipelineInfo.stride }}</v-chip>
+                <v-chip size="x-small" color="info" variant="tonal">F {{ pipelineInfo.n_features }}</v-chip>
+              </template>
             </div>
           </div>
         </div>
@@ -46,7 +52,507 @@
             <v-icon start size="small">mdi-open-in-new</v-icon>
             Open Standalone
           </v-btn>
+          <v-btn
+            size="small"
+            variant="tonal"
+            color="grey"
+            class="mr-2"
+            :title="isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'"
+            @click="toggleFullscreen"
+          >
+            <v-icon size="small">{{ isFullscreen ? 'mdi-fullscreen-exit' : 'mdi-fullscreen' }}</v-icon>
+          </v-btn>
           <span class="app-powered">Powered by CiRA ME</span>
+        </div>
+      </div>
+
+      <!-- ═══════════════════════════════════════════════════════ -->
+      <!-- DASHBOARD (two-pane) LAYOUT — MQTT / Signal Recorder     -->
+      <!-- ═══════════════════════════════════════════════════════ -->
+      <div v-if="dashboardMode" class="dashboard-body">
+        <!-- LEFT RAIL -->
+        <div class="dash-rail" :class="{ collapsed: railCollapsed }">
+          <button
+            class="rail-toggle"
+            :title="railCollapsed ? 'Expand settings' : 'Collapse settings'"
+            @click="railCollapsed = !railCollapsed"
+          >
+            <v-icon size="18">{{ railCollapsed ? 'mdi-chevron-right' : 'mdi-chevron-left' }}</v-icon>
+          </button>
+
+          <!-- Collapsed icon strip -->
+          <div v-if="railCollapsed" class="rail-icons">
+            <div class="rail-icon-btn" :title="mqttConnected ? 'LIVE' : (mqttError ? 'Error' : 'Disconnected')">
+              <v-icon size="24" :color="mqttConnected ? 'success' : (mqttError ? 'error' : 'grey')">
+                mdi-circle
+              </v-icon>
+              <span class="rail-icon-lbl">{{ mqttConnected ? 'LIVE' : 'OFF' }}</span>
+            </div>
+            <div class="rail-icon-btn" title="Messages">
+              <v-icon size="22" color="grey">mdi-message-flash-outline</v-icon>
+              <span class="rail-icon-lbl">{{ mqttMessageCount.toLocaleString() }}</span>
+            </div>
+            <div class="rail-icon-btn" title="Inferences">
+              <v-icon size="22" color="purple">mdi-brain</v-icon>
+              <span class="rail-icon-lbl">{{ liveInferenceCount }}</span>
+            </div>
+            <div
+              v-if="isRecordingPredictions"
+              class="rail-icon-btn"
+              :title="`Recording · ${predictionRecordBuffer.length} rows`"
+            >
+              <v-icon size="22" color="error">mdi-record-circle</v-icon>
+              <span class="rail-icon-lbl" style="color:#ef5350">REC</span>
+            </div>
+            <button
+              v-if="mqttConnected"
+              class="rail-icon-btn rail-icon-btn-danger"
+              title="Disconnect"
+              @click="stopLiveStream"
+            >
+              <v-icon size="22" color="error">mdi-stop-circle-outline</v-icon>
+              <span class="rail-icon-lbl">STOP</span>
+            </button>
+          </div>
+
+          <!-- Expanded config -->
+          <div v-else class="rail-expanded">
+            <div class="rail-section-title">
+              <v-icon size="14" :color="mqttConnected ? 'success' : 'grey'">mdi-access-point</v-icon>
+              Live Stream (MQTT)
+              <v-chip v-if="mqttConnected" size="x-small" color="success" variant="flat" class="ml-1">
+                <v-icon start size="8">mdi-circle</v-icon>LIVE
+              </v-chip>
+              <v-chip v-else-if="mqttError" size="x-small" color="error" variant="tonal" class="ml-1">
+                Error
+              </v-chip>
+            </div>
+
+            <v-text-field
+              v-model="mqttBrokerUrl"
+              label="Broker URL"
+              variant="outlined"
+              density="compact"
+              hide-details
+              class="mb-2"
+              style="font-size: 12px;"
+              :disabled="mqttConnected"
+            />
+            <v-text-field
+              v-model="mqttTopic"
+              label="Topic"
+              variant="outlined"
+              density="compact"
+              hide-details
+              class="mb-2"
+              style="font-size: 12px;"
+              :disabled="mqttConnected"
+            />
+
+            <!-- Auto-record predictions -->
+            <div v-if="!isRecorderMode" class="rail-record-group">
+              <v-checkbox
+                v-model="autoRecordPredictions"
+                :disabled="mqttConnected"
+                density="compact"
+                hide-details
+                color="error"
+              >
+                <template #label>
+                  <span class="text-caption">
+                    <v-icon size="x-small" color="error" class="mr-1">mdi-record-circle-outline</v-icon>
+                    Auto-record to CSV
+                  </span>
+                </template>
+              </v-checkbox>
+              <v-select
+                v-model="predictionRecordMode"
+                :items="[
+                  { title: 'Per inference', value: 'per_inference' },
+                  { title: 'Per sample', value: 'per_sample' },
+                  { title: 'Full window', value: 'full_window' },
+                ]"
+                :disabled="!autoRecordPredictions || mqttConnected"
+                density="compact"
+                variant="outlined"
+                hide-details
+                label="Granularity"
+                class="mt-1"
+                style="font-size: 12px;"
+              />
+              <div class="text-caption text-medium-emphasis mt-1" style="font-size: 10px;">
+                CSV saves on Disconnect.
+              </div>
+            </div>
+
+            <!-- Regression: actual column selector (single-model) -->
+            <v-select
+              v-if="mqttConnected && !isRecorderMode && !isMultiModelApp && appMode === 'regression' && (autoDetectedChannels.length > 0 || liveChannels.length > 0)"
+              v-model="liveActualColumn"
+              :items="['(none)', ...(autoDetectedChannels.length > 0 ? autoDetectedChannels : liveChannels)]"
+              label="Compare with column"
+              density="compact"
+              variant="outlined"
+              hide-details
+              prepend-inner-icon="mdi-chart-line"
+              class="mt-3"
+              style="font-size: 12px;"
+            />
+
+            <v-alert v-if="mqttError" type="error" variant="tonal" density="compact" class="mt-3" style="font-size: 11px;">
+              {{ mqttError }}
+            </v-alert>
+
+            <!-- Connect / Disconnect -->
+            <v-btn
+              v-if="!mqttConnected"
+              color="success"
+              variant="flat"
+              block
+              class="mt-3"
+              @click="startLiveStream"
+            >
+              <v-icon start>mdi-play</v-icon>Connect
+            </v-btn>
+            <v-btn
+              v-else
+              color="error"
+              variant="tonal"
+              block
+              class="mt-3"
+              @click="stopLiveStream"
+            >
+              <v-icon start>mdi-stop</v-icon>Disconnect
+            </v-btn>
+
+            <!-- Recorder-specific rail controls -->
+            <template v-if="isRecorderMode && mqttConnected">
+              <div class="rail-section-title mt-3">
+                <v-icon size="14" color="error">mdi-record</v-icon>Current label
+                <v-chip v-if="recorderState.recording" size="x-small" color="error" variant="flat" class="ml-1">
+                  <v-icon start size="8">mdi-circle</v-icon>REC
+                </v-chip>
+              </div>
+              <div class="recorder-labels" style="margin-bottom: 6px;">
+                <button
+                  v-for="lbl in recorderLabels"
+                  :key="lbl"
+                  class="recorder-label-btn"
+                  :class="{ active: recorderState.currentLabel === lbl }"
+                  @click="recorderState.currentLabel = lbl"
+                >{{ lbl }}</button>
+              </div>
+              <div class="d-flex align-center gap-2 mb-2">
+                <v-text-field
+                  v-model="recorderCustomLabel"
+                  label="Custom"
+                  variant="outlined"
+                  density="compact"
+                  hide-details
+                  style="font-size: 11px;"
+                  @keydown.enter="addCustomLabel"
+                />
+                <v-btn size="x-small" variant="tonal" @click="addCustomLabel" :disabled="!recorderCustomLabel.trim()">
+                  <v-icon size="small">mdi-plus</v-icon>
+                </v-btn>
+              </div>
+              <v-btn
+                v-if="!recorderState.recording"
+                color="error"
+                variant="flat"
+                block
+                :disabled="!recorderState.currentLabel"
+                @click="startRecording"
+              >
+                <v-icon start size="small">mdi-record</v-icon>Start Recording
+              </v-btn>
+              <v-btn
+                v-else
+                color="warning"
+                variant="flat"
+                block
+                @click="stopRecording"
+              >
+                <v-icon start size="small">mdi-stop</v-icon>Stop Recording
+              </v-btn>
+              <v-btn
+                v-if="recorderState.samples.length > 0"
+                color="success"
+                variant="tonal"
+                block
+                class="mt-2"
+                @click="downloadRecordedCSV"
+              >
+                <v-icon start size="small">mdi-download</v-icon>
+                Download ({{ recorderState.samples.length }})
+              </v-btn>
+              <v-btn
+                v-if="recorderState.samples.length > 0 && !recorderState.recording"
+                variant="text"
+                color="error"
+                block
+                class="mt-1"
+                @click="clearRecording"
+              >Clear</v-btn>
+            </template>
+          </div>
+        </div>
+
+        <!-- RIGHT PANE -->
+        <div class="dash-main">
+          <!-- Compact live stats strip -->
+          <div v-if="mqttConnected" class="dash-stats-strip">
+            <div class="live-stat">
+              <div class="live-stat-label">Messages</div>
+              <div class="live-stat-value">{{ mqttMessageCount.toLocaleString() }}</div>
+            </div>
+            <div class="live-stat">
+              <div class="live-stat-label">Rate</div>
+              <div class="live-stat-value">{{ mqttMessagesPerSec }}/s</div>
+            </div>
+            <div class="live-stat">
+              <div class="live-stat-label">Buffer</div>
+              <div class="live-stat-value">{{ sensorBufferLen }}/{{ liveWindowSize }}</div>
+            </div>
+            <div class="live-stat">
+              <div class="live-stat-label">Inferences</div>
+              <div class="live-stat-value">{{ liveInferenceCount }}</div>
+            </div>
+            <div
+              v-if="isRecordingPredictions"
+              class="live-stat"
+              style="background: rgba(244, 67, 54, 0.12); border-color: rgba(244, 67, 54, 0.4);"
+            >
+              <div class="live-stat-label" style="color: #ef5350;">
+                <v-icon size="x-small" color="error" class="mr-1">mdi-circle</v-icon>Recording
+              </div>
+              <div class="live-stat-value" style="color: #ef5350;">
+                {{ predictionRecordBuffer.length }} rows · {{ predictionRecordDuration }}
+              </div>
+            </div>
+            <div class="dash-progress">
+              <v-progress-linear
+                :model-value="sensorBufferProgress * 100"
+                color="purple"
+                height="6"
+                rounded
+              />
+            </div>
+          </div>
+
+          <!-- ────────── Signal Recorder preview ────────── -->
+          <div v-if="isRecorderMode && mqttConnected" class="dash-content dash-recorder">
+            <div v-if="liveChannels.length > 0" class="preview-panel dash-preview">
+              <div class="preview-header">
+                <span class="text-caption font-weight-bold text-medium-emphasis">LIVE PREVIEW</span>
+                <v-select
+                  v-model="previewWindowSec"
+                  :items="[5, 10, 30, 60, 120]"
+                  label="Preview window (s)"
+                  variant="outlined"
+                  density="compact"
+                  hide-details
+                  style="max-width: 180px; font-size: 11px;"
+                />
+              </div>
+
+              <div class="preview-cards">
+                <div v-for="ch in liveChannels" :key="'pv-' + ch" class="preview-card">
+                  <div class="preview-card-label">{{ ch }}</div>
+                  <div class="preview-card-value">{{ fmtPreview(previewStats[ch]?.latest) }}</div>
+                  <div class="preview-card-stats">
+                    <span>Min: {{ fmtPreview(previewStats[ch]?.min) }}</span>
+                    <span class="preview-card-stats-sep">·</span>
+                    <span>Max: {{ fmtPreview(previewStats[ch]?.max) }}</span>
+                    <span class="preview-card-stats-sep">·</span>
+                    <span>Mean: {{ fmtPreview(previewStats[ch]?.mean) }}</span>
+                  </div>
+                </div>
+              </div>
+
+              <div v-if="previewBuffer.length > 1" class="preview-chart dash-preview-chart">
+                <Line :data="previewChartData" :options="previewChartOptions" />
+              </div>
+              <div v-else class="preview-chart-empty dash-preview-chart">
+                Waiting for samples…
+              </div>
+            </div>
+
+            <!-- Recording stats -->
+            <div v-if="recorderState.samples.length > 0" class="dash-recorder-stats">
+              <div class="live-stat">
+                <div class="live-stat-label">Samples</div>
+                <div class="live-stat-value">{{ recorderState.samples.length }}</div>
+              </div>
+              <div class="live-stat">
+                <div class="live-stat-label">Duration</div>
+                <div class="live-stat-value">{{ recorderDuration }}</div>
+              </div>
+              <div class="live-stat" style="flex: 1;">
+                <div class="live-stat-label">Labels</div>
+                <div class="live-stat-value" style="font-size: 12px; white-space: normal;">{{ recorderLabelCounts }}</div>
+              </div>
+            </div>
+
+            <div v-if="recorderState.samples.length > 0" class="recorder-timeline">
+              <div
+                v-for="(seg, i) in recorderSegments"
+                :key="i"
+                class="recorder-segment"
+                :style="{ flex: seg.count, background: seg.color }"
+                :title="`${seg.label}: ${seg.count} samples`"
+              />
+            </div>
+          </div>
+
+          <!-- ────────── Multi-model TILE GRID ────────── -->
+          <div v-else-if="isMultiModelApp" class="dash-content dash-multi-grid">
+            <div v-if="!result || !result.models" class="dash-placeholder">
+              <v-icon size="48" color="grey">mdi-compare-horizontal</v-icon>
+              <div class="text-caption text-medium-emphasis mt-2">
+                {{ mqttConnected ? 'Waiting for inference…' : 'Connect to start comparing models' }}
+              </div>
+            </div>
+            <div v-else class="multi-tile-grid">
+              <div
+                v-for="(m, eid) in result.models"
+                :key="'tile-' + eid"
+                class="multi-tile"
+                :class="{ 'multi-tile-error': !!m.error }"
+              >
+                <div class="multi-tile-head">
+                  <div class="multi-tile-name">
+                    {{ m.name }}
+                    <v-icon
+                      v-if="!m.error && result.actual && ((result.mode === 'regression' && m.r2 === bestR2) || (result.mode === 'classification' && m.accuracy === bestAccuracy))"
+                      size="16" color="amber"
+                    >mdi-trophy</v-icon>
+                  </div>
+                  <v-chip size="x-small" variant="tonal" color="purple">{{ m.algorithm || '—' }}</v-chip>
+                </div>
+
+                <div v-if="m.error" class="multi-tile-error-msg">
+                  <v-icon size="20" color="error">mdi-alert-circle</v-icon>
+                  {{ m.error }}
+                </div>
+
+                <template v-else>
+                  <div class="multi-tile-pred" :style="{ color: multiTilePredColor(m, result.mode) }">
+                    {{ multiTileLatest(m) }}
+                  </div>
+
+                  <!-- Regression metrics -->
+                  <div v-if="result.mode === 'regression' && result.actual" class="multi-tile-metrics">
+                    <span :style="{ color: m.r2 > 0.8 ? '#34d399' : m.r2 > 0.5 ? '#fbbf24' : '#f87171' }">
+                      R² {{ m.r2 != null ? m.r2.toFixed(3) : '—' }}
+                    </span>
+                    <span>RMSE {{ m.rmse != null ? m.rmse.toFixed(3) : '—' }}</span>
+                  </div>
+
+                  <!-- Classification confidence bar (latest window from predictions_full if present) -->
+                  <div v-else-if="result.mode === 'classification'" class="multi-tile-metrics">
+                    <span v-if="m.accuracy != null" :style="{ color: m.accuracy > 0.9 ? '#34d399' : m.accuracy > 0.7 ? '#fbbf24' : '#f87171' }">
+                      Accuracy {{ (m.accuracy * 100).toFixed(1) }}%
+                    </span>
+                    <span v-else>Windows {{ m.count || 0 }}</span>
+                  </div>
+
+                  <!-- Mini live chart -->
+                  <div v-if="m.predictions && m.predictions.length > 0" class="multi-tile-chart">
+                    <Line
+                      :data="tileChartData(eid, m)"
+                      :options="tileChartOptions(result.mode)"
+                    />
+                  </div>
+                </template>
+              </div>
+            </div>
+          </div>
+
+          <!-- ────────── Single-model prediction + live chart ────────── -->
+          <div v-else class="dash-content dash-single">
+            <!-- Big prediction card -->
+            <div v-if="livePrediction !== null" class="dash-prediction-card" :style="{ borderColor: modeColor + '55' }">
+              <div class="live-prediction-label">Latest Prediction</div>
+              <div class="dash-prediction-value" :style="{ color: modeColor }">
+                {{ livePrediction }}
+              </div>
+              <div v-if="liveLastUpdated" class="live-prediction-time">
+                {{ liveLastUpdatedText }}
+              </div>
+              <!-- Confidence bar for classification -->
+              <div v-if="appMode === 'classification' && livePredictionHistoryFull.length > 0" class="dash-confidence">
+                <template v-if="latestConfidence != null">
+                  <div class="dash-confidence-label">Confidence · {{ (latestConfidence * 100).toFixed(1) }}%</div>
+                  <v-progress-linear
+                    :model-value="latestConfidence * 100"
+                    :color="latestConfidence > 0.85 ? 'success' : latestConfidence > 0.6 ? 'warning' : 'error'"
+                    height="8"
+                    rounded
+                  />
+                </template>
+              </div>
+            </div>
+            <div v-else class="dash-placeholder dash-prediction-card">
+              <v-icon size="48" color="grey">mdi-brain</v-icon>
+              <div class="text-caption text-medium-emphasis mt-2">
+                {{ mqttConnected ? 'Waiting for enough samples to run inference…' : 'Connect to start streaming' }}
+              </div>
+            </div>
+
+            <!-- Live chart -->
+            <div v-if="chartData.length > 0" class="chart-container dash-chart-container">
+              <div class="chart-header">
+                <span class="chart-title-text">{{ actualData.length > 0 ? 'Actual vs Predicted' : 'Predictions over Time' }}</span>
+              </div>
+              <svg :viewBox="`0 0 ${chartWidth} ${chartHeight}`" preserveAspectRatio="none" class="prediction-chart dash-svg-chart">
+                <line v-for="i in 4" :key="'g'+i"
+                  :x1="chartPadding" :y1="chartPadding + (i-1) * (chartInnerH / 3)"
+                  :x2="chartWidth - chartPadding" :y2="chartPadding + (i-1) * (chartInnerH / 3)"
+                  stroke="#21262d" stroke-width="0.5" />
+                <text v-for="i in 4" :key="'y'+i"
+                  :x="chartPadding - 4" :y="chartPadding + (i-1) * (chartInnerH / 3) + 3"
+                  text-anchor="end" fill="#8b949e" font-size="8" font-family="monospace">
+                  {{ chartYLabel(i-1) }}
+                </text>
+                <path :d="chartAreaPath" fill="url(#pred-gradient-d)" />
+                <path v-if="actualLinePath" :d="actualLinePath" fill="none" stroke="#22d3ee" stroke-width="1.5" />
+                <path :d="chartLinePath" fill="none" stroke="#a78bfa" stroke-width="1.5" :stroke-dasharray="actualLinePath ? '4,2' : 'none'" />
+                <defs>
+                  <linearGradient id="pred-gradient-d" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stop-color="#a78bfa" stop-opacity="0.15" />
+                    <stop offset="100%" stop-color="#a78bfa" stop-opacity="0" />
+                  </linearGradient>
+                </defs>
+              </svg>
+              <div class="chart-legend-items" style="margin-top:8px">
+                <span v-if="actualData.length > 0" class="chart-legend-dot" style="background: #22d3ee"></span>
+                <span v-if="actualData.length > 0" class="chart-legend-label">Actual</span>
+                <span class="chart-legend-dot" style="background: #a78bfa"></span>
+                <span class="chart-legend-label">Predicted</span>
+              </div>
+            </div>
+            <div v-else class="dash-placeholder dash-chart-container">
+              <v-icon size="40" color="grey">mdi-chart-line-variant</v-icon>
+              <div class="text-caption text-medium-emphasis mt-2">Chart appears once inferences begin</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ═══════════════════════════════════════════════════════ -->
+      <!-- FALLBACK LAYOUT — CSV upload apps + narrow viewports    -->
+      <!-- ═══════════════════════════════════════════════════════ -->
+      <template v-else>
+      <!-- Pipeline info -->
+      <div v-if="parsedNodes.length > 0" class="app-section" style="padding: 10px 16px;">
+        <div class="d-flex flex-wrap align-center" style="gap: 6px;">
+          <v-chip v-if="pipelineInfo" size="x-small" color="info" variant="tonal">Window: {{ pipelineInfo.window_size }}</v-chip>
+          <v-chip v-if="pipelineInfo" size="x-small" color="info" variant="tonal">Stride: {{ pipelineInfo.stride }}</v-chip>
+          <v-chip v-if="pipelineInfo" size="x-small" color="info" variant="tonal">Features: {{ pipelineInfo.n_features }}</v-chip>
+          <v-chip size="x-small" :color="modeColor" variant="tonal">{{ appMode?.toUpperCase() || 'MODEL' }}</v-chip>
+          <v-chip size="x-small" color="purple" variant="tonal">{{ appAlgorithm || 'model' }}</v-chip>
+          <v-chip size="x-small" variant="outlined" style="font-size:9px">{{ parsedNodes.length }} nodes</v-chip>
         </div>
       </div>
 
@@ -778,6 +1284,8 @@
           Upload New File
         </v-btn>
       </div>
+      </template>
+      <!-- /fallback layout -->
     </div>
   </div>
 </template>
@@ -814,6 +1322,37 @@ const selectedFile = ref(null)
 const running = ref(false)
 const result = ref(null)
 const showTable = ref(false)
+
+// ── Dashboard layout state (production monitor) ─────────
+// Track viewport width so we can fall back to the old single-column layout
+// on smaller screens (developers/mobile still need a usable view).
+const viewportWidth = ref(typeof window !== 'undefined' ? window.innerWidth : 1920)
+function onResize() {
+  viewportWidth.value = window.innerWidth
+}
+const isWideScreen = computed(() => viewportWidth.value >= 1200)
+
+// Left rail collapses to an icon strip after Connect. A small chevron
+// expands it back to the full 280 px so operators can change settings.
+const railCollapsed = ref(false)
+
+// Fullscreen API — toggled by the ⛶ button in the header.
+const isFullscreen = ref(false)
+function updateFullscreenState() {
+  isFullscreen.value = !!document.fullscreenElement
+}
+async function toggleFullscreen() {
+  try {
+    if (!document.fullscreenElement) {
+      await document.documentElement.requestFullscreen()
+    } else {
+      await document.exitFullscreen()
+    }
+  } catch (e) {
+    // Some browsers throw if the gesture is stale; ignore silently.
+    console.warn('Fullscreen toggle failed:', e)
+  }
+}
 
 // Chart dimensions
 const chartWidth = 700
@@ -919,6 +1458,12 @@ const tableMaxRows = computed(() => {
 
 const modeColor = computed(() => MODE_COLORS[appMode.value] || '#94a3b8')
 
+// Show the new two-pane monitor layout for MQTT-driven apps at wide widths.
+// CSV upload apps and narrow viewports fall back to the classic stacked layout.
+const dashboardMode = computed(() => {
+  return isWideScreen.value && (isLiveStream.value || isRecorderMode.value)
+})
+
 const appAlgorithm = computed(() => {
   return appData.value.algorithm || ''
 })
@@ -982,6 +1527,15 @@ onMounted(async () => {
     mqttTopic.value = cfg.topic || 'sensors/#'
   }
   loading.value = false
+
+  // Dashboard layout listeners
+  window.addEventListener('resize', onResize)
+  document.addEventListener('fullscreenchange', updateFullscreenState)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('resize', onResize)
+  document.removeEventListener('fullscreenchange', updateFullscreenState)
 })
 
 // Multi-model comparison
@@ -1392,10 +1946,128 @@ function fmtPreview(v) {
   return v.toFixed(3)
 }
 
+// ── Dashboard helpers ─────────────────────────────
+const latestConfidence = computed(() => {
+  const hist = livePredictionHistoryFull.value
+  if (!hist || hist.length === 0) return null
+  const last = hist[hist.length - 1]
+  if (last && typeof last === 'object' && 'confidence' in last && typeof last.confidence === 'number') {
+    return last.confidence
+  }
+  return null
+})
+
+function multiTileLatest(m) {
+  const preds = m?.predictions || []
+  if (preds.length === 0) return '—'
+  const v = preds[preds.length - 1]
+  if (typeof v === 'number') return v.toFixed(3)
+  return String(v)
+}
+
+function multiTilePredColor(m, mode) {
+  if (mode === 'classification') return '#34d399'
+  if (mode === 'anomaly') return '#f87171'
+  return '#a78bfa'
+}
+
+// Downsample helper for mini tile charts (keeps DOM light on large histories).
+function tileDownsample(arr, max = 60) {
+  if (!arr || arr.length === 0) return []
+  if (arr.length <= max) return arr.slice()
+  const step = arr.length / max
+  return Array.from({ length: max }, (_, i) => arr[Math.floor(i * step)])
+}
+
+function tileChartData(eid, m) {
+  const mode = result.value?.mode
+  const preds = m.predictions || []
+  if (mode === 'classification') {
+    // Classification: convert labels to indices so we get a step-like line.
+    const labelToIdx = {}
+    const labels = Object.keys(classColorMap.value)
+    labels.forEach((l, i) => (labelToIdx[l] = i))
+    const ds = tileDownsample(preds, 80)
+    return {
+      labels: ds.map((_, i) => i),
+      datasets: [{
+        label: m.name,
+        data: ds.map(v => (v in labelToIdx ? labelToIdx[v] : 0)),
+        borderColor: '#34d399',
+        backgroundColor: '#34d39922',
+        borderWidth: 1.5,
+        pointRadius: 0,
+        stepped: 'before',
+        tension: 0,
+      }],
+    }
+  }
+  // Regression / anomaly: numeric line
+  const nums = preds.filter(v => typeof v === 'number')
+  const ds = tileDownsample(nums, 80)
+  const actuals = result.value?.actual
+  const datasets = [{
+    label: m.name,
+    data: ds,
+    borderColor: '#a78bfa',
+    backgroundColor: '#a78bfa22',
+    borderWidth: 1.5,
+    pointRadius: 0,
+    tension: 0.15,
+    spanGaps: true,
+  }]
+  if (actuals && actuals.length > 0 && mode === 'regression') {
+    const aNums = actuals.filter(v => typeof v === 'number')
+    if (aNums.length > 0) {
+      const dsA = tileDownsample(aNums, 80)
+      datasets.unshift({
+        label: 'Actual',
+        data: dsA,
+        borderColor: '#22d3ee',
+        backgroundColor: 'transparent',
+        borderWidth: 1.5,
+        pointRadius: 0,
+        tension: 0.15,
+        spanGaps: true,
+      })
+    }
+  }
+  return {
+    labels: ds.map((_, i) => i),
+    datasets,
+  }
+}
+
+function tileChartOptions(_mode) {
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    animation: false,
+    plugins: {
+      legend: { display: false },
+      tooltip: { enabled: false },
+    },
+    scales: {
+      x: { display: false },
+      y: {
+        ticks: { color: '#8b949e', font: { size: 8 }, maxTicksLimit: 3 },
+        grid: { color: '#21262d' },
+      },
+    },
+  }
+}
+
 // Re-prune when the user shrinks the window
 watch(previewWindowSec, () => {
   prunePreviewBuffer()
   previewTicker.value++
+})
+
+// Auto-collapse the left rail once we're connected so the dashboard
+// gives the full width to charts / prediction tiles. Expanding is manual.
+watch(mqttConnected, (connected) => {
+  if (connected) railCollapsed.value = true
+  else railCollapsed.value = false
 })
 // ──────────────────────────────────────────────────────────────
 
@@ -2210,6 +2882,27 @@ async function runPipeline() {
   color: #e6edf3;
 }
 
+/* Dashboard mode: full-viewport, no scroll. Wall-monitor friendly. */
+.published-app.dashboard-mode {
+  height: 100vh;
+  min-height: 0;
+  overflow: hidden;
+}
+.published-app.dashboard-mode .app-content {
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+.published-app.dashboard-mode .app-header {
+  padding: 8px 16px;
+  margin-bottom: 0;
+  min-height: 56px;
+  flex-shrink: 0;
+}
+
 .app-loading {
   display: flex;
   flex-direction: column;
@@ -2632,5 +3325,324 @@ async function runPipeline() {
   border: 1px solid #30363d;
   border-radius: 3px;
   color: #a78bfa;
+}
+
+/* ═══════════════════════════════════════════════════════════ */
+/* Dashboard (two-pane) layout                                 */
+/* ═══════════════════════════════════════════════════════════ */
+.dashboard-body {
+  flex: 1 1 auto;
+  display: flex;
+  min-height: 0;
+  overflow: hidden;
+  border-top: 1px solid #21262d;
+}
+
+/* ── Left rail ───────────────────────────────────────────── */
+.dash-rail {
+  width: 280px;
+  flex-shrink: 0;
+  background: #0d1117;
+  border-right: 1px solid #21262d;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  padding: 12px;
+  overflow-y: auto;
+  transition: width 0.15s ease;
+}
+.dash-rail.collapsed {
+  width: 72px;
+  padding: 12px 6px;
+  align-items: center;
+}
+.rail-toggle {
+  position: absolute;
+  top: 8px;
+  right: 6px;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 4px;
+  color: #8b949e;
+  cursor: pointer;
+  padding: 2px 4px;
+  z-index: 2;
+}
+.rail-toggle:hover {
+  color: #e6edf3;
+  border-color: #a78bfa;
+}
+.dash-rail.collapsed .rail-toggle {
+  right: 50%;
+  transform: translateX(50%);
+  top: 8px;
+}
+
+.rail-icons {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  margin-top: 40px;
+  width: 100%;
+}
+.rail-icon-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  background: #161b22;
+  border: 1px solid #21262d;
+  border-radius: 6px;
+  padding: 6px 4px;
+  width: 60px;
+  cursor: default;
+}
+.rail-icon-btn.rail-icon-btn-danger {
+  cursor: pointer;
+}
+.rail-icon-btn.rail-icon-btn-danger:hover {
+  border-color: #ef5350;
+  background: rgba(239, 83, 80, 0.08);
+}
+.rail-icon-lbl {
+  font-size: 9px;
+  color: #8b949e;
+  font-family: monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.rail-expanded {
+  margin-top: 28px;
+  display: flex;
+  flex-direction: column;
+}
+.rail-section-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #8b949e;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 10px;
+  margin-top: 4px;
+}
+.rail-record-group {
+  background: #161b22;
+  border: 1px solid #21262d;
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-top: 6px;
+}
+
+/* ── Right pane ─────────────────────────────────────────── */
+.dash-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 12px 16px;
+  overflow: hidden;
+  gap: 10px;
+}
+
+.dash-stats-strip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+  flex-wrap: nowrap;
+}
+.dash-stats-strip .live-stat {
+  min-width: 90px;
+  padding: 6px 12px;
+}
+.dash-stats-strip .live-stat-value {
+  font-size: 14px;
+}
+.dash-progress {
+  flex: 1;
+  min-width: 100px;
+}
+
+.dash-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow: hidden;
+}
+
+.dash-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: #0d1117;
+  border: 1px dashed #30363d;
+  border-radius: 8px;
+  padding: 24px;
+}
+
+/* Single-model layout */
+.dash-single {
+  display: grid;
+  grid-template-columns: minmax(340px, 380px) 1fr;
+  grid-template-rows: 1fr;
+  gap: 12px;
+  height: 100%;
+}
+.dash-prediction-card {
+  background: #0d1117;
+  border: 2px solid #21262d;
+  border-radius: 12px;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+.dash-prediction-value {
+  font-size: 68px;
+  font-weight: 800;
+  font-family: monospace;
+  line-height: 1.05;
+  margin: 8px 0 4px;
+  word-break: break-word;
+}
+.dash-confidence {
+  width: 100%;
+  margin-top: 24px;
+}
+.dash-confidence-label {
+  font-size: 10px;
+  color: #8b949e;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 4px;
+}
+.dash-chart-container {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.dash-svg-chart {
+  flex: 1 1 auto;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+/* Multi-model tile grid */
+.dash-multi-grid {
+  overflow: hidden;
+}
+.multi-tile-grid {
+  flex: 1 1 auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  grid-auto-rows: minmax(220px, 1fr);
+  gap: 12px;
+  overflow-y: auto;
+  align-content: start;
+  min-height: 0;
+}
+.multi-tile {
+  background: #0d1117;
+  border: 1px solid #21262d;
+  border-radius: 10px;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+}
+.multi-tile-error {
+  border-color: rgba(248, 113, 113, 0.4);
+  background: rgba(248, 113, 113, 0.05);
+}
+.multi-tile-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.multi-tile-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: #e6edf3;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.multi-tile-pred {
+  font-size: 30px;
+  font-weight: 700;
+  font-family: monospace;
+  line-height: 1;
+  margin: 2px 0;
+  word-break: break-word;
+}
+.multi-tile-metrics {
+  display: flex;
+  gap: 10px;
+  font-size: 11px;
+  font-family: monospace;
+  color: #8b949e;
+}
+.multi-tile-error-msg {
+  color: #f87171;
+  font-size: 11px;
+  font-family: monospace;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 0;
+}
+.multi-tile-chart {
+  flex: 1 1 auto;
+  min-height: 80px;
+  max-height: 140px;
+  position: relative;
+}
+
+/* Recorder in dashboard mode */
+.dash-recorder {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.dash-preview {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  margin-bottom: 0;
+}
+.dash-preview-chart {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: auto;
+}
+.dash-recorder-stats {
+  display: flex;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+/* Ensure the recorder-labels wrap nicely in the rail */
+.dash-rail .recorder-labels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.dash-rail .recorder-label-btn {
+  padding: 4px 10px;
+  font-size: 11px;
 }
 </style>
