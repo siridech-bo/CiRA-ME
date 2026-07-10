@@ -121,6 +121,17 @@
           :hint="parseModeHint"
           persistent-hint
         />
+        <div class="mb-2 d-flex justify-end">
+          <v-btn
+            variant="text"
+            size="x-small"
+            color="grey"
+            :prepend-icon="showAdvancedParseModes ? 'mdi-eye-off-outline' : 'mdi-cog-outline'"
+            @click="toggleAdvancedParseModes"
+          >
+            {{ showAdvancedParseModes ? 'Hide advanced parse modes' : 'Show advanced parse modes' }}
+          </v-btn>
+        </div>
         <div class="mb-4" />
 
         <!-- key_value mode: just list column names -->
@@ -398,12 +409,33 @@ const form = ref({
   samplePreviewText: '',
 })
 
-const parseModeOptions = [
-  { value: 'key_value', label: 'Key = Value pairs (recommended)' },
-  { value: 'regex',     label: 'Regex (named groups per line)' },
-  { value: 'json',      label: 'JSON — one object per line' },
-  { value: 'csv',       label: 'CSV — headered rows' },
-]
+// Advanced parse modes are hidden by default. Regex is the only advanced
+// mode today — kept out of the way of factory operators who won't write it.
+const showAdvancedParseModes = ref(false)
+const BASIC_PARSE_MODES = ['key_value', 'json', 'csv']
+const ADVANCED_PARSE_MODES = ['regex']
+const parseModeOptions = computed(() => {
+  const base = [
+    { value: 'key_value', label: 'Key = Value pairs (recommended)' },
+    { value: 'json',      label: 'JSON — one object per line' },
+    { value: 'csv',       label: 'CSV — headered rows' },
+  ]
+  if (showAdvancedParseModes.value) {
+    base.push({ value: 'regex', label: 'Regex (named groups per line) — advanced' })
+  }
+  return base
+})
+
+function toggleAdvancedParseModes() {
+  showAdvancedParseModes.value = !showAdvancedParseModes.value
+  // If the operator hides advanced while an advanced mode is selected,
+  // snap the form back to the safe key_value default so the dropdown
+  // doesn't show a value that isn't in its option list.
+  if (!showAdvancedParseModes.value && ADVANCED_PARSE_MODES.includes(form.value.parse_mode as any)) {
+    form.value.parse_mode = 'key_value'
+    form.value.parse_regex = ''
+  }
+}
 
 const parseModeHints: Record<string, string> = {
   key_value: "Each line's key=value pairs are extracted by column name. Simplest for factory logs.",
@@ -574,6 +606,11 @@ const loadWatcher = async () => {
       mqtt_topic: w.mqtt_topic || 'alerts/{name}',
       daily_csv_enabled: !!w.daily_csv_enabled,
       samplePreviewText: '',
+    }
+    // If the watcher is on an advanced mode (regex), auto-reveal the toggle so
+    // the mode is visible in the dropdown after load.
+    if (ADVANCED_PARSE_MODES.includes(w.parse_mode)) {
+      showAdvancedParseModes.value = true
     }
   } catch (e: any) {
     notify.showError(e.response?.data?.error || 'Watcher not found')
