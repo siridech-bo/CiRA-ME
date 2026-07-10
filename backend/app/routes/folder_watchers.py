@@ -490,6 +490,36 @@ def get_file_content(watcher_id, kind, filename):
 # how the current parse config would extract rows before saving the watcher.
 # ---------------------------------------------------------------------------
 
+@folder_watchers_bp.route('/detect-columns', methods=['POST'])
+@login_required
+def detect_columns():
+    """Scan a sample log snippet for `key=value` / `key:value` patterns and
+    return unique key names in first-seen order. Used by the edit form's
+    "Auto-detect columns" button so operators don't have to know their log
+    schema upfront.
+    """
+    import re
+    data = request.get_json(silent=True) or {}
+    sample = str(data.get('sample_content', ''))[:4096]
+    if not sample.strip():
+        return jsonify({'columns': []})
+
+    # Word chars = key; then =/:/: followed by an optional sign and digits.
+    # Anchors on \b so we don't grab prefixes of longer tokens like `pid=123`
+    # embedded in URLs. Ignores keys with no numeric value.
+    pattern = re.compile(r'\b([A-Za-z_][A-Za-z0-9_]{1,63})\s*[=:]\s*-?\d')
+    seen: set = set()
+    columns: list = []
+    for m in pattern.finditer(sample):
+        name = m.group(1)
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        columns.append(name)
+    return jsonify({'columns': columns})
+
+
 @folder_watchers_bp.route('/preview-parse', methods=['POST'])
 @login_required
 def preview_parse():

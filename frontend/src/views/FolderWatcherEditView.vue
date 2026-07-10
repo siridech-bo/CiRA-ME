@@ -220,7 +220,7 @@
                 class="mb-3"
                 style="font-family: monospace;"
               />
-              <div class="d-flex align-center gap-2 mb-2">
+              <div class="d-flex align-center gap-2 mb-2 flex-wrap">
                 <v-btn
                   size="small"
                   variant="tonal"
@@ -230,6 +230,18 @@
                   @click="runPreview"
                 >
                   Test parse
+                </v-btn>
+                <v-btn
+                  v-if="form.parse_mode === 'key_value' && !form.parse_columns.trim() && form.samplePreviewText.trim()"
+                  size="small"
+                  variant="tonal"
+                  color="warning"
+                  prepend-icon="mdi-lightning-bolt-outline"
+                  :loading="detectLoading"
+                  @click="detectColumnsFromSample"
+                  title="Scan the sample for key=value patterns and fill the Column names field"
+                >
+                  Auto-detect columns
                 </v-btn>
                 <span v-if="previewResult" class="text-caption text-medium-emphasis">
                   {{ previewResult.row_count }} row{{ previewResult.row_count === 1 ? '' : 's' }} parsed
@@ -492,6 +504,30 @@ const previewResult = ref<{
   warnings: string[]
 } | null>(null)
 const previewError = ref<{ error: string; error_code?: string; hint?: string } | null>(null)
+const detectLoading = ref(false)
+
+async function detectColumnsFromSample() {
+  try {
+    detectLoading.value = true
+    const res = await api.post('/api/folder-watchers/detect-columns', {
+      sample_content: form.value.samplePreviewText || '',
+    })
+    const cols: string[] = res.data?.columns || []
+    if (cols.length === 0) {
+      notify.showError('No key=value or key:value patterns found in the sample.')
+      return
+    }
+    form.value.parse_columns = cols.join(', ')
+    notify.showSuccess(
+      `Detected ${cols.length} column${cols.length === 1 ? '' : 's'}: ${cols.join(', ')}. ` +
+      `Trim the list if any look like non-sensor keys (pid, port, etc.).`
+    )
+  } catch (e: any) {
+    notify.showError(e.response?.data?.error || 'Failed to detect columns from sample')
+  } finally {
+    detectLoading.value = false
+  }
+}
 
 async function runPreview() {
   previewError.value = null
