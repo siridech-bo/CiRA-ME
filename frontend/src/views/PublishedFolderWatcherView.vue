@@ -154,8 +154,16 @@
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="f in files[kindTab].files" :key="f.name">
-                    <td class="font-weight-medium">{{ f.name }}</td>
+                  <tr
+                    v-for="f in files[kindTab].files"
+                    :key="f.name"
+                    class="fw-file-row"
+                    @click="openPreview(kindTab, f.name)"
+                  >
+                    <td class="font-weight-medium">
+                      <v-icon size="14" class="mr-1" color="grey">mdi-file-outline</v-icon>
+                      {{ f.name }}
+                    </td>
                     <td class="text-right text-caption">{{ formatSize(f.size) }}</td>
                     <td class="text-caption">{{ formatDate(f.mtime * 1000) }}</td>
                   </tr>
@@ -251,8 +259,16 @@
               </tr>
             </thead>
             <tbody>
-              <tr v-for="f in files[kindTab].files" :key="f.name">
-                <td class="font-weight-medium">{{ f.name }}</td>
+              <tr
+                v-for="f in files[kindTab].files"
+                :key="f.name"
+                class="fw-file-row"
+                @click="openPreview(kindTab, f.name)"
+              >
+                <td class="font-weight-medium">
+                  <v-icon size="14" class="mr-1" color="grey">mdi-file-outline</v-icon>
+                  {{ f.name }}
+                </td>
                 <td class="text-right text-caption">{{ formatSize(f.size) }}</td>
                 <td class="text-caption">{{ formatDate(f.mtime * 1000) }}</td>
               </tr>
@@ -261,6 +277,34 @@
         </v-card>
       </v-container>
     </template>
+
+    <!-- File preview dialog -->
+    <v-dialog v-model="previewOpen" max-width="900" scrollable>
+      <v-card v-if="preview.name">
+        <v-card-title class="d-flex align-center">
+          <v-icon class="mr-2" color="primary">mdi-file-eye-outline</v-icon>
+          <span class="text-truncate">{{ preview.name }}</span>
+          <v-chip size="x-small" class="ml-2" variant="tonal" :color="preview.kind === 'error' ? 'error' : 'default'">
+            {{ preview.kind }}
+          </v-chip>
+          <v-spacer />
+          <span class="text-caption text-medium-emphasis mr-2">
+            {{ formatSize(preview.size) }}{{ preview.truncated ? ' · truncated' : '' }}
+          </span>
+          <v-btn icon variant="text" size="small" @click="previewOpen = false">
+            <v-icon>mdi-close</v-icon>
+          </v-btn>
+        </v-card-title>
+        <v-divider />
+        <v-card-text style="max-height: 70vh; padding: 0;">
+          <v-progress-linear v-if="preview.loading" indeterminate color="primary" />
+          <v-alert v-else-if="preview.error" type="error" variant="tonal" density="compact" class="ma-3">
+            {{ preview.error }}
+          </v-alert>
+          <pre v-else class="fw-preview-pre">{{ preview.content }}</pre>
+        </v-card-text>
+      </v-card>
+    </v-dialog>
   </div>
 </template>
 
@@ -299,6 +343,51 @@ const files = ref<Record<'output' | 'input' | 'error', FolderData>>({
   error:  { files: [], total: 0, folder: '' },
 })
 const filesLoading = ref(false)
+
+// ── File preview dialog ───────────────────────────
+const previewOpen = ref(false)
+const preview = ref<{
+  kind: 'output' | 'input' | 'error' | ''
+  name: string
+  content: string
+  size: number
+  truncated: boolean
+  loading: boolean
+  error: string
+}>({
+  kind: '',
+  name: '',
+  content: '',
+  size: 0,
+  truncated: false,
+  loading: false,
+  error: '',
+})
+
+async function openPreview(kind: 'output' | 'input' | 'error', name: string) {
+  const id = watcher.value?.id
+  if (!id) return
+  preview.value = {
+    kind,
+    name,
+    content: '',
+    size: 0,
+    truncated: false,
+    loading: true,
+    error: '',
+  }
+  previewOpen.value = true
+  try {
+    const resp = await api.get(`/api/folder-watchers/${id}/files/${kind}/${encodeURIComponent(name)}`)
+    preview.value.content = resp.data.content ?? ''
+    preview.value.size = resp.data.size ?? 0
+    preview.value.truncated = !!resp.data.truncated
+  } catch (e: any) {
+    preview.value.error = e.response?.data?.error || 'Failed to load file'
+  } finally {
+    preview.value.loading = false
+  }
+}
 
 let refreshTimer: ReturnType<typeof setInterval> | null = null
 
@@ -569,5 +658,24 @@ onUnmounted(() => {
 }
 .fw-files-table {
   background: transparent !important;
+}
+.fw-file-row {
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+.fw-file-row:hover td {
+  background: rgba(99, 102, 241, 0.08);
+}
+.fw-preview-pre {
+  margin: 0;
+  padding: 14px 16px;
+  font-family: 'Consolas', 'Monaco', monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #e6edf3;
+  background: #0d1117;
+  white-space: pre;
+  overflow-x: auto;
+  max-height: 70vh;
 }
 </style>
