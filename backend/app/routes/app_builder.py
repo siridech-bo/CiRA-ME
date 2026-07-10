@@ -4,20 +4,199 @@ Visual pipeline builder for composing ML inference apps.
 """
 
 import io
+import os
 import csv
 import json
 import time
 import logging
 import secrets
 import re
+import threading
+from datetime import datetime
 import numpy as np
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, request, jsonify, current_app
 from ..auth import login_required
 from ..models import AppBuilderApp, MeLabEndpoint, MeLabApiKey, SavedModel, get_db
 from ..services.melab_service import ModelManager
 
 logger = logging.getLogger(__name__)
 app_builder_bp = Blueprint('app_builder', __name__)
+
+# ─── Prediction sink helpers ─────────────────────────────────────
+# One lock per CSV file path so concurrent writes within the same day
+# are serialized (append-safe). Locks are keyed by the resolved absolute
+# path so different apps / days don't block each other.
+_prediction_sink_locks = {}
+_prediction_sink_locks_guard = threading.Lock()
+
+
+def _get_prediction_sink_lock(path):
+    with _prediction_sink_locks_guard:
+        lock = _prediction_sink_locks.get(path)
+        if lock is None:
+            lock = threading.Lock()
+            _prediction_sink_locks[path] = lock
+        return lock
+
+
+def _persist_prediction(app, response, request_json):
+    """Persist a prediction to CSV and/or MQTT if the app has an
+    output.prediction_sink node. Never raises — a sink failure must
+    not break the inference response."""
+    try:
+        nodes = app.get('nodes', []) or []
+        sink = next((n for n in nodes if n.get('type') == 'output.prediction_sink'), None)
+        if not sink:
+            return
+
+        config = sink.get('config', {}) or {}
+        mode = str(config.get('mode', 'csv')).lower()
+        if mode not in ('csv', 'mqtt', 'both'):
+            mode = 'csv'
+        mqtt_topic_tpl = config.get('mqtt_topic') or 'predictions/{slug}'
+
+        slug = app.get('slug') or ''
+        request_json = request_json or {}
+
+        # Extract channel names + last-row values from incoming JSON payload.
+        channels_meta = request_json.get('channels') or []
+        data_rows = request_json.get('data') or []
+        channel_values = {}
+        if channels_meta and data_rows:
+            try:
+                last_row = data_rows[-1]
+                if isinstance(last_row, dict):
+                    for ch in channels_meta:
+                        if ch in last_row:
+                            channel_values[str(ch)] = last_row[ch]
+                elif isinstance(last_row, (list, tuple)):
+                    for i, ch in enumerate(channels_meta):
+                        if i < len(last_row):
+                            channel_values[str(ch)] = last_row[i]
+            except Exception:
+                channel_values = {}
+
+        timestamp = datetime.utcnow().isoformat() + 'Z'
+        is_multi = bool(response.get('multi_model'))
+
+        payload = {
+            'timestamp': timestamp,
+            'app_slug': slug,
+        }
+        if channel_values:
+            payload['channels'] = channel_values
+
+        # Build per-mode payload details
+        if is_multi:
+            models_map = {}
+            for eid, mentry in (response.get('models') or {}).items():
+                preds = mentry.get('predictions') or []
+                if preds:
+                    models_map[mentry.get('name', eid)] = preds[-1]
+            payload['models'] = models_map
+            actual_list = response.get('actual')
+            if actual_list:
+                try:
+                    payload['actual'] = actual_list[-1]
+                except Exception:
+                    pass
+        else:
+            preds = response.get('predictions') or []
+            if preds:
+                payload['prediction'] = preds[-1]
+            preds_full = response.get('predictions_full') or []
+            if preds_full and isinstance(preds_full[-1], dict):
+                last = preds_full[-1]
+                if 'confidence' in last:
+                    payload['confidence'] = last['confidence']
+                if 'anomaly_score' in last:
+                    payload['anomaly_score'] = last['anomaly_score']
+
+        # ── CSV persistence ─────────────────────────────────────
+        if mode in ('csv', 'both'):
+            try:
+                _write_prediction_csv(slug, payload, is_multi)
+            except Exception as e:
+                logger.warning(f"[PredictionSink] CSV write failed for slug={slug}: {e}")
+
+        # ── MQTT publish ────────────────────────────────────────
+        if mode in ('mqtt', 'both'):
+            try:
+                topic = str(mqtt_topic_tpl).replace('{slug}', slug)
+                _publish_prediction_mqtt(topic, payload)
+            except Exception as e:
+                logger.warning(f"[PredictionSink] MQTT publish failed for slug={slug}: {e}")
+
+    except Exception as e:
+        # Blanket guard — never let sink errors propagate.
+        logger.warning(f"[PredictionSink] unexpected error: {e}")
+
+
+def _write_prediction_csv(slug, payload, is_multi):
+    """Append a single row to shared/predictions/<slug>/<YYYY-MM-DD>.csv.
+    Writes a header when the file is first created."""
+    datasets_root = current_app.config['DATASETS_ROOT_PATH']
+    shared_folder = current_app.config['SHARED_FOLDER_PATH']
+    day = datetime.utcnow().strftime('%Y-%m-%d')
+    dir_path = os.path.join(datasets_root, shared_folder, 'predictions', slug)
+    os.makedirs(dir_path, exist_ok=True)
+    file_path = os.path.join(dir_path, f'{day}.csv')
+
+    # Flatten payload into a single row.
+    channels = payload.get('channels') or {}
+    row = {
+        'timestamp': payload.get('timestamp', ''),
+        'app_slug': payload.get('app_slug', ''),
+    }
+    for ch, val in channels.items():
+        row[f'ch_{ch}'] = val
+
+    if is_multi:
+        for model_name, pred_val in (payload.get('models') or {}).items():
+            row[f'model_{model_name}'] = pred_val
+        if 'actual' in payload:
+            row['actual'] = payload['actual']
+    else:
+        if 'prediction' in payload:
+            row['prediction'] = payload['prediction']
+        if 'confidence' in payload:
+            row['confidence'] = payload['confidence']
+        if 'anomaly_score' in payload:
+            row['anomaly_score'] = payload['anomaly_score']
+
+    lock = _get_prediction_sink_lock(file_path)
+    with lock:
+        file_exists = os.path.exists(file_path)
+        # First-write locks the schema for the day (header written once).
+        with open(file_path, 'a', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=list(row.keys()))
+            if not file_exists or os.path.getsize(file_path) == 0:
+                writer.writeheader()
+            writer.writerow(row)
+
+
+def _publish_prediction_mqtt(topic, payload):
+    """Publish payload JSON to the internal Mosquitto broker.
+    Uses a short-lived client to keep this fire-and-forget."""
+    import paho.mqtt.client as paho_mqtt
+
+    broker_host = os.environ.get('MQTT_BROKER_HOST', 'cirame-mosquitto')
+    broker_port = int(os.environ.get('MQTT_BROKER_PORT', '1883'))
+
+    client = paho_mqtt.Client(paho_mqtt.CallbackAPIVersion.VERSION2)
+    client.connect(broker_host, broker_port, keepalive=5)
+    try:
+        client.loop_start()
+        client.publish(topic, json.dumps(payload, default=str), qos=0)
+    finally:
+        try:
+            client.loop_stop()
+        except Exception:
+            pass
+        try:
+            client.disconnect()
+        except Exception:
+            pass
 
 
 # ─── Static node catalog ─────────────────────────────────────────
@@ -795,6 +974,7 @@ def run_app(slug):
 
             multi_response['models'][eid] = model_entry
 
+        _persist_prediction(app, multi_response, request.get_json(silent=True) or {})
         return jsonify(multi_response)
 
     # Format response based on model predictions (single model)
@@ -855,6 +1035,7 @@ def run_app(slug):
                 response['rmse'] = float(np.sqrt(np.mean((actuals - preds) ** 2)))
                 response['mae'] = float(np.mean(np.abs(actuals - preds)))
 
+    _persist_prediction(app, response, request.get_json(silent=True) or {})
     return jsonify(response)
 
 
