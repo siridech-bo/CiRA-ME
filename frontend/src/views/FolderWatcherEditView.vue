@@ -141,6 +141,18 @@
 
         <!-- regex mode: template picker + textarea -->
         <template v-if="form.parse_mode === 'regex'">
+          <v-alert
+            type="info"
+            variant="tonal"
+            density="compact"
+            class="mb-3"
+            icon="mdi-lightbulb-outline"
+          >
+            If your log has <code>key=value</code> or <code>key:value</code> pairs (like
+            <code>temperature=45.32 vibration=0.87</code>), use
+            <strong>Key = Value pairs</strong> mode instead — no regex needed.
+            Regex is only for unusual formats.
+          </v-alert>
           <v-select
             v-model="regexTemplate"
             :items="regexTemplateOptions"
@@ -179,15 +191,20 @@
           <v-expansion-panel>
             <v-expansion-panel-title>
               <v-icon size="small" class="mr-2">mdi-flask-outline</v-icon>
-              Try a sample line
+              Try a sample from your log file
             </v-expansion-panel-title>
             <v-expansion-panel-text>
+              <v-alert type="info" variant="tonal" density="compact" class="mb-3" icon="mdi-information-outline">
+                Paste <strong>actual log lines</strong> from a file — <em>not</em> your regex/config.
+                Example: <code>2026-07-10T08:00:00 INFO | temperature=45.32 vibration=0.87 pressure=47.52</code>
+              </v-alert>
               <v-textarea
                 v-model="form.samplePreviewText"
                 :rows="3"
                 variant="outlined"
                 density="comfortable"
-                placeholder="Paste a few lines from your log file to see how they parse..."
+                label="Paste 1-5 raw log lines here"
+                placeholder="2026-07-10T08:00:00 INFO | temperature=45.32 vibration=0.87 pressure=47.52"
                 hide-details
                 class="mb-3"
                 style="font-family: monospace;"
@@ -404,18 +421,18 @@ const parseModeHint = computed(() =>
 const regexTemplate = ref<string>('')
 const regexTemplateOptions = [
   { value: '',          label: 'Custom (write your own)' },
-  { value: 'kv',        label: 'Key = Value pairs (auto-fill from column names)' },
   { value: 'apache',    label: 'Apache-style access log' },
   { value: 'syslog',    label: 'Syslog line' },
   { value: 'csv_line',  label: 'CSV-like (comma-separated per line)' },
   { value: 'space_sep', label: 'Space-separated numbers' },
+  { value: 'factory',   label: 'Factory sensor line (temperature / vibration / pressure)' },
 ]
 const regexTemplates: Record<string, string> = {
-  kv:        '(?P<temperature>-?\\d+\\.?\\d*)',
   apache:    '^(?P<ip>\\S+)\\s+\\S+\\s+(?P<user>\\S+)\\s+\\[(?P<time>[^\\]]+)\\]\\s+"(?P<method>\\S+)\\s+(?P<path>\\S+)\\s+HTTP/[\\d.]+"\\s+(?P<status>\\d+)\\s+(?P<bytes>\\d+)',
   syslog:    '^(?P<time>\\S+\\s+\\S+\\s+\\S+)\\s+(?P<host>\\S+)\\s+(?P<process>\\S+?)(\\[(?P<pid>\\d+)\\])?:\\s+(?P<message>.*)$',
   csv_line:  '^(?P<col1>[^,]*),(?P<col2>[^,]*),(?P<col3>[^,]*)',
   space_sep: '^(?P<col1>\\S+)\\s+(?P<col2>\\S+)\\s+(?P<col3>\\S+)',
+  factory:   'temperature=(?P<temperature>-?\\d+\\.?\\d*)\\s+vibration=(?P<vibration>-?\\d+\\.?\\d*)\\s+pressure=(?P<pressure>-?\\d+\\.?\\d*)',
 }
 // Programmatic-write guard for regex textarea (mirrors the folder-autofill
 // pattern above) — prevents the template picker from tripping onRegexManualEdit
