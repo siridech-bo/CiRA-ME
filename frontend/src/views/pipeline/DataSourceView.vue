@@ -2678,6 +2678,12 @@ async function openTextImportDialog(item: FileItem) {
     if (choice === 'other') {
       textImportSettings.value.delimiterOther = sniffed.slice(0, 1)
     }
+    // Pre-populate skip-rows from the backend's preamble heuristic so files
+    // with leading comment/title lines Just Work on Import.
+    const suggested = Number(response.data.suggested_skip_rows)
+    if (Number.isFinite(suggested) && suggested > 0) {
+      textImportSettings.value.skipRows = suggested
+    }
     showTextImport.value = true
   } catch (e: any) {
     notificationStore.showError(e.response?.data?.error || 'Failed to sniff text file')

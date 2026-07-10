@@ -934,9 +934,31 @@ def text_sniff():
                 # preview matches what the user sees in a text editor.
                 raw_lines.append(line.rstrip('\r\n'))
 
+        # Heuristic: detect a preamble of comment / short lines so the wizard
+        # can pre-populate "Skip N rows from top". Split each line by the
+        # detected delimiter, find the most common field count, and count
+        # leading lines with a different (usually smaller) count.
+        suggested_skip = 0
+        if raw_lines:
+            counts = [len(line.split(detected)) for line in raw_lines]
+            # Most common non-1 count = expected column count. Skip leading
+            # lines that differ from it (they're preamble / comments).
+            from collections import Counter
+            freq = Counter(c for c in counts if c > 1)
+            if freq:
+                expected = freq.most_common(1)[0][0]
+                for cnt in counts:
+                    if cnt == expected:
+                        break
+                    suggested_skip += 1
+                # Safety: don't skip everything.
+                if suggested_skip >= len(raw_lines):
+                    suggested_skip = 0
+
         return jsonify({
             'detected_delimiter': detected,
             'raw_lines': raw_lines,
+            'suggested_skip_rows': suggested_skip,
             'encoding': 'utf-8',
         })
     except Exception as e:
