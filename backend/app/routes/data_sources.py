@@ -8,7 +8,7 @@ import uuid
 from flask import Blueprint, request, jsonify, current_app, send_file
 from werkzeug.utils import secure_filename
 from ..auth import login_required, validate_path, get_user_folders, _is_path_within
-from ..services.data_loader import DataLoader
+from ..services.data_loader import DataLoader, DataValidationError
 from ..models import Project, DataSession, WindowedSession
 
 data_sources_bp = Blueprint('data_sources', __name__)
@@ -178,17 +178,46 @@ def upload_file():
     if not original_filename:
         original_filename = f"upload_{uuid.uuid4().hex[:8]}.csv"
 
+    # Optional: folder-upload relative path. Preserves nested directory
+    # structure (e.g. ``dataset/train/idle.csv``). We sanitize the incoming
+    # path to reject absolute paths, drive letters, and parent traversal so a
+    # malicious client cannot escape ``upload_dir``.
+    relative_path = (request.form.get('relative_path') or '').strip()
+    save_dir = upload_dir
+    if relative_path:
+        # Normalize separators, strip leading slashes, split into parts.
+        rp = relative_path.replace('\\', '/').lstrip('/')
+        # Reject drive letters like "C:/foo"
+        if len(rp) >= 2 and rp[1] == ':':
+            return jsonify({'error': 'Invalid relative_path (drive letter not allowed)'}), 400
+        parts = [p for p in rp.split('/') if p not in ('', '.')]
+        if any(p == '..' for p in parts):
+            return jsonify({'error': 'Invalid relative_path (parent traversal not allowed)'}), 400
+        # Last part is the filename — replace with the secured version.
+        if parts:
+            dir_parts = [secure_filename(p) for p in parts[:-1]]
+            # Drop any parts that secure_filename reduced to empty
+            dir_parts = [p for p in dir_parts if p]
+            if dir_parts:
+                save_dir = os.path.join(upload_dir, *dir_parts)
+                # Final containment check
+                save_dir_norm = os.path.normpath(os.path.abspath(save_dir))
+                upload_dir_norm = os.path.normpath(os.path.abspath(upload_dir))
+                if not save_dir_norm.startswith(upload_dir_norm + os.sep) and save_dir_norm != upload_dir_norm:
+                    return jsonify({'error': 'Invalid relative_path (escapes upload directory)'}), 400
+                os.makedirs(save_dir, exist_ok=True)
+
     # Check for existing file and add suffix if needed
     base_name, extension = os.path.splitext(original_filename)
     final_filename = original_filename
     counter = 1
 
-    while os.path.exists(os.path.join(upload_dir, final_filename)):
+    while os.path.exists(os.path.join(save_dir, final_filename)):
         final_filename = f"{base_name}_{counter}{extension}"
         counter += 1
 
     # Save the file
-    file_path = os.path.join(upload_dir, final_filename)
+    file_path = os.path.join(save_dir, final_filename)
     try:
         file.save(file_path)
     except Exception as e:
@@ -667,6 +696,12 @@ def preview_data():
             result = loader.preview(file_path, rows, format_hint)
 
         return jsonify(result)
+    except DataValidationError as e:
+        return jsonify({
+            'error': e.message,
+            'error_code': e.code,
+            'hint': e.hint,
+        }), 400
     except Exception as e:
         return jsonify({'error': str(e)}), 400
 

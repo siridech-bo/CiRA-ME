@@ -13,6 +13,20 @@ import numpy as np
 from typing import Dict, List, Any, Optional
 
 
+class DataValidationError(Exception):
+    """Raised for user-facing dataset validation problems (bad headers, empty
+    files, non-numeric sensor columns, etc.). The route handler surfaces
+    ``code``/``message``/``hint`` to the frontend so it can render a friendly
+    dialog instead of a generic error toast.
+    """
+
+    def __init__(self, code: str, message: str, hint: str):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.hint = hint
+
+
 def _safe_labels(series):
     """Convert pandas unique values to JSON-safe native Python types."""
     return [v.item() if hasattr(v, 'item') else v for v in series.unique()]
@@ -109,11 +123,13 @@ class DataLoader:
                 return None
             return session
 
-    # Patterns to detect time/timestamp columns (case-insensitive)
+    # Patterns to detect time/timestamp columns (case-insensitive).
+    # ``index`` is accepted so a CSV with a plain row-counter column named
+    # ``index`` (or ``Index``, ``INDEX``…) can serve as the timestamp axis.
     TIME_COLUMN_PATTERNS = [
         'timestamp', 'time', 'time (s)', 'time(s)', 'time_s',
         'time (ms)', 'time(ms)', 'time_ms', 'elapsed', 'elapsed_time',
-        't (s)', 't(s)', 't_s', 'datetime', 'date_time'
+        't (s)', 't(s)', 't_s', 'datetime', 'date_time', 'index'
     ]
 
     def _detect_time_column(self, columns: List[str]) -> Optional[str]:
@@ -151,12 +167,27 @@ class DataLoader:
         - Headers in first row
         - Numeric sensor columns
         - Optional label column (e.g. 'label', 'class', 'target')
-        - Optional time column (e.g. 'timestamp', 'Time (s)', 'time', 'elapsed')
+        - Optional time column (e.g. 'timestamp', 'Time (s)', 'time', 'elapsed', 'index')
         """
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"File not found: {file_path}")
 
-        df = pd.read_csv(file_path)
+        try:
+            df = pd.read_csv(file_path)
+        except pd.errors.EmptyDataError:
+            raise DataValidationError(
+                code='EMPTY_FILE',
+                message="The CSV file is empty or has no data rows.",
+                hint="Verify the file has a header row plus at least one data row.",
+            )
+
+        # Empty (header-only or zero-column) file
+        if df.empty or len(df.columns) == 0:
+            raise DataValidationError(
+                code='EMPTY_FILE',
+                message="The CSV file is empty or has no data rows.",
+                hint="Verify the file has a header row plus at least one data row.",
+            )
 
         # Identify columns
         columns = df.columns.tolist()
@@ -166,6 +197,13 @@ class DataLoader:
         # Convention: first column is always time if not detected by name
         if not timestamp_col and len(columns) > 0 and pd.api.types.is_numeric_dtype(df[columns[0]]):
             timestamp_col = columns[0]
+
+        if not timestamp_col:
+            raise DataValidationError(
+                code='NO_TIME_OR_INDEX',
+                message="The file has no `time` or `index` column.",
+                hint="Add a column named `time` (seconds/ms) or `index` (row counter), then re-upload.",
+            )
 
         # Columns to exclude from sensor data
         exclude_cols = set()
@@ -179,6 +217,26 @@ class DataLoader:
             col for col in columns
             if col not in exclude_cols and pd.api.types.is_numeric_dtype(df[col])
         ]
+
+        if not sensor_cols:
+            # Try to point at a specific offending column: any non-numeric
+            # column that isn't the detected label/time.
+            offending = next(
+                (c for c in columns
+                 if c not in exclude_cols and not pd.api.types.is_numeric_dtype(df[c])),
+                None,
+            )
+            if offending is not None:
+                raise DataValidationError(
+                    code='NON_NUMERIC_SENSOR',
+                    message=f"Column `{offending}` has non-numeric values.",
+                    hint="Check for stray text, blank cells, or wrong delimiters in the CSV.",
+                )
+            raise DataValidationError(
+                code='NO_SENSOR_COLUMNS',
+                message="No numeric sensor columns detected.",
+                hint="Ensure at least one column contains numeric values. Text columns are treated as labels.",
+            )
 
         # Generate session ID and store data
         session_id = self._generate_session_id()
@@ -223,14 +281,22 @@ class DataLoader:
         reference_cols = None
         reference_file = None
         for fp in file_paths:
-            cols = pd.read_csv(fp, nrows=0).columns.tolist()
+            try:
+                cols = pd.read_csv(fp, nrows=0).columns.tolist()
+            except pd.errors.EmptyDataError:
+                raise DataValidationError(
+                    code='EMPTY_FILE',
+                    message="The CSV file is empty or has no data rows.",
+                    hint="Verify the file has a header row plus at least one data row.",
+                )
             if reference_cols is None:
                 reference_cols = cols
                 reference_file = os.path.basename(fp)
             elif cols != reference_cols:
-                raise ValueError(
-                    f"Column mismatch: '{os.path.basename(fp)}' has columns {cols}, "
-                    f"but '{reference_file}' has columns {reference_cols}"
+                raise DataValidationError(
+                    code='COLUMN_MISMATCH',
+                    message="Selected CSV files have different columns.",
+                    hint="Ensure all selected files have identical headers, then re-upload.",
                 )
 
         # Load and concatenate all files with sample_id
@@ -251,6 +317,13 @@ class DataLoader:
         if not timestamp_col and len(columns) > 0 and pd.api.types.is_numeric_dtype(combined[columns[0]]):
             timestamp_col = columns[0]
 
+        if not timestamp_col:
+            raise DataValidationError(
+                code='NO_TIME_OR_INDEX',
+                message="The file has no `time` or `index` column.",
+                hint="Add a column named `time` (seconds/ms) or `index` (row counter), then re-upload.",
+            )
+
         exclude_cols = set()
         if label_col:
             exclude_cols.add(label_col)
@@ -261,6 +334,24 @@ class DataLoader:
             col for col in columns
             if col not in exclude_cols and pd.api.types.is_numeric_dtype(combined[col])
         ]
+
+        if not sensor_cols:
+            offending = next(
+                (c for c in columns
+                 if c not in exclude_cols and not pd.api.types.is_numeric_dtype(combined[c])),
+                None,
+            )
+            if offending is not None:
+                raise DataValidationError(
+                    code='NON_NUMERIC_SENSOR',
+                    message=f"Column `{offending}` has non-numeric values.",
+                    hint="Check for stray text, blank cells, or wrong delimiters in the CSV.",
+                )
+            raise DataValidationError(
+                code='NO_SENSOR_COLUMNS',
+                message="No numeric sensor columns detected.",
+                hint="Ensure at least one column contains numeric values. Text columns are treated as labels.",
+            )
 
         # Store session
         session_id = self._generate_session_id()

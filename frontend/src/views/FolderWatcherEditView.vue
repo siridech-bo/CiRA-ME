@@ -54,6 +54,7 @@
           class="mb-4"
           hint="Any path visible inside the backend container"
           persistent-hint
+          @update:model-value="onInputFolderInput"
         />
 
         <v-text-field
@@ -64,6 +65,7 @@
           density="comfortable"
           :rules="[v => !!v || 'Output folder is required']"
           class="mb-4"
+          @update:model-value="onOutputFolderInput"
         />
 
         <div class="d-flex align-center gap-4 mb-4" style="flex-wrap: wrap;">
@@ -123,7 +125,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch, nextTick } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import api from '@/services/api'
 import { useAuthStore } from '@/stores/auth'
@@ -164,6 +166,11 @@ const form = ref({
   file_glob: '*.txt',
   header_mode: 'auto' as 'auto' | 'headered' | 'headerless',
 })
+
+// Track whether the user has manually edited the folder fields — used to
+// decide when it's safe to keep autofilling from the name field.
+const hasUserEditedInputFolder = ref(false)
+const hasUserEditedOutputFolder = ref(false)
 
 // Slug-safe user id for default folder suggestions
 const userSlug = computed(() => {
@@ -260,8 +267,48 @@ const cancel = () => {
   router.push({ name: 'folder-watcher-list' })
 }
 
+// Programmatic-write guard — prevents autofill from tripping the "user edited"
+// flags via the @update:model-value handlers.
+let autofillingFolders = false
+
+function setFolderAutofill(input: string, output: string) {
+  autofillingFolders = true
+  form.value.input_folder = input
+  form.value.output_folder = output
+  nextTick(() => { autofillingFolders = false })
+}
+
+function onInputFolderInput() {
+  if (!autofillingFolders) hasUserEditedInputFolder.value = true
+}
+function onOutputFolderInput() {
+  if (!autofillingFolders) hasUserEditedOutputFolder.value = true
+}
+
+// Autofill folders as the user types a name — but only for NEW watchers, and
+// only for fields the user hasn't manually edited.
+watch(() => form.value.name, () => {
+  if (isEdit.value) return
+  const input = defaultInputFolder.value
+  const output = defaultOutputFolder.value
+  autofillingFolders = true
+  if (!hasUserEditedInputFolder.value) form.value.input_folder = input
+  if (!hasUserEditedOutputFolder.value) form.value.output_folder = output
+  nextTick(() => { autofillingFolders = false })
+})
+
 onMounted(async () => {
   await loadEndpoints()
-  if (isEdit.value) await loadWatcher()
+  if (isEdit.value) {
+    await loadWatcher()
+    // Editing an existing watcher: never autofill, treat both fields as
+    // user-owned so the name watcher above is a no-op even if it fires.
+    hasUserEditedInputFolder.value = true
+    hasUserEditedOutputFolder.value = true
+  } else {
+    // New watcher: autofill both folder fields once at mount using the
+    // current default paths (name is likely empty → uses 'watcher' slug).
+    setFolderAutofill(defaultInputFolder.value, defaultOutputFolder.value)
+  }
 })
 </script>

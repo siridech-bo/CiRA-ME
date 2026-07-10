@@ -566,76 +566,157 @@
           </v-btn>
         </v-card-title>
 
+        <v-tabs
+          v-model="uploadTab"
+          color="primary"
+          density="compact"
+          grow
+        >
+          <v-tab value="files">
+            <v-icon start size="small">mdi-file-multiple-outline</v-icon>
+            Files
+          </v-tab>
+          <v-tab value="folder">
+            <v-icon start size="small">mdi-folder-upload-outline</v-icon>
+            Folder
+          </v-tab>
+        </v-tabs>
+
         <v-card-text>
-          <!-- Drag and Drop Zone -->
-          <div
-            class="upload-dropzone"
-            :class="{ 'drag-over': isDragging, 'has-files': uploadFiles.length > 0 }"
-            @dragover.prevent="isDragging = true"
-            @dragleave.prevent="isDragging = false"
-            @drop.prevent="handleDrop"
-            @click="triggerFileInput"
-          >
-            <input
-              ref="fileInput"
-              type="file"
-              :accept="allowedFileTypes"
-              multiple
-              hidden
-              @change="handleFileSelect"
-            />
+          <v-window v-model="uploadTab">
+            <!-- FILES TAB -->
+            <v-window-item value="files">
+              <!-- Drag and Drop Zone -->
+              <div
+                class="upload-dropzone"
+                :class="{ 'drag-over': isDragging, 'has-files': uploadFiles.length > 0 }"
+                @dragover.prevent="isDragging = true"
+                @dragleave.prevent="isDragging = false"
+                @drop.prevent="handleDrop"
+                @click="triggerFileInput"
+              >
+                <input
+                  ref="fileInput"
+                  type="file"
+                  :accept="allowedFileTypes"
+                  multiple
+                  hidden
+                  @change="handleFileSelect"
+                />
 
-            <template v-if="uploadFiles.length === 0">
-              <v-icon size="48" color="primary" class="mb-2">mdi-cloud-upload</v-icon>
-              <div class="text-body-1 font-weight-medium">
-                Drag and drop files here
+                <template v-if="uploadFiles.length === 0">
+                  <v-icon size="48" color="primary" class="mb-2">mdi-cloud-upload</v-icon>
+                  <div class="text-body-1 font-weight-medium">
+                    Drag and drop files here
+                  </div>
+                  <div class="text-caption text-medium-emphasis">
+                    or click to browse
+                  </div>
+                  <div class="text-caption text-medium-emphasis mt-2">
+                    Supported: CSV, JSON, CBOR (max 100 MB)
+                  </div>
+                </template>
+
+                <template v-else>
+                  <v-icon size="32" color="success" class="mb-2">mdi-check-circle</v-icon>
+                  <div class="text-body-1 font-weight-medium">
+                    {{ uploadFiles.length }} file(s) selected
+                  </div>
+                </template>
               </div>
-              <div class="text-caption text-medium-emphasis">
-                or click to browse
-              </div>
-              <div class="text-caption text-medium-emphasis mt-2">
-                Supported: CSV, JSON, CBOR (max 100 MB)
-              </div>
-            </template>
 
-            <template v-else>
-              <v-icon size="32" color="success" class="mb-2">mdi-check-circle</v-icon>
-              <div class="text-body-1 font-weight-medium">
-                {{ uploadFiles.length }} file(s) selected
-              </div>
-            </template>
-          </div>
-
-          <!-- Selected Files List -->
-          <v-list v-if="uploadFiles.length > 0" density="compact" class="mt-4">
-            <v-list-subheader>Selected Files</v-list-subheader>
-            <v-list-item
-              v-for="(file, index) in uploadFiles"
-              :key="index"
-              class="upload-file-item"
-            >
-              <template #prepend>
-                <v-icon :color="getFileTypeColor(file.name)">
-                  {{ getFileTypeIcon(file.name) }}
-                </v-icon>
-              </template>
-
-              <v-list-item-title>{{ file.name }}</v-list-item-title>
-              <v-list-item-subtitle>{{ formatFileSize(file.size) }}</v-list-item-subtitle>
-
-              <template #append>
-                <v-btn
-                  icon
-                  variant="text"
-                  size="small"
-                  color="error"
-                  @click.stop="removeFile(index)"
+              <!-- Selected Files List -->
+              <v-list v-if="uploadFiles.length > 0" density="compact" class="mt-4">
+                <v-list-subheader>Selected Files</v-list-subheader>
+                <v-list-item
+                  v-for="(file, index) in uploadFiles"
+                  :key="index"
+                  class="upload-file-item"
                 >
-                  <v-icon>mdi-close</v-icon>
-                </v-btn>
-              </template>
-            </v-list-item>
-          </v-list>
+                  <template #prepend>
+                    <v-icon :color="getFileTypeColor(file.name)">
+                      {{ getFileTypeIcon(file.name) }}
+                    </v-icon>
+                  </template>
+
+                  <v-list-item-title>{{ file.name }}</v-list-item-title>
+                  <v-list-item-subtitle>{{ formatFileSize(file.size) }}</v-list-item-subtitle>
+
+                  <template #append>
+                    <v-btn
+                      icon
+                      variant="text"
+                      size="small"
+                      color="error"
+                      @click.stop="removeFile(index)"
+                    >
+                      <v-icon>mdi-close</v-icon>
+                    </v-btn>
+                  </template>
+                </v-list-item>
+              </v-list>
+            </v-window-item>
+
+            <!-- FOLDER TAB -->
+            <v-window-item value="folder">
+              <div
+                class="upload-dropzone"
+                :class="{ 'has-files': folderUploadFiles.length > 0 }"
+                @click="triggerFolderInput"
+              >
+                <input
+                  ref="folderInput"
+                  type="file"
+                  webkitdirectory
+                  directory
+                  multiple
+                  hidden
+                  @change="handleFolderSelect"
+                />
+
+                <template v-if="folderUploadFiles.length === 0">
+                  <v-icon size="48" color="primary" class="mb-2">mdi-folder-upload</v-icon>
+                  <div class="text-body-1 font-weight-medium">
+                    Click to select a folder
+                  </div>
+                  <div class="text-caption text-medium-emphasis">
+                    Nested directory structure will be preserved
+                  </div>
+                  <div class="text-caption text-medium-emphasis mt-2">
+                    Supported: CSV, JSON, CBOR (max 100 MB per file)
+                  </div>
+                </template>
+
+                <template v-else>
+                  <v-icon size="32" color="success" class="mb-2">mdi-folder-check</v-icon>
+                  <div class="text-body-1 font-weight-medium">
+                    {{ folderUploadFiles.length }} files, {{ folderTopLevelCount }} folders selected
+                  </div>
+                  <div class="text-caption text-medium-emphasis mt-1">
+                    Click to choose a different folder
+                  </div>
+                </template>
+              </div>
+
+              <v-list v-if="folderUploadFiles.length > 0" density="compact" class="mt-4 folder-upload-list">
+                <v-list-subheader>Files ({{ folderUploadFiles.length }})</v-list-subheader>
+                <v-list-item
+                  v-for="(entry, index) in folderUploadFiles"
+                  :key="index"
+                  class="upload-file-item"
+                >
+                  <template #prepend>
+                    <v-icon :color="getFileTypeColor(entry.file.name)">
+                      {{ getFileTypeIcon(entry.file.name) }}
+                    </v-icon>
+                  </template>
+
+                  <v-list-item-title>{{ entry.relative_path }}</v-list-item-title>
+                  <v-list-item-subtitle>{{ formatFileSize(entry.file.size) }}</v-list-item-subtitle>
+                </v-list-item>
+              </v-list>
+            </v-window-item>
+          </v-window>
 
           <!-- Upload Progress -->
           <v-progress-linear
@@ -678,6 +759,7 @@
             Cancel
           </v-btn>
           <v-btn
+            v-if="uploadTab === 'files'"
             color="primary"
             variant="flat"
             :disabled="uploadFiles.length === 0 || uploading"
@@ -686,6 +768,65 @@
           >
             <v-icon start>mdi-upload</v-icon>
             Upload {{ uploadFiles.length }} File(s)
+          </v-btn>
+          <v-btn
+            v-else
+            color="primary"
+            variant="flat"
+            :disabled="folderUploadFiles.length === 0 || uploading"
+            :loading="uploading"
+            @click="uploadSelectedFiles"
+          >
+            <v-icon start>mdi-folder-upload</v-icon>
+            Upload {{ folderUploadFiles.length }} File(s)
+          </v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
+
+    <!-- Validation Error Dialog -->
+    <v-dialog v-model="showValidationError" max-width="520">
+      <v-card>
+        <v-card-title class="d-flex align-center">
+          <v-icon class="mr-2" color="error">mdi-alert-circle-outline</v-icon>
+          Can't Load This File
+          <v-spacer />
+          <v-btn icon variant="text" size="small" @click="showValidationError = false">
+            <v-icon>mdi-close</v-icon>
+          </v-btn>
+        </v-card-title>
+
+        <v-card-text v-if="validationError">
+          <div class="mb-3">
+            <v-chip
+              size="small"
+              color="error"
+              variant="tonal"
+              label
+            >
+              {{ validationError.code }}
+            </v-chip>
+          </div>
+
+          <div class="text-body-1 mb-4">
+            {{ validationError.message }}
+          </div>
+
+          <v-alert
+            v-if="validationError.hint"
+            type="info"
+            variant="tonal"
+            density="compact"
+            icon="mdi-lightbulb-outline"
+          >
+            {{ validationError.hint }}
+          </v-alert>
+        </v-card-text>
+
+        <v-card-actions>
+          <v-spacer />
+          <v-btn color="primary" variant="flat" @click="showValidationError = false">
+            OK
           </v-btn>
         </v-card-actions>
       </v-card>
@@ -1047,14 +1188,46 @@ const scanning = ref(false)
 
 // Upload state
 const showUploadDialog = ref(false)
+const uploadTab = ref<'files' | 'folder'>('files')
 const uploadFiles = ref<File[]>([])
+const folderUploadFiles = ref<Array<{ file: File; relative_path: string }>>([])
 const uploading = ref(false)
 const uploadProgress = ref(0)
 const uploadError = ref('')
 const uploadSuccess = ref('')
 const isDragging = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
+const folderInput = ref<HTMLInputElement | null>(null)
 const allowedFileTypes = '.csv,.json,.cbor'
+
+const folderTopLevelCount = computed(() => {
+  const tops = new Set<string>()
+  for (const entry of folderUploadFiles.value) {
+    // relative_path is "topdir/sub/.../file.csv"; if there is no separator
+    // (a single-file "folder"), treat the file itself as its own top-level.
+    const idx = entry.relative_path.indexOf('/')
+    tops.add(idx >= 0 ? entry.relative_path.slice(0, idx) : entry.relative_path)
+  }
+  return tops.size
+})
+
+// Validation-error dialog (surfaces backend DataValidationError responses)
+const showValidationError = ref(false)
+const validationError = ref<{ code: string; message: string; hint: string } | null>(null)
+
+function tryShowValidationError(e: any): boolean {
+  const data = e?.response?.data
+  if (data?.error_code) {
+    validationError.value = {
+      code: data.error_code,
+      message: data.error || 'Validation failed',
+      hint: data.hint || '',
+    }
+    showValidationError.value = true
+    return true
+  }
+  return false
+}
 
 // Delete state (admin only)
 const showDeleteDialog = ref(false)
@@ -1525,7 +1698,9 @@ async function previewMultipleCsv() {
     notificationStore.showSuccess(`${selectedFiles.value.length} CSV files loaded successfully`)
   } catch (e: any) {
     const errorMsg = e.response?.data?.error || 'Failed to load multiple CSV files'
-    if (errorMsg.includes('Column mismatch') || errorMsg.includes('mismatch')) {
+    if (tryShowValidationError(e)) {
+      dataPreview.value = null
+    } else if (errorMsg.includes('Column mismatch') || errorMsg.includes('mismatch')) {
       multiCsvError.value = errorMsg
       dataPreview.value = null
     } else {
@@ -1633,7 +1808,9 @@ async function previewFile(item: FileItem) {
     dataPreview.value = response.data
     notificationStore.showSuccess('Data loaded successfully')
   } catch (e: any) {
-    notificationStore.showError(e.response?.data?.error || 'Failed to preview file')
+    if (!tryShowValidationError(e)) {
+      notificationStore.showError(e.response?.data?.error || 'Failed to preview file')
+    }
     dataPreview.value = null
   } finally {
     loading.value = false
@@ -1757,11 +1934,42 @@ function triggerFileInput() {
   fileInput.value?.click()
 }
 
+function triggerFolderInput() {
+  folderInput.value?.click()
+}
+
 function handleFileSelect(event: Event) {
   const target = event.target as HTMLInputElement
   if (target.files) {
     addFiles(Array.from(target.files))
   }
+}
+
+function handleFolderSelect(event: Event) {
+  const target = event.target as HTMLInputElement
+  if (!target.files) return
+
+  const validExtensions = ['csv', 'json', 'cbor']
+  const maxSize = 100 * 1024 * 1024 // 100 MB
+  const entries: Array<{ file: File; relative_path: string }> = []
+
+  for (const file of Array.from(target.files)) {
+    // webkitRelativePath is "topdir/subdir/file.csv"
+    const rel = (file as any).webkitRelativePath || file.name
+    const ext = file.name.split('.').pop()?.toLowerCase() || ''
+
+    if (!validExtensions.includes(ext)) continue
+    if (file.size > maxSize) {
+      uploadError.value = `File too large: ${rel}. Max size: 100 MB`
+      continue
+    }
+    entries.push({ file, relative_path: rel })
+  }
+
+  folderUploadFiles.value = entries
+
+  // Reset the input so re-selecting the same folder fires @change again
+  target.value = ''
 }
 
 function handleDrop(event: DragEvent) {
@@ -1820,7 +2028,9 @@ function getFileTypeColor(filename: string) {
 }
 
 async function uploadSelectedFiles() {
-  if (uploadFiles.value.length === 0) return
+  const isFolderMode = uploadTab.value === 'folder'
+  const totalFiles = isFolderMode ? folderUploadFiles.value.length : uploadFiles.value.length
+  if (totalFiles === 0) return
 
   uploading.value = true
   uploadProgress.value = 0
@@ -1828,28 +2038,47 @@ async function uploadSelectedFiles() {
   uploadSuccess.value = ''
 
   try {
-    const totalFiles = uploadFiles.value.length
     let uploadedCount = 0
 
-    for (const file of uploadFiles.value) {
-      const formData = new FormData()
-      formData.append('file', file)
+    if (isFolderMode) {
+      for (const entry of folderUploadFiles.value) {
+        const formData = new FormData()
+        formData.append('file', entry.file)
+        formData.append('relative_path', entry.relative_path)
 
-      // Upload to current folder if we're in a user-accessible directory
-      if (currentPath.value) {
-        formData.append('folder', currentPath.value)
+        if (currentPath.value) {
+          formData.append('folder', currentPath.value)
+        }
+
+        await api.post('/api/data/upload', formData, {
+          headers: { 'Content-Type': 'multipart/form-data' }
+        })
+
+        uploadedCount++
+        uploadProgress.value = Math.round((uploadedCount / totalFiles) * 100)
       }
+    } else {
+      for (const file of uploadFiles.value) {
+        const formData = new FormData()
+        formData.append('file', file)
 
-      await api.post('/api/data/upload', formData, {
-        headers: { 'Content-Type': 'multipart/form-data' }
-      })
+        // Upload to current folder if we're in a user-accessible directory
+        if (currentPath.value) {
+          formData.append('folder', currentPath.value)
+        }
 
-      uploadedCount++
-      uploadProgress.value = Math.round((uploadedCount / totalFiles) * 100)
+        await api.post('/api/data/upload', formData, {
+          headers: { 'Content-Type': 'multipart/form-data' }
+        })
+
+        uploadedCount++
+        uploadProgress.value = Math.round((uploadedCount / totalFiles) * 100)
+      }
     }
 
     uploadSuccess.value = `Successfully uploaded ${uploadedCount} file(s)`
     uploadFiles.value = []
+    folderUploadFiles.value = []
 
     // Refresh the file list
     await loadFolders()
@@ -1859,7 +2088,9 @@ async function uploadSelectedFiles() {
       closeUploadDialog()
     }, 1500)
   } catch (e: any) {
-    uploadError.value = e.response?.data?.error || 'Upload failed'
+    if (!tryShowValidationError(e)) {
+      uploadError.value = e.response?.data?.error || 'Upload failed'
+    }
   } finally {
     uploading.value = false
   }
@@ -1868,6 +2099,8 @@ async function uploadSelectedFiles() {
 function closeUploadDialog() {
   showUploadDialog.value = false
   uploadFiles.value = []
+  folderUploadFiles.value = []
+  uploadTab.value = 'files'
   uploadProgress.value = 0
   uploadError.value = ''
   uploadSuccess.value = ''

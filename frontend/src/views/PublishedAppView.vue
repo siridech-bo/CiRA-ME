@@ -231,6 +231,45 @@
 
         <!-- Signal Recorder Mode -->
         <div v-if="isRecorderMode && mqttConnected" class="recorder-section">
+          <!-- Live preview panel: always shown while connected, even before Record -->
+          <div v-if="liveChannels.length > 0" class="preview-panel">
+            <div class="preview-header">
+              <span class="text-caption font-weight-bold text-medium-emphasis">LIVE PREVIEW</span>
+              <v-select
+                v-model="previewWindowSec"
+                :items="[5, 10, 30, 60, 120]"
+                label="Preview window (s)"
+                variant="outlined"
+                density="compact"
+                hide-details
+                style="max-width: 180px; font-size: 11px;"
+              />
+            </div>
+
+            <!-- Per-channel numeric readout -->
+            <div class="preview-cards">
+              <div v-for="ch in liveChannels" :key="'pv-' + ch" class="preview-card">
+                <div class="preview-card-label">{{ ch }}</div>
+                <div class="preview-card-value">{{ fmtPreview(previewStats[ch]?.latest) }}</div>
+                <div class="preview-card-stats">
+                  <span>Min: {{ fmtPreview(previewStats[ch]?.min) }}</span>
+                  <span class="preview-card-stats-sep">·</span>
+                  <span>Max: {{ fmtPreview(previewStats[ch]?.max) }}</span>
+                  <span class="preview-card-stats-sep">·</span>
+                  <span>Mean: {{ fmtPreview(previewStats[ch]?.mean) }}</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Live oscilloscope chart -->
+            <div v-if="previewBuffer.length > 1" class="preview-chart">
+              <Line :data="previewChartData" :options="previewChartOptions" />
+            </div>
+            <div v-else class="preview-chart-empty">
+              Waiting for samples…
+            </div>
+          </div>
+
           <!-- Label buttons -->
           <div class="recorder-label-header">
             <span class="text-caption font-weight-bold text-medium-emphasis">CURRENT LABEL</span>
@@ -747,6 +786,20 @@
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import api from '@/services/api'
+import { Line } from 'vue-chartjs'
+import {
+  Chart as ChartJS,
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  Title,
+  Tooltip,
+  Legend,
+} from 'chart.js'
+
+ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend)
+
 // mqtt loaded dynamically only when needed (live stream mode)
 let mqtt = null
 
@@ -1240,6 +1293,112 @@ let sensorBuffer = []
 let rateCounter = 0
 let rateInterval = null
 
+// ── Signal Recorder live preview ──────────────────────────────
+const previewWindowSec = ref(10)
+const previewBuffer = ref([]) // Array<{ts: number, [channel]: number}>
+const previewTicker = ref(0)  // bumped on message to force chart re-eval
+let previewPruneInterval = null
+
+function prunePreviewBuffer() {
+  const cutoff = Date.now() - previewWindowSec.value * 1000
+  const buf = previewBuffer.value
+  let dropFrom = 0
+  while (dropFrom < buf.length && buf[dropFrom].ts < cutoff) dropFrom++
+  if (dropFrom > 0) previewBuffer.value = buf.slice(dropFrom)
+}
+
+const PREVIEW_COLORS = ['#a78bfa', '#f59e0b', '#34d399', '#f87171', '#60a5fa', '#f472b6', '#22d3ee', '#facc15']
+
+const previewStats = computed(() => {
+  void previewTicker.value
+  const buf = previewBuffer.value
+  const channels = liveChannels.value || []
+  const out = {}
+  for (const ch of channels) {
+    let latest = null
+    let min = Infinity
+    let max = -Infinity
+    let sum = 0
+    let count = 0
+    for (const s of buf) {
+      const v = s[ch]
+      if (typeof v === 'number' && !isNaN(v)) {
+        latest = v
+        if (v < min) min = v
+        if (v > max) max = v
+        sum += v
+        count++
+      }
+    }
+    out[ch] = {
+      latest,
+      min: count > 0 ? min : null,
+      max: count > 0 ? max : null,
+      mean: count > 0 ? sum / count : null,
+    }
+  }
+  return out
+})
+
+const previewChartData = computed(() => {
+  void previewTicker.value
+  const buf = previewBuffer.value
+  const channels = liveChannels.value || []
+  const now = Date.now()
+  const labels = buf.map(s => ((s.ts - now) / 1000).toFixed(1))
+  const datasets = channels.map((ch, idx) => ({
+    label: ch,
+    data: buf.map(s => (typeof s[ch] === 'number' ? s[ch] : null)),
+    borderColor: PREVIEW_COLORS[idx % PREVIEW_COLORS.length],
+    backgroundColor: PREVIEW_COLORS[idx % PREVIEW_COLORS.length] + '22',
+    borderWidth: 1.5,
+    pointRadius: 0,
+    tension: 0.15,
+    spanGaps: true,
+  }))
+  return { labels, datasets }
+})
+
+const previewChartOptions = {
+  responsive: true,
+  maintainAspectRatio: false,
+  animation: false,
+  interaction: { intersect: false, mode: 'nearest' },
+  plugins: {
+    legend: {
+      display: true,
+      position: 'bottom',
+      labels: { color: '#8b949e', boxWidth: 10, font: { size: 10 } },
+    },
+    tooltip: { enabled: true },
+  },
+  scales: {
+    x: {
+      title: { display: true, text: 'seconds ago', color: '#8b949e', font: { size: 10 } },
+      ticks: { color: '#8b949e', maxTicksLimit: 6, font: { size: 9 } },
+      grid: { color: '#21262d' },
+    },
+    y: {
+      ticks: { color: '#8b949e', font: { size: 9 } },
+      grid: { color: '#21262d' },
+    },
+  },
+}
+
+function fmtPreview(v) {
+  if (v === null || v === undefined || isNaN(v)) return '--'
+  const abs = Math.abs(v)
+  if (abs >= 1000) return v.toFixed(1)
+  return v.toFixed(3)
+}
+
+// Re-prune when the user shrinks the window
+watch(previewWindowSec, () => {
+  prunePreviewBuffer()
+  previewTicker.value++
+})
+// ──────────────────────────────────────────────────────────────
+
 const liveLastUpdatedText = computed(() => {
   if (!liveLastUpdated.value) return ''
   const ago = Math.round((Date.now() - liveLastUpdated.value) / 1000)
@@ -1290,6 +1449,13 @@ async function startLiveStream() {
         const raw = JSON.parse(payload.toString())
         const sample = parseSensorPayload(raw)
         if (sample) {
+          // Preview buffer (recorder-mode only): always updates while connected,
+          // independent of whether the user has pressed Record.
+          if (isRecorderMode.value) {
+            previewBuffer.value.push({ ts: Date.now(), ...sample })
+            prunePreviewBuffer()
+            previewTicker.value++
+          }
           // Record if in recorder mode and recording
           if (isRecorderMode.value && recorderState.value.recording && recorderState.value.currentLabel) {
             const maxDur = (recorderConfig.value.max_duration || 300) * 1000
@@ -1323,6 +1489,16 @@ async function startLiveStream() {
       liveUpdateTicker.value++
     }, 1000)
 
+    // Prune preview buffer even when messages slow down, so old points drop off
+    // the rolling window on the chart.
+    if (previewPruneInterval) clearInterval(previewPruneInterval)
+    previewPruneInterval = setInterval(() => {
+      if (isRecorderMode.value && previewBuffer.value.length > 0) {
+        prunePreviewBuffer()
+        previewTicker.value++
+      }
+    }, 500)
+
   } catch (e) {
     mqttError.value = e.message || 'Failed to connect'
   }
@@ -1340,6 +1516,11 @@ function stopLiveStream() {
     clearInterval(rateInterval)
     rateInterval = null
   }
+  if (previewPruneInterval) {
+    clearInterval(previewPruneInterval)
+    previewPruneInterval = null
+  }
+  previewBuffer.value = []
   mqttConnected.value = false
   sensorBuffer = []
   sensorBufferLen.value = 0
@@ -2315,6 +2496,78 @@ async function runPipeline() {
   font-size: 10px;
   color: #484f58;
   margin-top: 4px;
+}
+
+.preview-panel {
+  background: #0d1117;
+  border: 1px solid #21262d;
+  border-radius: 8px;
+  padding: 12px;
+  margin-bottom: 16px;
+}
+.preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.preview-cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.preview-card {
+  flex: 1 1 140px;
+  min-width: 140px;
+  background: #010409;
+  border: 1px solid #21262d;
+  border-radius: 6px;
+  padding: 8px 12px;
+}
+.preview-card-label {
+  font-size: 10px;
+  color: #8b949e;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 2px;
+}
+.preview-card-value {
+  font-size: 24px;
+  font-weight: 700;
+  font-family: monospace;
+  color: #e6edf3;
+  line-height: 1.1;
+}
+.preview-card-stats {
+  font-size: 10px;
+  color: #8b949e;
+  font-family: monospace;
+  margin-top: 4px;
+}
+.preview-card-stats-sep {
+  margin: 0 4px;
+  color: #484f58;
+}
+.preview-chart {
+  position: relative;
+  height: 200px;
+  background: #010409;
+  border: 1px solid #21262d;
+  border-radius: 6px;
+  padding: 8px;
+}
+.preview-chart-empty {
+  height: 200px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #484f58;
+  font-size: 12px;
+  background: #010409;
+  border: 1px dashed #21262d;
+  border-radius: 6px;
 }
 
 .recorder-section {
