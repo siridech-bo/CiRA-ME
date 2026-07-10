@@ -1170,6 +1170,9 @@
               <v-alert type="info" variant="tonal" density="compact" class="mt-2 text-caption">
                 <strong>Fallback:</strong> if no column matches, the <strong>first column</strong> is used automatically — but only if it contains numeric values (e.g. Unix epoch, day counter).
               </v-alert>
+              <v-alert type="success" variant="tonal" density="compact" class="mt-2 text-caption">
+                <strong>Datetime strings are auto-converted.</strong> A column like <code>Timestamp</code> with values <code>2025-04-01 08:00:00</code> gets parsed and rewritten to <strong>seconds since the first sample</strong> (0, 60, 120…), so downstream stages work.
+              </v-alert>
             </div>
 
             <div class="format-subsection mt-3">

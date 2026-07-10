@@ -149,6 +149,48 @@ class DataLoader:
 
         return None
 
+    def _coerce_timestamp_to_seconds(self, df, timestamp_col: str) -> Optional[str]:
+        """Convert a non-numeric timestamp column to seconds-since-first-sample.
+
+        Returns the ISO string of the anchor (first parsed datetime) for
+        downstream display; returns ``None`` when the column was already
+        numeric. Raises DataValidationError(NON_NUMERIC_TIMESTAMP) when the
+        column is non-numeric AND cannot be parsed as datetime.
+        """
+        series = df[timestamp_col]
+        if pd.api.types.is_numeric_dtype(series):
+            return None
+
+        # Try lenient parse to find the first offender for the error hint;
+        # then require every value to parse.
+        try:
+            parsed_coerce = pd.to_datetime(series, errors='coerce', format='mixed')
+        except Exception:
+            parsed_coerce = pd.to_datetime(series, errors='coerce')
+
+        bad_mask = parsed_coerce.isna() & series.notna()
+        if bad_mask.any():
+            first_bad_pos = int(bad_mask.to_numpy().nonzero()[0][0])
+            first_bad_val = series.iloc[first_bad_pos]
+            file_row = first_bad_pos + 2  # +1 header, +1 1-based
+            raise DataValidationError(
+                code='NON_NUMERIC_TIMESTAMP',
+                message=(
+                    f"Timestamp column `{timestamp_col}` has an unparseable "
+                    f"value on row {file_row}: `{first_bad_val}`."
+                ),
+                hint=(
+                    "Use a numeric time (seconds since start), an integer index, "
+                    "or a standard datetime like `2025-04-01 08:00:00`."
+                ),
+            )
+
+        # All values parsed. Anchor at first sample, convert to seconds.
+        anchor = parsed_coerce.iloc[0]
+        seconds = (parsed_coerce - anchor).dt.total_seconds()
+        df[timestamp_col] = seconds.astype(float)
+        return anchor.isoformat() if pd.notna(anchor) else None
+
     def _check_mixed_type_sensor(self, df, columns, exclude_cols) -> None:
         """Raise NON_NUMERIC_SENSOR when a column looks like a corrupted sensor.
 
@@ -247,6 +289,11 @@ class DataLoader:
                 hint="Add a column named `time` (seconds/ms) or `index` (row counter), then re-upload.",
             )
 
+        # If the timestamp column holds ISO / mixed datetime strings, convert
+        # in-place to seconds-since-first-sample so downstream numeric
+        # operations (sample-rate detection, windowing, features) work.
+        time_epoch_start = self._coerce_timestamp_to_seconds(df, timestamp_col)
+
         # Columns to exclude from sensor data
         exclude_cols = set()
         if label_col:
@@ -295,6 +342,7 @@ class DataLoader:
             'sensor_columns': sensor_cols,
             'label_column': label_col,
             'timestamp_column': timestamp_col,
+            'time_epoch_start': time_epoch_start,
             'labels': _safe_labels(df[label_col]) if label_col else None
         }
 
@@ -423,6 +471,9 @@ class DataLoader:
                 hint="Add a column named `time` (seconds/ms) or `index` (row counter), then re-upload.",
             )
 
+        # ISO / mixed datetime strings → seconds-since-first-sample.
+        time_epoch_start = self._coerce_timestamp_to_seconds(df, timestamp_col)
+
         exclude_cols = set()
         if label_col:
             exclude_cols.add(label_col)
@@ -470,6 +521,7 @@ class DataLoader:
             'sensor_columns': sensor_cols,
             'label_column': label_col,
             'timestamp_column': timestamp_col,
+            'time_epoch_start': time_epoch_start,
             'labels': _safe_labels(df[label_col]) if label_col else None
         }
 
@@ -546,11 +598,17 @@ class DataLoader:
                 hint="Add a column named `time` (seconds/ms) or `index` (row counter), then re-upload.",
             )
 
+        # Global datetime → seconds conversion. Anchor is the first row of the
+        # combined dataset so multi-day recordings preserve inter-file gaps.
+        time_epoch_start = self._coerce_timestamp_to_seconds(combined, timestamp_col)
+
         exclude_cols = set()
         if label_col:
             exclude_cols.add(label_col)
         if timestamp_col:
             exclude_cols.add(timestamp_col)
+
+        self._check_mixed_type_sensor(combined, columns, exclude_cols)
 
         sensor_cols = [
             col for col in columns
@@ -600,6 +658,7 @@ class DataLoader:
             'sensor_columns': sensor_cols,
             'label_column': label_col,
             'timestamp_column': timestamp_col,
+            'time_epoch_start': time_epoch_start,
             'labels': _safe_labels(combined[label_col]) if label_col else None,
             'source_files': [os.path.basename(fp) for fp in file_paths]
         }
