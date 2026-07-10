@@ -113,6 +113,16 @@
             <v-btn
               variant="tonal"
               size="small"
+              color="info"
+              prepend-icon="mdi-information-outline"
+              class="mr-2"
+              @click="showFormatGuide = true"
+            >
+              Format Guide
+            </v-btn>
+            <v-btn
+              variant="tonal"
+              size="small"
               color="primary"
               prepend-icon="mdi-upload"
               class="mr-2"
@@ -832,6 +842,137 @@
       </v-card>
     </v-dialog>
 
+    <!-- Dataset Format Guide Dialog -->
+    <v-dialog v-model="showFormatGuide" max-width="720" scrollable>
+      <v-card>
+        <v-card-title class="d-flex align-center">
+          <v-icon color="info" class="mr-2">mdi-information-outline</v-icon>
+          Dataset Format Guide
+          <v-spacer />
+          <v-btn icon variant="text" @click="showFormatGuide = false">
+            <v-icon>mdi-close</v-icon>
+          </v-btn>
+        </v-card-title>
+
+        <v-card-text style="max-height: 70vh;">
+          <p class="text-body-2 text-medium-emphasis mb-4">
+            Prepare your data with these rules and the pipeline will load it cleanly.
+            If loading fails, the error dialog will name the exact issue.
+          </p>
+
+          <!-- Supported formats -->
+          <div class="format-section">
+            <div class="format-section-title">
+              <v-icon size="small" color="info" class="mr-1">mdi-file-multiple</v-icon>
+              Supported Formats
+            </div>
+            <v-list density="compact" class="pa-0 bg-transparent">
+              <v-list-item class="px-0">
+                <template #prepend><v-icon size="small" color="success">mdi-file-delimited</v-icon></template>
+                <v-list-item-title class="text-body-2"><strong>CSV</strong> — header row + numeric sensor columns. Multiple CSVs can be selected as one dataset (columns must match).</v-list-item-title>
+              </v-list-item>
+              <v-list-item class="px-0">
+                <template #prepend><v-icon size="small" color="info">mdi-code-json</v-icon></template>
+                <v-list-item-title class="text-body-2"><strong>Edge Impulse JSON</strong> — standard EI export with sensors + values arrays.</v-list-item-title>
+              </v-list-item>
+              <v-list-item class="px-0">
+                <template #prepend><v-icon size="small" color="secondary">mdi-file-code</v-icon></template>
+                <v-list-item-title class="text-body-2"><strong>Edge Impulse CBOR</strong> — folder with <code>training/</code> and <code>testing/</code> subfolders; classes auto-detected from filenames.</v-list-item-title>
+              </v-list-item>
+              <v-list-item class="px-0">
+                <template #prepend><v-icon size="small" color="secondary">mdi-file-code</v-icon></template>
+                <v-list-item-title class="text-body-2"><strong>CiRA CBOR</strong> — folder with <code>train/</code> and <code>test/</code> subfolders.</v-list-item-title>
+              </v-list-item>
+            </v-list>
+          </div>
+
+          <v-divider class="my-3" />
+
+          <!-- CSV column rules -->
+          <div class="format-section">
+            <div class="format-section-title">
+              <v-icon size="small" color="success" class="mr-1">mdi-table-column</v-icon>
+              CSV Column Rules
+            </div>
+
+            <div class="format-subsection">
+              <div class="format-sub-title">Timestamp column (X-axis)</div>
+              <p class="text-body-2 mb-1">Detected by name (case-insensitive, exact match):</p>
+              <div class="format-chips">
+                <v-chip v-for="p in timePatternExact" :key="p" size="x-small" variant="tonal" color="success">{{ p }}</v-chip>
+              </div>
+              <p class="text-body-2 mt-2 mb-1">Also accepted (prefix match):</p>
+              <div class="format-chips">
+                <v-chip size="x-small" variant="tonal" color="success">time…</v-chip>
+                <v-chip size="x-small" variant="tonal" color="success">timestamp…</v-chip>
+                <span class="text-caption text-medium-emphasis ml-2">(e.g. <code>Time (seconds)</code>, <code>timestamp_ms</code>)</span>
+              </div>
+              <v-alert type="info" variant="tonal" density="compact" class="mt-2 text-caption">
+                <strong>Fallback:</strong> if no column matches, the <strong>first column</strong> is used automatically — but only if it contains numeric values (e.g. Unix epoch, day counter).
+              </v-alert>
+            </div>
+
+            <div class="format-subsection mt-3">
+              <div class="format-sub-title">Label column (optional)</div>
+              <p class="text-body-2 mb-1">Detected by name (case-insensitive):</p>
+              <div class="format-chips">
+                <v-chip v-for="p in labelPatterns" :key="p" size="x-small" variant="tonal" color="warning">{{ p }}</v-chip>
+              </div>
+              <p class="text-caption text-medium-emphasis mt-2">Values can be strings (<code>anomaly</code>, <code>normal</code>) or integers (<code>0</code>, <code>1</code>). Leave out for unlabelled data.</p>
+            </div>
+
+            <div class="format-subsection mt-3">
+              <div class="format-sub-title">Sensor columns</div>
+              <p class="text-body-2">Every remaining <strong>numeric</strong> column is a sensor. Text columns are ignored unless one of them matches a label name. You need at least one numeric sensor column.</p>
+            </div>
+          </div>
+
+          <v-divider class="my-3" />
+
+          <!-- Common issues -->
+          <div class="format-section">
+            <div class="format-section-title">
+              <v-icon size="small" color="error" class="mr-1">mdi-alert-circle-outline</v-icon>
+              Common Errors &amp; Fixes
+            </div>
+            <v-list density="compact" class="pa-0 bg-transparent">
+              <v-list-item v-for="err in commonErrors" :key="err.code" class="px-0">
+                <v-list-item-title class="text-body-2">
+                  <v-chip size="x-small" color="error" variant="tonal" class="mr-2">{{ err.code }}</v-chip>
+                  <strong>{{ err.title }}</strong>
+                </v-list-item-title>
+                <v-list-item-subtitle class="text-caption mt-1">{{ err.hint }}</v-list-item-subtitle>
+              </v-list-item>
+            </v-list>
+          </div>
+
+          <v-divider class="my-3" />
+
+          <!-- Quick example -->
+          <div class="format-section">
+            <div class="format-section-title">
+              <v-icon size="small" color="primary" class="mr-1">mdi-lightbulb-outline</v-icon>
+              Minimal CSV Example
+            </div>
+            <pre class="format-example">time,temperature,vibration,label
+0.0,45.3,0.87,normal
+0.1,45.4,0.65,normal
+0.2,45.6,1.05,anomaly</pre>
+            <p class="text-caption text-medium-emphasis mt-1">
+              Or use <code>index</code> instead of <code>time</code> if you don't have real timestamps.
+            </p>
+          </div>
+        </v-card-text>
+
+        <v-card-actions>
+          <v-spacer />
+          <v-btn color="primary" variant="flat" @click="showFormatGuide = false">
+            Got It
+          </v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
+
     <!-- Record Sensors Dialog -->
     <v-dialog v-model="showRecordDialog" max-width="550" persistent>
       <v-card>
@@ -1188,6 +1329,24 @@ const scanning = ref(false)
 
 // Upload state
 const showUploadDialog = ref(false)
+const showFormatGuide = ref(false)
+
+const timePatternExact = [
+  'time', 'timestamp', 'index',
+  'time (s)', 'time(s)', 'time_s',
+  'time (ms)', 'time(ms)', 'time_ms',
+  'elapsed', 'elapsed_time',
+  't (s)', 't(s)', 't_s',
+  'datetime', 'date_time'
+]
+const labelPatterns = ['label', 'labels', 'class', 'class_name', 'target', 'category']
+const commonErrors = [
+  { code: 'NO_TIME_OR_INDEX', title: 'No time or index column found', hint: 'Add a column named `time` (seconds/ms) or `index` (row counter). Any column starting with `time` or `timestamp` also works.' },
+  { code: 'NO_SENSOR_COLUMNS', title: 'No numeric sensor columns detected', hint: 'Ensure at least one column contains numbers. Text columns are ignored (except for the label column).' },
+  { code: 'NON_NUMERIC_SENSOR', title: 'A sensor column has non-numeric values', hint: 'Check for stray text, empty cells, or wrong delimiters. Every non-time, non-label column must be all numbers.' },
+  { code: 'EMPTY_FILE', title: 'File is empty or has no data rows', hint: 'Verify the file has a header row plus at least one data row.' },
+  { code: 'COLUMN_MISMATCH', title: 'Multi-CSV files have different columns', hint: 'When selecting multiple CSVs, all files must have identical column headers.' }
+]
 const uploadTab = ref<'files' | 'folder'>('files')
 const uploadFiles = ref<File[]>([])
 const folderUploadFiles = ref<Array<{ file: File; relative_path: string }>>([])
@@ -2419,5 +2578,45 @@ onMounted(async () => {
   border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
   border-radius: 8px;
   margin-bottom: 4px;
+}
+
+.format-section-title {
+  font-size: 14px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.format-subsection {
+  padding: 4px 0;
+}
+
+.format-sub-title {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: rgba(var(--v-theme-on-surface), 0.72);
+  margin-bottom: 4px;
+}
+
+.format-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+
+.format-example {
+  background: rgba(var(--v-theme-surface-variant), 0.4);
+  border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-family: 'Consolas', 'Monaco', monospace;
+  font-size: 12px;
+  margin: 0;
+  overflow-x: auto;
+  white-space: pre;
 }
 </style>
