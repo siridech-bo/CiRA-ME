@@ -392,6 +392,7 @@ class DataLoader:
         delimiter: Optional[str] = None,
         header_row: int = 1,
         skip_rows: int = 0,
+        column_names: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """
         Load data from a delimited text file (.txt, .tsv, .dat, .log).
@@ -467,11 +468,28 @@ class DataLoader:
                 hint="Verify the file has a header row plus at least one data row.",
             )
 
+        # Fix A: whitespace-delimited files often have trailing spaces on each
+        # row, which pandas materialises as fully-empty trailing columns. Drop
+        # all-NaN columns so downstream sees only real signals.
+        df = df.dropna(axis=1, how='all')
+        if len(df.columns) == 0:
+            raise DataValidationError(
+                code='EMPTY_FILE',
+                message="The text file has no data columns after cleanup.",
+                hint="Check the delimiter — the file may not contain any real columns.",
+            )
+
         # Headerless — pandas will use 0..N integers as column names. Rename to
         # human-friendly col_1..col_N so downstream code (which assumes string
         # column names) is happy.
         if header_kw is None:
             df.columns = [f'col_{i + 1}' for i in range(len(df.columns))]
+
+        # Fix B: if caller passed explicit column_names AND count matches the
+        # actual column count, apply them (typically only used with headerless
+        # files loaded via a curated catalog entry).
+        if column_names and len(column_names) == len(df.columns):
+            df.columns = list(column_names)
 
         # Downstream detection is identical to CSV.
         columns = df.columns.tolist()

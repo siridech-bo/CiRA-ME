@@ -753,6 +753,10 @@ def load_from_url():
     delimiter = data.get('delimiter')
     header_row = data.get('header_row', 1)
     skip_rows = data.get('skip_rows', 0)
+    column_names = data.get('column_names')
+    if column_names is not None:
+        if not isinstance(column_names, list) or not all(isinstance(x, str) for x in column_names):
+            column_names = None
 
     # --- URL validation --------------------------------------------------
     if not url:
@@ -846,6 +850,7 @@ def load_from_url():
                     delimiter=delimiter,
                     header_row=header_row if header_row is not None else 1,
                     skip_rows=skip_rows if skip_rows is not None else 0,
+                    column_names=column_names,
                 )
             else:
                 result = loader.load_csv(temp_path)

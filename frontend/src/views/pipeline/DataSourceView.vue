@@ -1895,6 +1895,7 @@ interface UrlLoaderState {
   delimiter: string
   headerRow: number
   skipRows: number
+  columnNames: string[] | null
   loading: boolean
   error: string
 }
@@ -1905,6 +1906,7 @@ const urlLoader = ref<UrlLoaderState>({
   delimiter: '',
   headerRow: 1,
   skipRows: 0,
+  columnNames: null,
   loading: false,
   error: '',
 })
@@ -1919,10 +1921,22 @@ interface PdmEntry {
   sizeRaw: string
   format: 'csv' | 'text'
   headerRow?: number // 0 = headerless (CMAPSS)
+  columnNames?: string[] // Optional canonical column names for headerless files
   sampleUrl: string
   sourceUrl?: string  // Optional link to original / paper
   license: string
 }
+
+// Canonical NASA CMAPSS column layout (all 4 FD00X files use the same schema).
+const CMAPSS_COLUMNS = [
+  'unit_number', 'time_cycles',
+  'setting_1', 'setting_2', 'setting_3',
+  'sensor_1', 'sensor_2', 'sensor_3', 'sensor_4', 'sensor_5',
+  'sensor_6', 'sensor_7', 'sensor_8', 'sensor_9', 'sensor_10',
+  'sensor_11', 'sensor_12', 'sensor_13', 'sensor_14', 'sensor_15',
+  'sensor_16', 'sensor_17', 'sensor_18', 'sensor_19', 'sensor_20',
+  'sensor_21',
+]
 
 const PDM_CATALOG: PdmEntry[] = [
   // UCI mirror
@@ -1931,26 +1945,26 @@ const PDM_CATALOG: PdmEntry[] = [
     sampleUrl: 'https://raw.githubusercontent.com/m-kenny/predictive_maintenance/main/ai4i2020.csv',
     sourceUrl: 'https://archive.ics.uci.edu/dataset/601/ai4i+2020+predictive+maintenance+dataset',
     license: 'CC BY 4.0' },
-  // NASA CMAPSS mirror — space-delimited, headerless
+  // NASA CMAPSS mirror — space-delimited, headerless. All 4 files share the same 26-column schema.
   { key: 'CMAPSS_FD001_train', category: 'NASA CMAPSS Turbofan', description: 'Turbofan engine sensors — 1 fault mode, 1 op condition (train)',
-    labeled: true, rows: 20631, sizeRaw: '3.5 MB', format: 'text', headerRow: 0,
+    labeled: true, rows: 20631, sizeRaw: '3.5 MB', format: 'text', headerRow: 0, columnNames: CMAPSS_COLUMNS,
     sampleUrl: 'https://raw.githubusercontent.com/hankroark/Turbofan-Engine-Degradation/master/CMAPSSData/train_FD001.txt',
     sourceUrl: 'https://www.nasa.gov/intelligent-systems-division/discovery-and-systems-health/pcoe/pcoe-data-set-repository/',
     license: 'Public domain (US Gov work)' },
   { key: 'CMAPSS_FD001_test', category: 'NASA CMAPSS Turbofan', description: 'Turbofan test set — matched to FD001_train',
-    labeled: true, rows: 13096, sizeRaw: '2.2 MB', format: 'text', headerRow: 0,
+    labeled: true, rows: 13096, sizeRaw: '2.2 MB', format: 'text', headerRow: 0, columnNames: CMAPSS_COLUMNS,
     sampleUrl: 'https://raw.githubusercontent.com/hankroark/Turbofan-Engine-Degradation/master/CMAPSSData/test_FD001.txt',
     license: 'Public domain (US Gov work)' },
   { key: 'CMAPSS_FD002_train', category: 'NASA CMAPSS Turbofan', description: '6 operating conditions, 1 fault mode (train)',
-    labeled: true, rows: 53759, sizeRaw: '9.1 MB', format: 'text', headerRow: 0,
+    labeled: true, rows: 53759, sizeRaw: '9.1 MB', format: 'text', headerRow: 0, columnNames: CMAPSS_COLUMNS,
     sampleUrl: 'https://raw.githubusercontent.com/hankroark/Turbofan-Engine-Degradation/master/CMAPSSData/train_FD002.txt',
     license: 'Public domain (US Gov work)' },
   { key: 'CMAPSS_FD003_train', category: 'NASA CMAPSS Turbofan', description: '1 op condition, 2 fault modes (train)',
-    labeled: true, rows: 24720, sizeRaw: '4.2 MB', format: 'text', headerRow: 0,
+    labeled: true, rows: 24720, sizeRaw: '4.2 MB', format: 'text', headerRow: 0, columnNames: CMAPSS_COLUMNS,
     sampleUrl: 'https://raw.githubusercontent.com/hankroark/Turbofan-Engine-Degradation/master/CMAPSSData/train_FD003.txt',
     license: 'Public domain (US Gov work)' },
   { key: 'CMAPSS_FD004_train', category: 'NASA CMAPSS Turbofan', description: '6 op conditions, 2 fault modes — most complex (train)',
-    labeled: true, rows: 61249, sizeRaw: '10.4 MB', format: 'text', headerRow: 0,
+    labeled: true, rows: 61249, sizeRaw: '10.4 MB', format: 'text', headerRow: 0, columnNames: CMAPSS_COLUMNS,
     sampleUrl: 'https://raw.githubusercontent.com/hankroark/Turbofan-Engine-Degradation/master/CMAPSSData/train_FD004.txt',
     license: 'Public domain (US Gov work)' },
   // Azure Predictive Maintenance case study mirror
@@ -2012,6 +2026,9 @@ function pickPdmSample(key: string) {
     urlLoader.value.delimiter = ''
     urlLoader.value.skipRows = 0
   }
+  // Attach canonical column names if the catalog entry provides them (used for
+  // headerless files like CMAPSS so the preview shows meaningful names).
+  urlLoader.value.columnNames = entry.columnNames ? [...entry.columnNames] : null
   urlLoader.value.error = ''
 }
 
@@ -2031,6 +2048,9 @@ async function fetchFromUrl() {
       payload.delimiter = urlLoader.value.delimiter || null
       payload.header_row = Math.floor(Number(urlLoader.value.headerRow) || 0)
       payload.skip_rows = Math.max(0, Math.floor(Number(urlLoader.value.skipRows) || 0))
+      if (urlLoader.value.columnNames && urlLoader.value.columnNames.length > 0) {
+        payload.column_names = urlLoader.value.columnNames
+      }
     }
 
     const response = await api.post('/api/data/load-from-url', payload)
