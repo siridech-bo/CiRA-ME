@@ -14,7 +14,9 @@ from ..models import Project, DataSession, WindowedSession
 data_sources_bp = Blueprint('data_sources', __name__)
 
 # Allowed file extensions for upload
-ALLOWED_EXTENSIONS = {'csv', 'json', 'cbor'}
+# Note: txt/tsv/dat/log are handled by the Text File format wizard.
+ALLOWED_EXTENSIONS = {'csv', 'json', 'cbor', 'txt', 'tsv', 'dat', 'log'}
+TEXT_EXTENSIONS = {'txt', 'tsv', 'dat', 'log'}
 MAX_FILE_SIZE = 100 * 1024 * 1024  # 100 MB
 
 
@@ -105,6 +107,8 @@ def browse_directory():
             file_type = 'json'
         elif ext == '.cbor':
             file_type = 'cbor'
+        elif ext in ('.txt', '.tsv', '.dat', '.log'):
+            file_type = 'text'
 
         items.append({
             'name': item,
@@ -228,7 +232,11 @@ def upload_file():
     file_type = {
         'csv': 'csv',
         'json': 'json',
-        'cbor': 'cbor'
+        'cbor': 'cbor',
+        'txt': 'text',
+        'tsv': 'text',
+        'dat': 'text',
+        'log': 'text',
     }.get(ext, 'unknown')
 
     return jsonify({
@@ -663,6 +671,11 @@ def preview_data():
     format_hint = data.get('format')
     category = data.get('category')  # Optional: partition filter
     label = data.get('label')        # Optional: label filter
+    # Text-format overrides — the Text Import wizard passes these after the
+    # user confirms delimiter / header row / skip rows.
+    delimiter = data.get('delimiter')
+    header_row = data.get('header_row')
+    skip_rows = data.get('skip_rows')
 
     if not file_path and not file_paths:
         return jsonify({'error': 'File path required'}), 400
@@ -689,6 +702,19 @@ def preview_data():
         if not validate_path(file_path, request.current_user, datasets_root, shared_folder):
             return jsonify({'error': 'Access denied to this path'}), 403
 
+        # Text format — always go through load_text with wizard settings.
+        if format_hint == 'text' and not os.path.isdir(file_path):
+            result = loader.load_text(
+                file_path,
+                delimiter=delimiter,
+                header_row=header_row if header_row is not None else 1,
+                skip_rows=skip_rows if skip_rows is not None else 0,
+            )
+            session = loader._get_session(result['session_id'])
+            if session:
+                result['preview'] = session['data'].head(rows).to_dict(orient='records')
+            return jsonify(result)
+
         # Use partition preview if category/label filters provided on a directory
         if os.path.isdir(file_path) and category is not None:
             result = loader.preview_partition(file_path, category=category, label=label, rows=rows, format_hint=format_hint)
@@ -702,6 +728,70 @@ def preview_data():
             'error_code': e.code,
             'hint': e.hint,
         }), 400
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+
+@data_sources_bp.route('/text-sniff', methods=['POST'])
+@login_required
+def text_sniff():
+    """Sniff the delimiter of a text file and return a head of raw lines
+    for the Text Import wizard's client-side preview.
+
+    Request body:
+        file_path (str): absolute path to the text file
+        sample_bytes (int, optional): bytes to read for sniffing (default 4096)
+
+    Response:
+        detected_delimiter (str): the sniffed delimiter (falls back to ',')
+        raw_lines (list[str]): up to 20 head lines (already stripped of \\r\\n)
+        encoding (str): always 'utf-8' — the wizard has no encoding picker
+    """
+    data = request.get_json()
+
+    if not data:
+        return jsonify({'error': 'No data provided'}), 400
+
+    file_path = data.get('file_path')
+    if not file_path:
+        return jsonify({'error': 'File path required'}), 400
+
+    sample_bytes = data.get('sample_bytes', 4096)
+    try:
+        sample_bytes = int(sample_bytes)
+    except (TypeError, ValueError):
+        sample_bytes = 4096
+    # Clamp to a sensible range so a malicious client can't ask for a huge read
+    sample_bytes = max(256, min(sample_bytes, 65536))
+
+    datasets_root = current_app.config['DATASETS_ROOT_PATH']
+    shared_folder = current_app.config['SHARED_FOLDER_PATH']
+
+    if not validate_path(file_path, request.current_user, datasets_root, shared_folder):
+        return jsonify({'error': 'Access denied to this path'}), 403
+
+    if not os.path.isfile(file_path):
+        return jsonify({'error': 'File not found'}), 404
+
+    try:
+        loader = DataLoader()
+        detected = loader._sniff_text_delimiter(file_path, sample_bytes=sample_bytes)
+
+        # Read the head of the file as raw lines for the wizard preview.
+        raw_lines = []
+        with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+            for i, line in enumerate(f):
+                if i >= 20:
+                    break
+                # Strip trailing newline but keep in-line whitespace so the
+                # preview matches what the user sees in a text editor.
+                raw_lines.append(line.rstrip('\r\n'))
+
+        return jsonify({
+            'detected_delimiter': detected,
+            'raw_lines': raw_lines,
+            'encoding': 'utf-8',
+        })
     except Exception as e:
         return jsonify({'error': str(e)}), 400
 

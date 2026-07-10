@@ -3,6 +3,7 @@ CiRA ME - Data Loader Service
 Handles loading and parsing of CSV, Edge Impulse JSON, Edge Impulse CBOR, and CiRA CBOR formats
 """
 
+import csv
 import os
 import json
 import uuid
@@ -243,6 +244,178 @@ class DataLoader:
         metadata = {
             'format': 'csv',
             'file_path': file_path,
+            'total_rows': len(df),
+            'columns': columns,
+            'sensor_columns': sensor_cols,
+            'label_column': label_col,
+            'timestamp_column': timestamp_col,
+            'labels': _safe_labels(df[label_col]) if label_col else None
+        }
+
+        self._store_session(session_id, df, metadata)
+
+        return {
+            'session_id': session_id,
+            'metadata': metadata,
+            'preview': df.head(10).to_dict(orient='records')
+        }
+
+    def _sniff_text_delimiter(self, file_path: str, sample_bytes: int = 4096) -> str:
+        """Sniff the delimiter of a text file. Falls back to ',' on failure."""
+        try:
+            with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+                sample = f.read(sample_bytes)
+            if not sample.strip():
+                return ','
+            try:
+                dialect = csv.Sniffer().sniff(sample, delimiters=",\t;| ")
+                return dialect.delimiter
+            except csv.Error:
+                return ','
+        except OSError:
+            return ','
+
+    def load_text(
+        self,
+        file_path: str,
+        delimiter: Optional[str] = None,
+        header_row: int = 1,
+        skip_rows: int = 0,
+    ) -> Dict[str, Any]:
+        """
+        Load data from a delimited text file (.txt, .tsv, .dat, .log).
+
+        Downstream metadata/columns/labels detection is identical to CSV.
+
+        Args:
+            file_path: Absolute path to the text file.
+            delimiter: Explicit delimiter. If ``None``, sniff via ``csv.Sniffer``
+                on the first ~4 KB and fall back to ``','`` on failure.
+            header_row: 1-based row containing headers. ``0`` means headerless —
+                columns are auto-generated as ``col_1..col_N``.
+            skip_rows: Number of rows to skip from the top BEFORE the header row.
+        """
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"File not found: {file_path}")
+
+        # Coerce inputs
+        try:
+            header_row = int(header_row) if header_row is not None else 1
+        except (TypeError, ValueError):
+            header_row = 1
+        try:
+            skip_rows = int(skip_rows) if skip_rows is not None else 0
+        except (TypeError, ValueError):
+            skip_rows = 0
+        if skip_rows < 0:
+            skip_rows = 0
+
+        # Sniff delimiter if not provided
+        if not delimiter:
+            delimiter = self._sniff_text_delimiter(file_path)
+
+        # pandas' header kwarg: None = headerless, integer = row index of header
+        # AFTER skiprows have been consumed.
+        if header_row <= 0:
+            header_kw: Optional[int] = None
+        else:
+            header_kw = header_row - 1
+
+        try:
+            df = pd.read_csv(
+                file_path,
+                sep=delimiter,
+                header=header_kw,
+                skiprows=skip_rows if skip_rows > 0 else None,
+                encoding='utf-8',
+                engine='python',
+            )
+        except pd.errors.EmptyDataError:
+            raise DataValidationError(
+                code='EMPTY_FILE',
+                message="The text file is empty or has no data rows.",
+                hint="Verify the file has a header row plus at least one data row.",
+            )
+        except UnicodeDecodeError:
+            raise DataValidationError(
+                code='ENCODING_ERROR',
+                message="The text file is not valid UTF-8.",
+                hint="Re-save the file with UTF-8 encoding and try again.",
+            )
+        except Exception as e:
+            raise DataValidationError(
+                code='PARSE_ERROR',
+                message=f"Failed to parse text file: {e}",
+                hint="Check that the delimiter and header row match the file's layout.",
+            )
+
+        if df.empty or len(df.columns) == 0:
+            raise DataValidationError(
+                code='EMPTY_FILE',
+                message="The text file is empty or has no data rows.",
+                hint="Verify the file has a header row plus at least one data row.",
+            )
+
+        # Headerless — pandas will use 0..N integers as column names. Rename to
+        # human-friendly col_1..col_N so downstream code (which assumes string
+        # column names) is happy.
+        if header_kw is None:
+            df.columns = [f'col_{i + 1}' for i in range(len(df.columns))]
+
+        # Downstream detection is identical to CSV.
+        columns = df.columns.tolist()
+        label_col = self._detect_label_column(columns)
+        timestamp_col = self._detect_time_column(columns)
+
+        if not timestamp_col and len(columns) > 0 and pd.api.types.is_numeric_dtype(df[columns[0]]):
+            timestamp_col = columns[0]
+
+        if not timestamp_col:
+            raise DataValidationError(
+                code='NO_TIME_OR_INDEX',
+                message="The file has no `time` or `index` column.",
+                hint="Add a column named `time` (seconds/ms) or `index` (row counter), then re-upload.",
+            )
+
+        exclude_cols = set()
+        if label_col:
+            exclude_cols.add(label_col)
+        if timestamp_col:
+            exclude_cols.add(timestamp_col)
+
+        sensor_cols = [
+            col for col in columns
+            if col not in exclude_cols and pd.api.types.is_numeric_dtype(df[col])
+        ]
+
+        if not sensor_cols:
+            offending = next(
+                (c for c in columns
+                 if c not in exclude_cols and not pd.api.types.is_numeric_dtype(df[c])),
+                None,
+            )
+            if offending is not None:
+                raise DataValidationError(
+                    code='NON_NUMERIC_SENSOR',
+                    message=f"Column `{offending}` has non-numeric values.",
+                    hint="Check for stray text, blank cells, or wrong delimiters in the file.",
+                )
+            raise DataValidationError(
+                code='NO_SENSOR_COLUMNS',
+                message="No numeric sensor columns detected.",
+                hint="Ensure at least one column contains numeric values. Text columns are treated as labels.",
+            )
+
+        session_id = self._generate_session_id()
+        metadata = {
+            # Reported as 'csv' so downstream (windowing, features, TI export)
+            # treats it identically — the shape of the DataFrame is the same.
+            'format': 'csv',
+            'source_format': 'text',
+            'file_path': file_path,
+            'delimiter': delimiter,
+            'header_row': header_row,
+            'skip_rows': skip_rows,
             'total_rows': len(df),
             'columns': columns,
             'sensor_columns': sensor_cols,
@@ -1269,6 +1442,11 @@ class DataLoader:
                 result = self.load_cira_cbor(file_path)
             except (ValueError, KeyError):
                 result = self.load_edge_impulse_cbor(file_path)
+        elif ext in ('.txt', '.tsv', '.dat', '.log') or format_hint == 'text':
+            # Text file — sniff delimiter, keep default header/skip settings.
+            # The Text Import wizard calls load_text directly with user-picked
+            # settings; this path handles the "just preview it" case.
+            result = self.load_text(file_path)
         else:
             raise ValueError(f"Unsupported file format: {ext}")
 

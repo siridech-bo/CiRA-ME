@@ -58,6 +58,17 @@
                 </div>
               </template>
             </v-radio>
+
+            <v-radio value="text">
+              <template #label>
+                <div>
+                  <div class="font-weight-medium">Text File</div>
+                  <div class="text-caption text-medium-emphasis">
+                    Any delimited text file (.txt, .tsv, .log). Auto-detects delimiter.
+                  </div>
+                </div>
+              </template>
+            </v-radio>
           </v-radio-group>
 
           <!-- Format Info -->
@@ -623,7 +634,7 @@
                     or click to browse
                   </div>
                   <div class="text-caption text-medium-emphasis mt-2">
-                    Supported: CSV, JSON, CBOR (max 100 MB)
+                    Supported: CSV, JSON, CBOR, text (.txt/.tsv/.dat/.log) — max 100 MB
                   </div>
                 </template>
 
@@ -693,7 +704,7 @@
                     Nested directory structure will be preserved
                   </div>
                   <div class="text-caption text-medium-emphasis mt-2">
-                    Supported: CSV, JSON, CBOR (max 100 MB per file)
+                    Supported: CSV, JSON, CBOR, text (.txt/.tsv/.dat/.log) — max 100 MB per file
                   </div>
                 </template>
 
@@ -882,6 +893,10 @@
               <v-list-item class="px-0">
                 <template #prepend><v-icon size="small" color="secondary">mdi-file-code</v-icon></template>
                 <v-list-item-title class="text-body-2"><strong>CiRA CBOR</strong> — folder with <code>train/</code> and <code>test/</code> subfolders.</v-list-item-title>
+              </v-list-item>
+              <v-list-item class="px-0">
+                <template #prepend><v-icon size="small" color="primary">mdi-file-document-outline</v-icon></template>
+                <v-list-item-title class="text-body-2"><strong>Text file</strong> — any delimited text file (<code>.txt</code>, <code>.tsv</code>, <code>.dat</code>, <code>.log</code>). The Text Import wizard auto-detects the delimiter and lets you tweak header row / skip rows with a live preview before loading.</v-list-item-title>
               </v-list-item>
             </v-list>
           </div>
@@ -1203,6 +1218,149 @@
       </v-card>
     </v-dialog>
 
+    <!-- Text Import Dialog -->
+    <v-dialog v-model="showTextImport" max-width="820" scrollable persistent>
+      <v-card>
+        <v-card-title class="d-flex align-center">
+          <v-icon class="mr-2" color="primary">mdi-file-document-outline</v-icon>
+          Text Import
+          <v-spacer />
+          <v-btn icon variant="text" @click="cancelTextImport" :disabled="textImportLoading">
+            <v-icon>mdi-close</v-icon>
+          </v-btn>
+        </v-card-title>
+
+        <v-card-text style="max-height: 70vh;">
+          <div v-if="textImportFile" class="text-caption text-medium-emphasis mb-3">
+            <v-icon size="small" class="mr-1">mdi-file</v-icon>
+            {{ textImportFile.name }}
+            <span v-if="textImportDetectedDelimiter" class="ml-2">
+              &middot; auto-detected delimiter:
+              <code>{{ delimiterDisplay(textImportDetectedDelimiter) }}</code>
+            </span>
+          </div>
+
+          <v-row>
+            <v-col cols="12" md="6">
+              <div class="text-subtitle-2 font-weight-medium mb-2">Delimiter</div>
+              <v-radio-group
+                v-model="textImportSettings.delimiter"
+                density="compact"
+                hide-details
+                inline
+              >
+                <v-radio :value="','" label="Comma" />
+                <v-radio :value="'\t'" label="Tab" />
+                <v-radio :value="';'" label="Semicolon" />
+                <v-radio :value="' '" label="Space" />
+                <v-radio :value="'|'" label="Pipe" />
+                <v-radio :value="'other'" label="Other" />
+              </v-radio-group>
+
+              <v-text-field
+                v-if="textImportSettings.delimiter === 'other'"
+                v-model="textImportSettings.delimiterOther"
+                label="Custom delimiter (single character)"
+                maxlength="1"
+                density="compact"
+                variant="outlined"
+                class="mt-2"
+                hide-details
+              />
+            </v-col>
+
+            <v-col cols="12" md="3">
+              <v-text-field
+                v-model.number="textImportSettings.headerRow"
+                label="Header row"
+                type="number"
+                min="0"
+                density="compact"
+                variant="outlined"
+                hint="1-based. Use 0 for headerless."
+                persistent-hint
+              />
+            </v-col>
+
+            <v-col cols="12" md="3">
+              <v-text-field
+                v-model.number="textImportSettings.skipRows"
+                label="Skip N rows from top"
+                type="number"
+                min="0"
+                density="compact"
+                variant="outlined"
+                hint="Applied before the header row."
+                persistent-hint
+              />
+            </v-col>
+          </v-row>
+
+          <v-divider class="my-4" />
+
+          <div class="d-flex align-center mb-2">
+            <div class="text-subtitle-2 font-weight-medium">Preview</div>
+            <v-spacer />
+            <span class="text-caption text-medium-emphasis">
+              First {{ Math.min(20, textImportPreview.rows.length) }} data rows
+            </span>
+          </div>
+
+          <div v-if="textImportRawLines.length < 2" class="text-body-2 text-medium-emphasis pa-4 text-center">
+            Not enough data to preview.
+          </div>
+          <div v-else-if="textImportPreview.headers.length === 0" class="text-body-2 text-warning pa-4 text-center">
+            Header row is beyond the available lines. Try a smaller header row or fewer skipped rows.
+          </div>
+          <div v-else class="text-import-preview-wrap">
+            <v-table density="compact" class="text-import-preview">
+              <thead>
+                <tr>
+                  <th v-for="(h, i) in textImportPreview.headers" :key="'th-' + i">
+                    {{ h }}
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="(row, ri) in textImportPreview.rows" :key="'tr-' + ri">
+                  <td v-for="(cell, ci) in row" :key="'td-' + ri + '-' + ci">
+                    {{ cell }}
+                  </td>
+                </tr>
+              </tbody>
+            </v-table>
+          </div>
+
+          <v-alert
+            v-if="textImportError"
+            type="error"
+            variant="tonal"
+            density="compact"
+            class="mt-4"
+            closable
+            @click:close="textImportError = ''"
+          >
+            {{ textImportError }}
+          </v-alert>
+        </v-card-text>
+
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="text" @click="cancelTextImport" :disabled="textImportLoading">Cancel</v-btn>
+          <v-btn
+            color="primary"
+            variant="flat"
+            :disabled="!textImportCanImport"
+            :loading="textImportLoading"
+            @click="confirmTextImport"
+          >
+            <v-icon start>mdi-import</v-icon>
+            Import
+          </v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
+
     <!-- Delete Confirmation Dialog (Admin only) -->
     <v-dialog v-model="showDeleteDialog" max-width="450" persistent>
       <v-card>
@@ -1331,6 +1489,26 @@ const scanning = ref(false)
 const showUploadDialog = ref(false)
 const showFormatGuide = ref(false)
 
+// Text Import wizard state
+type TextDelimiterChoice = ',' | '\t' | ';' | ' ' | '|' | 'other'
+const showTextImport = ref(false)
+const textImportFile = ref<FileItem | null>(null)
+const textImportLoading = ref(false)
+const textImportError = ref('')
+const textImportSettings = ref<{
+  delimiter: TextDelimiterChoice
+  delimiterOther: string
+  headerRow: number
+  skipRows: number
+}>({
+  delimiter: ',',
+  delimiterOther: '',
+  headerRow: 1,
+  skipRows: 0,
+})
+const textImportRawLines = ref<string[]>([])
+const textImportDetectedDelimiter = ref<string>(',')
+
 const timePatternExact = [
   'time', 'timestamp', 'index',
   'time (s)', 'time(s)', 'time_s',
@@ -1357,7 +1535,7 @@ const uploadSuccess = ref('')
 const isDragging = ref(false)
 const fileInput = ref<HTMLInputElement | null>(null)
 const folderInput = ref<HTMLInputElement | null>(null)
-const allowedFileTypes = '.csv,.json,.cbor'
+const allowedFileTypes = '.csv,.json,.cbor,.txt,.tsv,.dat,.log'
 
 const folderTopLevelCount = computed(() => {
   const tops = new Set<string>()
@@ -1434,6 +1612,8 @@ const formatInfo = computed(() => {
       return 'Select a dataset folder containing training/testing subfolders. Classes are auto-detected from filenames.'
     case 'cira-cbor':
       return 'Select a dataset folder with train/test subfolders. Classes are auto-detected from filenames.'
+    case 'text':
+      return 'Pick a delimited text file (.txt, .tsv, .dat, .log). The Text Import wizard lets you tweak delimiter, header row, and skipped rows with a live preview before loading.'
     default:
       return ''
   }
@@ -1444,6 +1624,12 @@ const isCborFormat = computed(() => {
 })
 
 const isCsvFormat = computed(() => selectedFormat.value === 'csv')
+const isTextFormat = computed(() => selectedFormat.value === 'text')
+
+const TEXT_FILE_EXTS = ['.txt', '.tsv', '.dat', '.log']
+function isTextExtension(ext: string | null | undefined): boolean {
+  return !!ext && TEXT_FILE_EXTS.includes(ext.toLowerCase())
+}
 
 const isFileSelected = computed(() => {
   return (path: string) => selectedFiles.value.some(f => f.path === path)
@@ -1705,6 +1891,11 @@ function getFileIcon(ext: string | null) {
     case '.csv': return 'mdi-file-delimited'
     case '.json': return 'mdi-code-json'
     case '.cbor': return 'mdi-file-code'
+    case '.txt':
+    case '.tsv':
+    case '.dat':
+    case '.log':
+      return 'mdi-file-document-outline'
     default: return 'mdi-file'
   }
 }
@@ -1714,6 +1905,11 @@ function getFileColor(ext: string | null) {
     case '.csv': return 'success'
     case '.json': return 'info'
     case '.cbor': return 'secondary'
+    case '.txt':
+    case '.tsv':
+    case '.dat':
+    case '.log':
+      return 'primary'
     default: return 'grey'
   }
 }
@@ -1885,6 +2081,11 @@ async function handleItemClick(item: FileItem) {
   } else if (isCsvFormat.value && item.extension === '.csv') {
     // CSV multi-select mode
     toggleCsvFile(item)
+  } else if (isTextFormat.value && isTextExtension(item.extension)) {
+    // Text file — open the Text Import wizard before parsing
+    selectedFile.value = item
+    selectedFiles.value = []
+    await openTextImportDialog(item)
   } else {
     selectedFile.value = item
     selectedFiles.value = []
@@ -1976,6 +2177,147 @@ async function previewFile(item: FileItem) {
   }
 }
 
+// --- Text Import wizard -------------------------------------------------
+function delimiterCharFromChoice(choice: TextDelimiterChoice, other: string): string {
+  if (choice === 'other') return (other || '').slice(0, 1) || ','
+  return choice
+}
+
+function delimiterDisplay(ch: string): string {
+  if (ch === '\t') return '\\t'
+  if (ch === ' ') return 'space'
+  return ch
+}
+
+const textImportEffectiveDelimiter = computed(() =>
+  delimiterCharFromChoice(textImportSettings.value.delimiter, textImportSettings.value.delimiterOther)
+)
+
+const textImportPreview = computed<{ headers: string[]; rows: string[][] }>(() => {
+  const lines = textImportRawLines.value
+  const skip = Math.max(0, Math.floor(Number(textImportSettings.value.skipRows) || 0))
+  const headerRow = Math.floor(Number(textImportSettings.value.headerRow) || 0)
+  const delim = textImportEffectiveDelimiter.value
+
+  const afterSkip = lines.slice(skip)
+  if (afterSkip.length === 0) return { headers: [], rows: [] }
+
+  let headers: string[]
+  let dataLines: string[]
+
+  if (headerRow <= 0) {
+    // Headerless
+    const first = afterSkip[0].split(delim)
+    headers = first.map((_, i) => `col_${i + 1}`)
+    dataLines = afterSkip
+  } else {
+    const headerIdx = headerRow - 1
+    if (headerIdx >= afterSkip.length) return { headers: [], rows: [] }
+    headers = afterSkip[headerIdx].split(delim)
+    dataLines = afterSkip.slice(headerIdx + 1)
+  }
+
+  const rows = dataLines.slice(0, 20).map((line) => line.split(delim))
+  return { headers, rows }
+})
+
+const textImportCanImport = computed(() => {
+  if (textImportLoading.value) return false
+  if (textImportSettings.value.delimiter === 'other' && !textImportSettings.value.delimiterOther) {
+    return false
+  }
+  return textImportPreview.value.headers.length > 0
+})
+
+function delimiterChoiceFromChar(ch: string): TextDelimiterChoice {
+  switch (ch) {
+    case ',': return ','
+    case '\t': return '\t'
+    case ';': return ';'
+    case ' ': return ' '
+    case '|': return '|'
+    default: return 'other'
+  }
+}
+
+async function openTextImportDialog(item: FileItem) {
+  textImportFile.value = item
+  textImportError.value = ''
+  textImportRawLines.value = []
+  // Reset to defaults on each open so the previous file's picks don't leak.
+  textImportSettings.value = {
+    delimiter: ',',
+    delimiterOther: '',
+    headerRow: 1,
+    skipRows: 0,
+  }
+
+  try {
+    textImportLoading.value = true
+    const response = await api.post('/api/data/text-sniff', {
+      file_path: item.path,
+    })
+    textImportDetectedDelimiter.value = response.data.detected_delimiter || ','
+    textImportRawLines.value = response.data.raw_lines || []
+
+    // Pre-select the sniffed delimiter.
+    const sniffed = textImportDetectedDelimiter.value
+    const choice = delimiterChoiceFromChar(sniffed)
+    textImportSettings.value.delimiter = choice
+    if (choice === 'other') {
+      textImportSettings.value.delimiterOther = sniffed.slice(0, 1)
+    }
+    showTextImport.value = true
+  } catch (e: any) {
+    notificationStore.showError(e.response?.data?.error || 'Failed to sniff text file')
+    textImportFile.value = null
+  } finally {
+    textImportLoading.value = false
+  }
+}
+
+function cancelTextImport() {
+  showTextImport.value = false
+  textImportFile.value = null
+  textImportError.value = ''
+  textImportRawLines.value = []
+}
+
+async function confirmTextImport() {
+  if (!textImportFile.value) return
+  const delim = textImportEffectiveDelimiter.value
+  if (!delim) {
+    textImportError.value = 'Please choose a delimiter.'
+    return
+  }
+
+  try {
+    textImportLoading.value = true
+    textImportError.value = ''
+
+    const response = await api.post('/api/data/preview', {
+      file_path: textImportFile.value.path,
+      rows: 100,
+      format: 'text',
+      delimiter: delim,
+      header_row: Math.floor(Number(textImportSettings.value.headerRow) || 0),
+      skip_rows: Math.max(0, Math.floor(Number(textImportSettings.value.skipRows) || 0)),
+    })
+
+    dataPreview.value = response.data
+    notificationStore.showSuccess('Text file loaded successfully')
+    showTextImport.value = false
+    textImportFile.value = null
+    textImportRawLines.value = []
+  } catch (e: any) {
+    if (!tryShowValidationError(e)) {
+      textImportError.value = e.response?.data?.error || 'Failed to import text file'
+    }
+  } finally {
+    textImportLoading.value = false
+  }
+}
+
 async function loadMorePreview() {
   if (!dataPreview.value) return
   if (!selectedFile.value && selectedFiles.value.length === 0) return
@@ -2008,6 +2350,15 @@ async function loadMorePreview() {
     if (dataPreview.value.metadata?.is_partition_preview && selectedCategory.value) {
       requestData.category = selectedCategory.value
       requestData.label = selectedLabel.value
+    }
+
+    // Preserve Text Import wizard settings so "Load More" re-parses identically
+    // to the original import (delimiter + header/skip stay the same).
+    if (dataPreview.value.metadata?.source_format === 'text') {
+      requestData.format = 'text'
+      requestData.delimiter = dataPreview.value.metadata.delimiter
+      requestData.header_row = dataPreview.value.metadata.header_row
+      requestData.skip_rows = dataPreview.value.metadata.skip_rows
     }
 
     const response = await api.post('/api/data/preview', requestData)
@@ -2108,7 +2459,7 @@ function handleFolderSelect(event: Event) {
   const target = event.target as HTMLInputElement
   if (!target.files) return
 
-  const validExtensions = ['csv', 'json', 'cbor']
+  const validExtensions = ['csv', 'json', 'cbor', 'txt', 'tsv', 'dat', 'log']
   const maxSize = 100 * 1024 * 1024 // 100 MB
   const entries: Array<{ file: File; relative_path: string }> = []
 
@@ -2139,14 +2490,14 @@ function handleDrop(event: DragEvent) {
 }
 
 function addFiles(files: File[]) {
-  const validExtensions = ['csv', 'json', 'cbor']
+  const validExtensions = ['csv', 'json', 'cbor', 'txt', 'tsv', 'dat', 'log']
   const maxSize = 100 * 1024 * 1024 // 100 MB
 
   for (const file of files) {
     const ext = file.name.split('.').pop()?.toLowerCase() || ''
 
     if (!validExtensions.includes(ext)) {
-      uploadError.value = `Invalid file type: ${file.name}. Supported: CSV, JSON, CBOR`
+      uploadError.value = `Invalid file type: ${file.name}. Supported: CSV, JSON, CBOR, text (.txt/.tsv/.dat/.log)`
       continue
     }
 
@@ -2172,6 +2523,11 @@ function getFileTypeIcon(filename: string) {
     case 'csv': return 'mdi-file-delimited'
     case 'json': return 'mdi-code-json'
     case 'cbor': return 'mdi-file-code'
+    case 'txt':
+    case 'tsv':
+    case 'dat':
+    case 'log':
+      return 'mdi-file-document-outline'
     default: return 'mdi-file'
   }
 }
@@ -2182,6 +2538,11 @@ function getFileTypeColor(filename: string) {
     case 'csv': return 'success'
     case 'json': return 'info'
     case 'cbor': return 'secondary'
+    case 'txt':
+    case 'tsv':
+    case 'dat':
+    case 'log':
+      return 'primary'
     default: return 'grey'
   }
 }
@@ -2618,5 +2979,27 @@ onMounted(async () => {
   margin: 0;
   overflow-x: auto;
   white-space: pre;
+}
+
+.text-import-preview-wrap {
+  max-height: 340px;
+  overflow: auto;
+  border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+  border-radius: 6px;
+}
+
+.text-import-preview {
+  font-family: 'Consolas', 'Monaco', monospace;
+  font-size: 12px;
+
+  :deep(th) {
+    font-weight: 600;
+    white-space: nowrap;
+    background: rgba(var(--v-theme-surface-variant), 0.5);
+  }
+
+  :deep(td) {
+    white-space: nowrap;
+  }
 }
 </style>
