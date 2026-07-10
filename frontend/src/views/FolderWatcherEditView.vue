@@ -108,7 +108,7 @@
           <v-radio label="Headerless" value="headerless" />
         </v-radio-group>
 
-        <!-- ── Log Watcher: parse mode + optional regex ───────────────── -->
+        <!-- ── Log Watcher: parse mode + per-mode config ──────────────── -->
         <v-select
           v-model="form.parse_mode"
           :items="parseModeOptions"
@@ -117,28 +117,163 @@
           label="Parse mode"
           variant="outlined"
           density="comfortable"
-          class="mb-4"
-          hint="How each line inside a file is turned into a row"
+          class="mb-2"
+          :hint="parseModeHint"
           persistent-hint
         />
+        <div class="mb-4" />
 
-        <v-textarea
-          v-if="form.parse_mode === 'regex'"
-          v-model="form.parse_regex"
-          label="Parse regex"
-          placeholder="(?P<time>\S+)\s+temp=(?P<temperature>\d+\.\d+)\s+vib=(?P<vibration>\d+\.\d+)"
+        <!-- key_value mode: just list column names -->
+        <v-text-field
+          v-if="form.parse_mode === 'key_value'"
+          v-model="form.parse_columns"
+          label="Column names (comma-separated)"
+          placeholder="temperature, vibration, pressure"
           variant="outlined"
           density="comfortable"
-          rows="2"
-          auto-grow
           class="mb-4"
-          style="font-family: monospace;"
-          hint="Python regex with named capture groups. Each match becomes a row."
+          hint="The watcher will look for temperature=X, vibration=X, pressure=X (or : X) on each line, ignoring surrounding text."
           persistent-hint
           :rules="[
-            v => form.parse_mode !== 'regex' || (!!v && !!v.trim()) || 'Regex is required'
+            v => form.parse_mode !== 'key_value' || (!!v && !!String(v).trim()) || 'List at least one column'
           ]"
         />
+
+        <!-- regex mode: template picker + textarea -->
+        <template v-if="form.parse_mode === 'regex'">
+          <v-select
+            v-model="regexTemplate"
+            :items="regexTemplateOptions"
+            item-title="label"
+            item-value="value"
+            label="Template"
+            variant="outlined"
+            density="comfortable"
+            class="mb-3"
+            hint="Pick a starting point, then edit as needed. Choosing a template overwrites the regex below."
+            persistent-hint
+            @update:model-value="onRegexTemplateChange"
+          />
+
+          <v-textarea
+            v-model="form.parse_regex"
+            label="Parse regex"
+            placeholder="(?P<time>\S+)\s+temp=(?P<temperature>\d+\.\d+)\s+vib=(?P<vibration>\d+\.\d+)"
+            variant="outlined"
+            density="comfortable"
+            rows="2"
+            auto-grow
+            class="mb-4"
+            style="font-family: monospace;"
+            hint="Python regex with named capture groups. Each match becomes a row."
+            persistent-hint
+            :rules="[
+              v => form.parse_mode !== 'regex' || (!!v && !!v.trim()) || 'Regex is required'
+            ]"
+            @update:model-value="onRegexManualEdit"
+          />
+        </template>
+
+        <!-- ── Live sample preview panel ──────────────────────────────── -->
+        <v-expansion-panels v-model="previewPanel" class="mb-4">
+          <v-expansion-panel>
+            <v-expansion-panel-title>
+              <v-icon size="small" class="mr-2">mdi-flask-outline</v-icon>
+              Try a sample line
+            </v-expansion-panel-title>
+            <v-expansion-panel-text>
+              <v-textarea
+                v-model="form.samplePreviewText"
+                :rows="3"
+                variant="outlined"
+                density="comfortable"
+                placeholder="Paste a few lines from your log file to see how they parse..."
+                hide-details
+                class="mb-3"
+                style="font-family: monospace;"
+              />
+              <div class="d-flex align-center gap-2 mb-2">
+                <v-btn
+                  size="small"
+                  variant="tonal"
+                  color="primary"
+                  :loading="previewLoading"
+                  :disabled="!form.samplePreviewText || !form.samplePreviewText.trim()"
+                  @click="runPreview"
+                >
+                  Test parse
+                </v-btn>
+                <span v-if="previewResult" class="text-caption text-medium-emphasis">
+                  {{ previewResult.row_count }} row{{ previewResult.row_count === 1 ? '' : 's' }} parsed
+                </span>
+              </div>
+
+              <v-alert
+                v-if="previewError"
+                type="error"
+                variant="tonal"
+                density="compact"
+                class="mb-2"
+              >
+                <div class="d-flex align-center gap-2 mb-1">
+                  <v-chip
+                    v-if="previewError.error_code"
+                    size="x-small"
+                    color="error"
+                    variant="flat"
+                  >
+                    {{ previewError.error_code }}
+                  </v-chip>
+                  <strong>{{ previewError.error }}</strong>
+                </div>
+                <div v-if="previewError.hint" class="text-caption">
+                  {{ previewError.hint }}
+                </div>
+              </v-alert>
+
+              <template v-if="previewResult && !previewError">
+                <div v-if="previewResult.warnings && previewResult.warnings.length" class="mb-2">
+                  <v-chip
+                    v-for="(w, i) in previewResult.warnings"
+                    :key="i"
+                    size="x-small"
+                    color="warning"
+                    variant="tonal"
+                    class="mr-1"
+                  >
+                    {{ w }}
+                  </v-chip>
+                </div>
+                <v-table v-if="previewResult.columns.length" density="compact" class="preview-table">
+                  <thead>
+                    <tr>
+                      <th
+                        v-for="(c, i) in previewResult.columns"
+                        :key="i"
+                        class="text-left"
+                      >
+                        {{ c }}
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="(row, ri) in previewResult.rows.slice(0, 5)" :key="ri">
+                      <td v-for="(cell, ci) in row" :key="ci">
+                        {{ cell === null || cell === undefined ? '—' : cell }}
+                      </td>
+                    </tr>
+                  </tbody>
+                </v-table>
+                <div
+                  v-else
+                  class="text-caption text-medium-emphasis pa-2"
+                >
+                  No columns detected. Check the parse configuration above.
+                </div>
+              </template>
+            </v-expansion-panel-text>
+          </v-expansion-panel>
+        </v-expansion-panels>
 
         <!-- ── Log Watcher: MQTT publish sink ─────────────────────────── -->
         <v-switch
@@ -234,18 +369,120 @@ const form = ref({
   poll_interval_s: 60,
   file_glob: '*.txt',
   header_mode: 'auto' as 'auto' | 'headered' | 'headerless',
-  parse_mode: 'csv' as 'csv' | 'regex' | 'json',
+  // New watchers default to key_value; existing watchers load their saved mode
+  // in loadWatcher() so this default only matters for the "New" flow.
+  parse_mode: 'key_value' as 'csv' | 'regex' | 'json' | 'key_value',
   parse_regex: '',
+  parse_columns: '',
   mqtt_enabled: false,
   mqtt_topic: 'alerts/{name}',
   daily_csv_enabled: false,
+  // Not persisted — just used by the "Try a sample line" panel
+  samplePreviewText: '',
 })
 
 const parseModeOptions = [
-  { value: 'csv',   label: 'CSV (comma-separated rows)' },
-  { value: 'regex', label: 'Regex (named groups per line)' },
-  { value: 'json',  label: 'JSON (one JSON object per line)' },
+  { value: 'key_value', label: 'Key = Value pairs (recommended)' },
+  { value: 'regex',     label: 'Regex (named groups per line)' },
+  { value: 'json',      label: 'JSON — one object per line' },
+  { value: 'csv',       label: 'CSV — headered rows' },
 ]
+
+const parseModeHints: Record<string, string> = {
+  key_value: "Each line's key=value pairs are extracted by column name. Simplest for factory logs.",
+  regex:     'Full regex power with named capture groups. Best when the format is unusual.',
+  json:      'Each line must be a valid JSON object. Best when logs are already structured.',
+  csv:       "Each file's first row is the header, subsequent rows are records.",
+}
+const parseModeHint = computed(() =>
+  parseModeHints[form.value.parse_mode] || parseModeHints.key_value
+)
+
+// ── Regex templates ──────────────────────────────────────────────────────
+// Picking one auto-fills the parse_regex textarea. If the user then edits
+// the textarea, regexTemplate flips back to '' (Custom).
+const regexTemplate = ref<string>('')
+const regexTemplateOptions = [
+  { value: '',          label: 'Custom (write your own)' },
+  { value: 'kv',        label: 'Key = Value pairs (auto-fill from column names)' },
+  { value: 'apache',    label: 'Apache-style access log' },
+  { value: 'syslog',    label: 'Syslog line' },
+  { value: 'csv_line',  label: 'CSV-like (comma-separated per line)' },
+  { value: 'space_sep', label: 'Space-separated numbers' },
+]
+const regexTemplates: Record<string, string> = {
+  kv:        '(?P<temperature>-?\\d+\\.?\\d*)',
+  apache:    '^(?P<ip>\\S+)\\s+\\S+\\s+(?P<user>\\S+)\\s+\\[(?P<time>[^\\]]+)\\]\\s+"(?P<method>\\S+)\\s+(?P<path>\\S+)\\s+HTTP/[\\d.]+"\\s+(?P<status>\\d+)\\s+(?P<bytes>\\d+)',
+  syslog:    '^(?P<time>\\S+\\s+\\S+\\s+\\S+)\\s+(?P<host>\\S+)\\s+(?P<process>\\S+?)(\\[(?P<pid>\\d+)\\])?:\\s+(?P<message>.*)$',
+  csv_line:  '^(?P<col1>[^,]*),(?P<col2>[^,]*),(?P<col3>[^,]*)',
+  space_sep: '^(?P<col1>\\S+)\\s+(?P<col2>\\S+)\\s+(?P<col3>\\S+)',
+}
+// Programmatic-write guard for regex textarea (mirrors the folder-autofill
+// pattern above) — prevents the template picker from tripping onRegexManualEdit
+// via its @update:model-value handler.
+let regexAutofilling = false
+function onRegexTemplateChange(v: string) {
+  if (!v) return  // Custom → don't touch textarea
+  regexAutofilling = true
+  form.value.parse_regex = regexTemplates[v] || ''
+  nextTick(() => { regexAutofilling = false })
+}
+function onRegexManualEdit() {
+  if (regexAutofilling) return
+  if (regexTemplate.value !== '') regexTemplate.value = ''
+}
+
+// ── Live sample preview ──────────────────────────────────────────────────
+const previewPanel = ref<number | undefined>(undefined)
+const previewLoading = ref(false)
+const previewResult = ref<{
+  columns: string[]
+  rows: any[][]
+  row_count: number
+  skipped_lines: number
+  warnings: string[]
+} | null>(null)
+const previewError = ref<{ error: string; error_code?: string; hint?: string } | null>(null)
+
+async function runPreview() {
+  previewError.value = null
+  previewResult.value = null
+  try {
+    previewLoading.value = true
+    const payload: Record<string, any> = {
+      parse_mode: form.value.parse_mode,
+      sample_content: form.value.samplePreviewText || '',
+    }
+    if (form.value.parse_mode === 'regex') payload.parse_regex = form.value.parse_regex
+    if (form.value.parse_mode === 'key_value') payload.parse_columns = form.value.parse_columns
+    if (form.value.parse_mode === 'csv') payload.header_mode = form.value.header_mode
+    const res = await api.post('/api/folder-watchers/preview-parse', payload)
+    previewResult.value = res.data
+  } catch (e: any) {
+    const data = e.response?.data || {}
+    previewError.value = {
+      error: data.error || 'Preview failed',
+      error_code: data.error_code,
+      hint: data.hint,
+    }
+  } finally {
+    previewLoading.value = false
+  }
+}
+
+// Any parse-config change invalidates the previous preview result.
+watch(
+  () => [
+    form.value.parse_mode,
+    form.value.parse_regex,
+    form.value.parse_columns,
+    form.value.header_mode,
+  ],
+  () => {
+    previewResult.value = null
+    previewError.value = null
+  }
+)
 
 const dailyCsvHint = computed(() =>
   form.value.daily_csv_enabled
@@ -311,11 +548,15 @@ const loadWatcher = async () => {
       poll_interval_s: w.poll_interval_s,
       file_glob: w.file_glob,
       header_mode: w.header_mode,
+      // Existing watchers keep their saved mode (csv/regex/json/key_value).
+      // Only NEW watchers get the key_value default in the form ref above.
       parse_mode: (w.parse_mode as any) || 'csv',
       parse_regex: w.parse_regex || '',
+      parse_columns: w.parse_columns || '',
       mqtt_enabled: !!w.mqtt_enabled,
       mqtt_topic: w.mqtt_topic || 'alerts/{name}',
       daily_csv_enabled: !!w.daily_csv_enabled,
+      samplePreviewText: '',
     }
   } catch (e: any) {
     notify.showError(e.response?.data?.error || 'Watcher not found')
@@ -341,6 +582,12 @@ const save = async () => {
     if (payload.parse_mode !== 'regex') {
       payload.parse_regex = null
     }
+    // Same for parse_columns: only relevant in key_value mode.
+    if (payload.parse_mode !== 'key_value') {
+      payload.parse_columns = null
+    }
+    // samplePreviewText is UI-only — never sent to the backend.
+    delete payload.samplePreviewText
     // Same for MQTT topic: only send when the sink is on. Empty strings would
     // otherwise trip the "required when mqtt_enabled" validator on a two-step
     // edit that toggled off in the same submit.
@@ -415,3 +662,12 @@ onMounted(async () => {
   }
 })
 </script>
+
+<style scoped>
+.preview-table {
+  border: 1px solid rgb(var(--v-theme-outline-variant, 224, 224, 224));
+  border-radius: 4px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+</style>

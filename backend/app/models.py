@@ -170,6 +170,7 @@ def init_db(db_path: str):
                 header_mode TEXT NOT NULL DEFAULT 'auto',
                 parse_mode TEXT NOT NULL DEFAULT 'csv',
                 parse_regex TEXT,
+                parse_columns TEXT,
                 mqtt_enabled INTEGER NOT NULL DEFAULT 0,
                 mqtt_topic TEXT,
                 daily_csv_enabled INTEGER NOT NULL DEFAULT 0,
@@ -189,6 +190,7 @@ def init_db(db_path: str):
         for _alter in (
             "ALTER TABLE folder_watchers ADD COLUMN parse_mode TEXT NOT NULL DEFAULT 'csv'",
             "ALTER TABLE folder_watchers ADD COLUMN parse_regex TEXT",
+            "ALTER TABLE folder_watchers ADD COLUMN parse_columns TEXT",
             "ALTER TABLE folder_watchers ADD COLUMN mqtt_enabled INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE folder_watchers ADD COLUMN mqtt_topic TEXT",
             "ALTER TABLE folder_watchers ADD COLUMN daily_csv_enabled INTEGER NOT NULL DEFAULT 0",
@@ -1465,6 +1467,7 @@ class FolderWatcher:
     _ALLOWED_UPDATE_FIELDS = (
         'name', 'input_folder', 'output_folder', 'poll_interval_s',
         'file_glob', 'header_mode', 'parse_mode', 'parse_regex',
+        'parse_columns',
         'mqtt_enabled', 'mqtt_topic', 'daily_csv_enabled',
         'status', 'last_run_at', 'last_error',
         'files_processed', 'rows_processed',
@@ -1477,6 +1480,7 @@ class FolderWatcher:
         header_mode = kwargs.get('header_mode') or 'auto'
         parse_mode = kwargs.get('parse_mode') or 'csv'
         parse_regex = kwargs.get('parse_regex')
+        parse_columns = kwargs.get('parse_columns')
         mqtt_enabled = 1 if kwargs.get('mqtt_enabled') else 0
         mqtt_topic = kwargs.get('mqtt_topic')
         daily_csv_enabled = 1 if kwargs.get('daily_csv_enabled') else 0
@@ -1486,14 +1490,14 @@ class FolderWatcher:
                 INSERT INTO folder_watchers
                 (user_id, name, endpoint_id, input_folder, output_folder,
                  poll_interval_s, file_glob, header_mode,
-                 parse_mode, parse_regex,
+                 parse_mode, parse_regex, parse_columns,
                  mqtt_enabled, mqtt_topic, daily_csv_enabled,
                  status, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'stopped', ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'stopped', ?)
             ''', (
                 user_id, name, endpoint_id, input_folder, output_folder,
                 poll_interval_s, file_glob, header_mode,
-                parse_mode, parse_regex,
+                parse_mode, parse_regex, parse_columns,
                 mqtt_enabled, mqtt_topic, daily_csv_enabled,
                 datetime.utcnow().isoformat()
             ))

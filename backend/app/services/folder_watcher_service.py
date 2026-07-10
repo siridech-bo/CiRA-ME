@@ -203,6 +203,9 @@ class _WatcherWorker(threading.Thread):
             column_names, rows_raw = _parse_regex(path, watcher.get('parse_regex') or '')
         elif parse_mode == 'json':
             column_names, rows_raw = _parse_json(path)
+        elif parse_mode == 'key_value':
+            columns_split = _split_columns(watcher.get('parse_columns') or '')
+            column_names, rows_raw = _parse_key_value(path, columns_split)
         else:
             column_names, rows_raw = _parse_csv(path, watcher.get('header_mode', 'auto'))
 
@@ -493,6 +496,203 @@ def _parse_json(path: str):
             if row:
                 rows.append(row)
     return seen_columns, rows
+
+
+def _split_columns(raw: str) -> List[str]:
+    """Split a comma-separated `parse_columns` string into a list of names,
+    stripping whitespace and dropping empty entries."""
+    if not raw:
+        return []
+    return [c.strip() for c in str(raw).split(',') if c.strip()]
+
+
+def _parse_key_value(path: str, columns: List[str]):
+    """Key = Value parser (file variant). See _parse_key_value_content for
+    the actual matching logic; this wrapper just reads the file."""
+    if not columns:
+        return [], []
+    with open(path, 'r', encoding='utf-8', errors='replace') as f:
+        content = f.read()
+    col_names, rows = _parse_key_value_content(content, columns)
+    # Convert numeric-row-of-floats format into a List[Dict] to match the
+    # signature of the other file parsers, which _process_file consumes.
+    dict_rows: List[dict] = []
+    import math
+    for row in rows:
+        d = {}
+        for i, name in enumerate(col_names):
+            if i < len(row):
+                v = row[i]
+                # Drop NaN so downstream _to_float defaults them to 0.0
+                if not (isinstance(v, float) and math.isnan(v)):
+                    d[name] = v
+        if d:
+            dict_rows.append(d)
+    return col_names, dict_rows
+
+
+# ---------------------------------------------------------------------------
+# Content-based parsers (used by the preview endpoint) — take raw text
+# instead of a file path so we can test parse configs before saving.
+# Return (columns: List[str], rows: List[List[float]]) — matrix form, not
+# dict-of-rows — since the preview UI wants a flat table with NaNs preserved.
+# ---------------------------------------------------------------------------
+
+def _parse_key_value_content(content: str, columns: List[str]):
+    """Extract key=value / key:value pairs from each line.
+
+    Skips lines where NO column matched. Missing columns for a row get NaN.
+    Common separators supported: `=`, `:`, `: `. Column matching is
+    case-insensitive; unit suffixes after the number (e.g. `45.32°C`,
+    `0.87g`) are tolerated because we only anchor on the leading number.
+    """
+    if not columns:
+        return [], []
+    patterns = {
+        col: re.compile(
+            rf'\b{re.escape(col)}\s*[=:]\s*(-?\d+\.?\d*)',
+            re.IGNORECASE,
+        )
+        for col in columns
+    }
+    rows: List[List[float]] = []
+    for line in content.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        row: List[float] = []
+        matched = 0
+        for col in columns:
+            m = patterns[col].search(line)
+            if m:
+                try:
+                    row.append(float(m.group(1)))
+                    matched += 1
+                    continue
+                except ValueError:
+                    pass
+            row.append(float('nan'))
+        if matched > 0:
+            rows.append(row)
+    return list(columns), rows
+
+
+def _parse_regex_content(content: str, pattern: str):
+    """Regex parser, string-in variant. Same semantics as _parse_regex."""
+    if not pattern:
+        return [], []
+    compiled = re.compile(pattern)
+    ordered_names = [
+        n for n, i in sorted(compiled.groupindex.items(), key=lambda x: x[1])
+    ]
+    if not ordered_names:
+        return [], []
+    rows: List[List[float]] = []
+    seen_columns: List[str] = []
+    seen_set = set()
+    for line in content.splitlines():
+        line = line.rstrip('\r\n')
+        if not line:
+            continue
+        m = compiled.search(line)
+        if not m:
+            continue
+        row_dict = {}
+        for name in ordered_names:
+            v = m.group(name) if name in m.groupdict() else None
+            if v is None:
+                continue
+            fv = _try_float(v)
+            if fv is None:
+                continue
+            row_dict[name] = fv
+            if name not in seen_set:
+                seen_set.add(name)
+                seen_columns.append(name)
+        if row_dict:
+            # Materialize with the columns we've seen so far — later rows may
+            # widen the set, so pad missing columns with NaN at return time.
+            rows.append(row_dict)
+    # Materialize into a rectangular matrix using the union of seen columns.
+    matrix: List[List[float]] = []
+    for row_dict in rows:
+        matrix.append([
+            row_dict.get(c, float('nan')) for c in seen_columns
+        ])
+    return seen_columns, matrix
+
+
+def _parse_json_content(content: str):
+    """JSON-lines parser, string-in variant. Same semantics as _parse_json."""
+    row_dicts: List[dict] = []
+    seen_columns: List[str] = []
+    seen_set = set()
+    for line in content.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(obj, dict):
+            continue
+        row = {}
+        for k, v in obj.items():
+            fv = _try_float(v)
+            if fv is None:
+                continue
+            key = str(k)
+            row[key] = fv
+            if key not in seen_set:
+                seen_set.add(key)
+                seen_columns.append(key)
+        if row:
+            row_dicts.append(row)
+    matrix: List[List[float]] = []
+    for row in row_dicts:
+        matrix.append([row.get(c, float('nan')) for c in seen_columns])
+    return seen_columns, matrix
+
+
+def _parse_csv_content(content: str, header_mode: str):
+    """CSV parser, string-in variant. Same semantics as _parse_csv."""
+    lines = content.splitlines()
+    if not lines:
+        return [], []
+    first_line = lines[0].rstrip('\r\n')
+    parts = first_line.split(',')
+    if header_mode == 'auto':
+        is_headered = bool(parts) and not all(_is_float(p) for p in parts)
+    elif header_mode == 'headered':
+        is_headered = True
+    else:
+        is_headered = False
+
+    if is_headered:
+        column_names = [p.strip() or f'col_{i}' for i, p in enumerate(parts)]
+        data_lines = lines[1:]
+    else:
+        column_names = [f'col_{i}' for i in range(len(parts))]
+        data_lines = lines
+
+    rows: List[List[float]] = []
+    for line in data_lines:
+        line = line.rstrip('\r\n')
+        if not line:
+            continue
+        vals = line.split(',')
+        try:
+            floats = [float(v) for v in vals]
+        except ValueError:
+            continue
+        # Pad / truncate to header width so the matrix stays rectangular
+        if len(floats) < len(column_names):
+            floats = floats + [float('nan')] * (len(column_names) - len(floats))
+        elif len(floats) > len(column_names):
+            floats = floats[:len(column_names)]
+        rows.append(floats)
+    return column_names, rows
 
 
 # ---------------------------------------------------------------------------

@@ -19,11 +19,29 @@ folder_watchers_bp = Blueprint('folder_watchers', __name__)
 _MUTABLE_FIELDS = (
     'name', 'input_folder', 'output_folder',
     'poll_interval_s', 'file_glob', 'header_mode',
-    'parse_mode', 'parse_regex',
+    'parse_mode', 'parse_regex', 'parse_columns',
     'mqtt_enabled', 'mqtt_topic', 'daily_csv_enabled',
 )
 _VALID_HEADER_MODES = ('auto', 'headered', 'headerless')
-_VALID_PARSE_MODES = ('csv', 'regex', 'json')
+_VALID_PARSE_MODES = ('csv', 'regex', 'json', 'key_value')
+
+# Preview endpoint caps — small enough that a rogue caller can't chew through
+# CPU or memory, big enough that a real log file's first hundred lines fit.
+_PREVIEW_SAMPLE_MAX_BYTES = 4096
+_PREVIEW_MAX_ROWS = 100
+
+
+def _validate_parse_columns(raw) -> tuple[str | None, str | None]:
+    """Return (normalized_string, error_message).
+    Empty / all-whitespace / no valid column names → error."""
+    if raw is None:
+        return None, 'List at least one column name (comma-separated) for key_value parse mode.'
+    if not isinstance(raw, str):
+        return None, 'parse_columns must be a comma-separated string'
+    cols = [c.strip() for c in raw.split(',') if c.strip()]
+    if not cols:
+        return None, 'List at least one column name (comma-separated) for key_value parse mode.'
+    return ', '.join(cols), None
 
 
 def _serialize(watcher: dict) -> dict:
@@ -121,6 +139,20 @@ def create_watcher():
     else:
         parse_regex = None  # ignore any incoming regex for non-regex modes
 
+    # ── Log Watcher parse_columns (key_value mode) ────────────────────────
+    parse_columns = data.get('parse_columns')
+    if parse_mode == 'key_value':
+        normalized, err = _validate_parse_columns(parse_columns)
+        if err:
+            return jsonify({
+                'error': err,
+                'error_code': 'PARSE_COLUMNS_REQUIRED',
+                'hint': 'List at least one column name (comma-separated) for key_value parse mode.',
+            }), 400
+        parse_columns = normalized
+    else:
+        parse_columns = None  # ignore for non-key_value modes
+
     # ── MQTT publish sink ─────────────────────────────────────────────────
     mqtt_enabled = bool(data.get('mqtt_enabled'))
     mqtt_topic = (data.get('mqtt_topic') or '').strip() or None
@@ -141,6 +173,7 @@ def create_watcher():
         header_mode=header_mode,
         parse_mode=parse_mode,
         parse_regex=parse_regex,
+        parse_columns=parse_columns,
         mqtt_enabled=mqtt_enabled,
         mqtt_topic=mqtt_topic,
         daily_csv_enabled=daily_csv_enabled,
@@ -224,6 +257,28 @@ def update_watcher(watcher_id):
             re.compile(eff_regex)
         except re.error as e:
             return jsonify({'error': f'parse_regex is not a valid Python regex: {e}'}), 400
+
+    # parse_columns — normalize + validate against effective parse_mode.
+    if 'parse_columns' in updates:
+        pc = updates['parse_columns']
+        if pc is not None and not isinstance(pc, str):
+            return jsonify({'error': 'parse_columns must be a string'}), 400
+        # Normalize to trimmed comma-joined form (or None if empty)
+        if pc is None:
+            updates['parse_columns'] = None
+        else:
+            cols = [c.strip() for c in pc.split(',') if c.strip()]
+            updates['parse_columns'] = ', '.join(cols) if cols else None
+
+    if effective_parse_mode == 'key_value':
+        eff_cols = updates.get('parse_columns', watcher.get('parse_columns'))
+        _, err = _validate_parse_columns(eff_cols)
+        if err:
+            return jsonify({
+                'error': err,
+                'error_code': 'PARSE_COLUMNS_REQUIRED',
+                'hint': 'List at least one column name (comma-separated) for key_value parse mode.',
+            }), 400
 
     # MQTT enable / topic — same "effective post-patch" gate as regex.
     if 'mqtt_enabled' in updates:
@@ -427,4 +482,114 @@ def get_file_content(watcher_id, kind, filename):
         'size': size,
         'content': content,
         'truncated': truncated,
+    })
+
+
+# ---------------------------------------------------------------------------
+# Preview parse — no side effects. Lets the user paste a sample line and see
+# how the current parse config would extract rows before saving the watcher.
+# ---------------------------------------------------------------------------
+
+@folder_watchers_bp.route('/preview-parse', methods=['POST'])
+@login_required
+def preview_parse():
+    """Dry-run the parse layer against a sample string. No file I/O, no DB
+    writes. Returns detected columns + up to _PREVIEW_MAX_ROWS parsed rows
+    with NaN replaced by null.
+    """
+    import math
+    data = request.get_json(silent=True) or {}
+    parse_mode = (data.get('parse_mode') or 'key_value').strip().lower()
+    if parse_mode not in _VALID_PARSE_MODES:
+        return jsonify({
+            'error': f'parse_mode must be one of {_VALID_PARSE_MODES}',
+            'error_code': 'INVALID_PARSE_MODE',
+        }), 400
+
+    sample_content = data.get('sample_content') or ''
+    if not isinstance(sample_content, str):
+        return jsonify({'error': 'sample_content must be a string'}), 400
+    if len(sample_content) > _PREVIEW_SAMPLE_MAX_BYTES:
+        sample_content = sample_content[:_PREVIEW_SAMPLE_MAX_BYTES]
+
+    warnings: list[str] = []
+    columns: list[str] = []
+    rows: list[list] = []
+
+    total_lines = sum(1 for ln in sample_content.splitlines() if ln.strip())
+
+    try:
+        if parse_mode == 'regex':
+            pattern = data.get('parse_regex') or ''
+            if not str(pattern).strip():
+                return jsonify({
+                    'error': 'parse_regex is required for regex mode',
+                    'error_code': 'INVALID_REGEX',
+                    'hint': 'Provide a Python regex with named capture groups.',
+                }), 400
+            try:
+                re.compile(pattern)
+            except re.error:
+                return jsonify({
+                    'error': 'Invalid regex',
+                    'error_code': 'INVALID_REGEX',
+                    'hint': 'Check your named-capture groups syntax.',
+                }), 400
+            columns, rows = folder_watcher_service._parse_regex_content(
+                sample_content, pattern
+            )
+        elif parse_mode == 'json':
+            columns, rows = folder_watcher_service._parse_json_content(sample_content)
+        elif parse_mode == 'key_value':
+            raw_cols = data.get('parse_columns') or ''
+            cols_list = [c.strip() for c in str(raw_cols).split(',') if c.strip()]
+            if not cols_list:
+                return jsonify({
+                    'error': 'List at least one column name (comma-separated) for key_value parse mode.',
+                    'error_code': 'PARSE_COLUMNS_REQUIRED',
+                    'hint': 'List at least one column name (comma-separated) for key_value parse mode.',
+                }), 400
+            columns, rows = folder_watcher_service._parse_key_value_content(
+                sample_content, cols_list
+            )
+        else:  # csv
+            header_mode = data.get('header_mode') or 'auto'
+            if header_mode not in _VALID_HEADER_MODES:
+                header_mode = 'auto'
+            columns, rows = folder_watcher_service._parse_csv_content(
+                sample_content, header_mode
+            )
+    except Exception as e:
+        logger.exception('preview_parse failed')
+        return jsonify({
+            'error': f'Preview failed: {e}',
+            'error_code': 'PREVIEW_FAILED',
+        }), 500
+
+    # Cap the output row count so a huge sample can't blow up the response.
+    if len(rows) > _PREVIEW_MAX_ROWS:
+        rows = rows[:_PREVIEW_MAX_ROWS]
+
+    # Replace NaN with None (→ JSON null) so the frontend renders a clean "—"
+    # instead of the browser turning NaN into a JSON parse error.
+    def _safe(v):
+        if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+            return None
+        return v
+
+    safe_rows = [[_safe(v) for v in row] for row in rows]
+
+    skipped_lines = max(0, total_lines - len(rows))
+    if skipped_lines > 0:
+        warnings.append(
+            f'Skipped {skipped_lines} line{"s" if skipped_lines != 1 else ""} '
+            f'that did not parse'
+        )
+
+    return jsonify({
+        'columns': list(columns),
+        'rows': safe_rows,
+        'row_count': len(safe_rows),
+        'skipped_lines': skipped_lines,
+        'warnings': warnings,
     })
