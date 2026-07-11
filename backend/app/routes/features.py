@@ -208,33 +208,37 @@ def get_llm_status():
         })
 
 
-@features_bp.route('/extract', methods=['POST'])
-@login_required
-def extract_features():
-    """Extract features from windowed data.
+def _do_extract(payload: dict) -> dict:
+    """Synchronous body of the /extract handler.
 
-    F4: If a project_id is supplied and the project has a feature_template,
-    ONLY the template's features are extracted, preserving order. This
-    stabilizes the ME-LAB / App Builder payload contract across retrainings.
-    Persists a feature_sessions row on success.
+    Runs the tsfresh + DSP feature extractor, persists a feature_sessions row
+    when project_id is supplied, and returns the extractor's result dict.
+
+    Raises FeatureExtractionError on empty results and re-raises anything the
+    extractor itself throws. Called from the queue worker (via
+    :func:`app.services.feature_job_queue._run_extraction`) so it MUST NOT
+    reference ``flask.request`` — everything it needs is in ``payload``.
+
+    Expected payload keys:
+      session_id (required)
+      features               — list[str] | None (None means all)
+      include_tsfresh        — bool, default True
+      include_dsp            — bool, default True
+      project_id             — int/str | None
+      _current_user_id       — int | None (passed by handler so worker can
+                                            do the F4 ownership check)
     """
-    data = request.get_json()
-
-    if not data:
-        return jsonify({'error': 'No data provided'}), 400
-
-    session_id = data.get('session_id')
-    selected_features = data.get('features', None)  # None means all features
-    include_tsfresh = data.get('include_tsfresh', True)
-    include_dsp = data.get('include_dsp', True)
-    project_id = data.get('project_id')
+    session_id = payload.get('session_id')
+    selected_features = payload.get('features', None)
+    include_tsfresh = payload.get('include_tsfresh', True)
+    include_dsp = payload.get('include_dsp', True)
+    project_id = payload.get('project_id')
+    current_user_id = payload.get('_current_user_id')
 
     if not session_id:
-        return jsonify({'error': 'Session ID required'}), 400
+        raise ValueError('Session ID required')
 
-    # F4: if the project has a feature template, override the request-supplied
-    # feature list with the template. Template wins so a retrained model always
-    # gets the same feature contract.
+    # F4: template wins so a retrained model always gets the same feature contract.
     template = None
     if project_id:
         try:
@@ -244,54 +248,141 @@ def extract_features():
         except Exception:
             pass
 
-    try:
-        extractor = FeatureExtractor()
-        result = extractor.extract(
-            session_id,
-            selected_features=selected_features,
-            include_tsfresh=include_tsfresh,
-            include_dsp=include_dsp
+    extractor = FeatureExtractor()
+    result = extractor.extract(
+        session_id,
+        selected_features=selected_features,
+        include_tsfresh=include_tsfresh,
+        include_dsp=include_dsp
+    )
+
+    if result.get('num_features', 0) == 0:
+        raise FeatureExtractionError(
+            'No features were extracted. This may happen if the data has too few samples or all values are constant. '
+            'Try recording with longer duration or higher sample rate, or select different features.'
         )
 
-        if result.get('num_features', 0) == 0:
-            return jsonify({
-                'error': 'No features were extracted. This may happen if the data has too few samples or all values are constant. '
-                         'Try recording with longer duration or higher sample rate, or select different features.',
-                'num_windows': result.get('num_windows', 0),
-                'session_id': result.get('session_id')
-            }), 400
+    # F4: persist feature_sessions row
+    if project_id and current_user_id is not None:
+        try:
+            pid = int(project_id)
+            proj = Project.get_by_id(pid)
+            if proj and proj.get('user_id') == current_user_id:
+                wins = WindowedSession.get_by_project(pid)
+                win_id = wins[0]['id'] if wins else None
+                if win_id:
+                    FeatureSession.create(
+                        project_id=pid,
+                        windowed_session_id=win_id,
+                        method='tsfresh_dsp' if include_tsfresh and include_dsp else ('tsfresh' if include_tsfresh else 'dsp'),
+                        feature_names=result.get('feature_names', []),
+                        num_features=result.get('num_features'),
+                        selection={'template_version': template.get('version') if template else None},
+                    )
+                    Project.touch(pid, 'features')
+        except Exception as e:
+            logger.warning(f"[F4] Persisting feature state failed: {e}")
 
-        # F4: persist feature_sessions row
-        if project_id:
-            try:
-                pid = int(project_id)
-                proj = Project.get_by_id(pid)
-                if proj and proj.get('user_id') == request.current_user['id']:
-                    # Find the most recent windowed_session row for this project
-                    wins = WindowedSession.get_by_project(pid)
-                    win_id = wins[0]['id'] if wins else None
-                    if win_id:
-                        FeatureSession.create(
-                            project_id=pid,
-                            windowed_session_id=win_id,
-                            method='tsfresh_dsp' if include_tsfresh and include_dsp else ('tsfresh' if include_tsfresh else 'dsp'),
-                            feature_names=result.get('feature_names', []),
-                            num_features=result.get('num_features'),
-                            selection={'template_version': template.get('version') if template else None},
-                        )
-                        Project.touch(pid, 'features')
-            except Exception as e:
-                logger.warning(f"[F4] Persisting feature state failed: {e}")
+    if template:
+        result['feature_template_used'] = True
+        result['feature_template_version'] = template.get('version')
 
-        # Report template use back to frontend so the UI can badge it
-        if template:
-            result['feature_template_used'] = True
-            result['feature_template_version'] = template.get('version')
+    return result
 
-        return jsonify(result)
-    except Exception as e:
-        logger.error(f"Feature extraction error: {e}")
-        return jsonify({'error': str(e)}), 400
+
+class FeatureExtractionError(Exception):
+    """Raised by _do_extract when the extractor returns zero features."""
+    pass
+
+
+@features_bp.route('/extract', methods=['POST'])
+@login_required
+def extract_features():
+    """Enqueue an async feature-extraction job.
+
+    Was a synchronous endpoint that blocked Flask workers for tens of seconds
+    under load; now returns 202 with a job id. Poll GET /extract/<job_id> for
+    status; DELETE /extract/<job_id> to cancel.
+
+    Body: same as the old sync endpoint (session_id, features, include_tsfresh,
+    include_dsp, project_id).
+    """
+    from ..services.feature_job_queue import feature_job_queue
+
+    data = request.get_json()
+    if not data:
+        return jsonify({'error': 'No data provided'}), 400
+
+    if not data.get('session_id'):
+        return jsonify({'error': 'Session ID required'}), 400
+
+    # Attach user id so the worker (which has no flask.request) can do the F4
+    # ownership check without hitting request-local state.
+    payload = dict(data)
+    payload['_current_user_id'] = request.current_user['id']
+
+    job_id = feature_job_queue.submit(payload, user_id=request.current_user['id'])
+    queue_position = feature_job_queue.queue_position(job_id)
+    estimated_wait_seconds = feature_job_queue.estimate_wait_seconds(job_id)
+
+    return jsonify({
+        'job_id': job_id,
+        'status': 'queued',
+        'queue_position': queue_position,
+        'estimated_wait_seconds': estimated_wait_seconds,
+    }), 202
+
+
+@features_bp.route('/extract/<job_id>', methods=['GET'])
+@login_required
+def get_extract_job(job_id):
+    """Poll status for an async feature-extraction job."""
+    from ..services.feature_job_queue import feature_job_queue
+
+    status = feature_job_queue.get_status(job_id)
+    if status is None:
+        return jsonify({'error': 'Unknown job'}), 404
+
+    # Compute elapsed seconds since submission. Frontend uses this for the
+    # "waiting 45s..." hint.
+    import time as _time
+    submitted_at = status.get('submitted_at') or _time.time()
+    elapsed = int(_time.time() - submitted_at)
+
+    out = {
+        'status': status['status'],
+        'elapsed_seconds': elapsed,
+    }
+    if status['status'] == 'queued':
+        out['queue_position'] = status.get('queue_position', 0)
+        out['estimated_wait_seconds'] = feature_job_queue.estimate_wait_seconds(job_id)
+    if status['status'] == 'done':
+        out['features'] = status.get('features')
+    if status['status'] == 'error':
+        # Distinguish "extractor returned zero features" (client error) from
+        # everything else — matches the old sync handler's 400 semantics but
+        # over 200 since this is a poll response.
+        out['error'] = status.get('error') or 'Feature extraction failed'
+
+    return jsonify(out)
+
+
+@features_bp.route('/extract/<job_id>', methods=['DELETE'])
+@login_required
+def cancel_extract_job(job_id):
+    """Cancel a queued extraction (best-effort for running jobs)."""
+    from ..services.feature_job_queue import feature_job_queue
+
+    ok, reason = feature_job_queue.cancel(job_id)
+    if reason == 'unknown_job':
+        return jsonify({'error': 'Unknown job'}), 404
+    if ok:
+        # cancelled or noop_already_done — both are user-visible successes.
+        return jsonify({'status': 'cancelled' if reason == 'cancelled' else 'noop'})
+    # cannot_cancel_running — job kept going, but we flagged cancel_requested
+    # so the result will be dropped. Return 200 with a hint so the UI can stop
+    # polling.
+    return jsonify({'status': 'noop', 'reason': reason})
 
 
 @features_bp.route('/recommend', methods=['POST'])

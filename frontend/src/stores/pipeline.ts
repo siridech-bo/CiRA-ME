@@ -266,9 +266,15 @@ export const usePipelineStore = defineStore('pipeline', () => {
     }
   }
 
-  async function extractFeatures(features?: string[]) {
+  /**
+   * Async feature extraction. POST /extract returns 202 + job_id; the caller
+   * polls via `pollExtractionJob`. This helper just kicks the job off — the
+   * view is expected to handle the polling loop so it can render queue
+   * position, elapsed time, and a cancel button.
+   */
+  async function submitExtractionJob(features?: string[]) {
     if (!windowedSession.value) {
-      return { success: false, error: 'No windowed data' }
+      return { success: false as const, error: 'No windowed data' }
     }
 
     try {
@@ -285,16 +291,53 @@ export const usePipelineStore = defineStore('pipeline', () => {
         project_id: projectId.value || undefined
       })
 
-      featureSession.value = response.data
-      currentStep.value = 'training'
-
-      return { success: true, data: response.data }
+      // Backend returns { job_id, status, queue_position, estimated_wait_seconds }.
+      return { success: true as const, data: response.data }
     } catch (e: any) {
-      error.value = e.response?.data?.error || 'Failed to extract features'
-      return { success: false, error: error.value }
+      error.value = e.response?.data?.error || 'Failed to submit feature extraction'
+      return { success: false as const, error: error.value }
     } finally {
       loading.value = false
     }
+  }
+
+  /**
+   * Kept for backwards compatibility with callers that expect the old
+   * synchronous shape. Wraps submit + polling internally. Views that need to
+   * render queue status should call `submitExtractionJob` directly.
+   */
+  async function extractFeatures(features?: string[]) {
+    const submitResult = await submitExtractionJob(features)
+    if (!submitResult.success) return submitResult
+
+    const jobId = submitResult.data.job_id
+    // Poll until terminal state.
+    // Safety cap: 20 min at 2s intervals = 600 polls.
+    for (let i = 0; i < 600; i++) {
+      await new Promise((r) => setTimeout(r, 2000))
+      try {
+        const s = await api.get(`/api/features/extract/${jobId}`)
+        const status = s.data.status
+        if (status === 'done') {
+          featureSession.value = s.data.features
+          currentStep.value = 'training'
+          return { success: true, data: s.data.features }
+        }
+        if (status === 'error') {
+          error.value = s.data.error || 'Feature extraction failed'
+          return { success: false, error: error.value }
+        }
+        if (status === 'cancelled') {
+          error.value = 'Feature extraction cancelled'
+          return { success: false, error: error.value }
+        }
+      } catch (e: any) {
+        error.value = e.response?.data?.error || 'Failed to poll feature extraction'
+        return { success: false, error: error.value }
+      }
+    }
+    error.value = 'Feature extraction timed out'
+    return { success: false, error: error.value }
   }
 
   async function trainModel() {
@@ -543,6 +586,7 @@ export const usePipelineStore = defineStore('pipeline', () => {
     loadData,
     applyWindowing,
     extractFeatures,
+    submitExtractionJob,
     trainModel,
     trainTimesNet,
     reset,

@@ -831,6 +831,68 @@
       </v-window-item>
     </v-window>
 
+    <!-- Extraction job status card (queued / running / done / error / cancelled) -->
+    <v-card
+      v-if="jobStatus && jobStatus !== 'done'"
+      class="pa-3 mt-4 job-status-card"
+      variant="tonal"
+      :color="jobStatusColor"
+    >
+      <div class="d-flex align-center">
+        <v-icon :color="jobStatusColor" class="mr-3">
+          {{ jobStatusIcon }}
+        </v-icon>
+        <div class="flex-grow-1">
+          <div class="d-flex align-center">
+            <strong class="text-body-1 mr-2">{{ jobStatusLabel }}</strong>
+            <v-chip v-if="jobStatus === 'queued' && jobQueuePosition > 0" size="x-small" color="warning" variant="flat">
+              Position {{ jobQueuePosition }} in queue
+            </v-chip>
+            <v-chip v-else-if="jobStatus === 'queued'" size="x-small" color="warning" variant="flat">
+              Next up
+            </v-chip>
+          </div>
+          <div class="text-caption text-medium-emphasis mt-1">
+            <template v-if="jobStatus === 'queued'">
+              ~{{ jobEstimatedWait }}s estimated wait &middot; waiting {{ jobElapsedSeconds }}s...
+            </template>
+            <template v-else-if="jobStatus === 'running'">
+              Extracting features... {{ jobElapsedSeconds }}s elapsed
+            </template>
+            <template v-else-if="jobStatus === 'cancelled'">
+              Extraction was cancelled. Start a new run when ready.
+            </template>
+            <template v-else-if="jobStatus === 'error'">
+              {{ jobError || 'Feature extraction failed' }}
+            </template>
+          </div>
+          <v-progress-linear
+            v-if="jobStatus === 'running'"
+            indeterminate
+            color="info"
+            class="mt-2"
+            height="4"
+          />
+        </div>
+        <v-btn
+          v-if="jobStatus === 'queued' || jobStatus === 'running'"
+          size="small"
+          variant="outlined"
+          @click="cancelExtractionJob"
+        >
+          Cancel
+        </v-btn>
+        <v-btn
+          v-else
+          size="small"
+          variant="text"
+          @click="dismissJobStatus"
+        >
+          Dismiss
+        </v-btn>
+      </div>
+    </v-card>
+
     <!-- Actions -->
     <div class="d-flex justify-space-between mt-6">
       <v-btn
@@ -843,18 +905,21 @@
       </v-btn>
 
       <div>
-        <v-btn
-          v-if="activeTab === 'extract'"
-          color="secondary"
-          size="large"
-          class="mr-2"
-          :loading="extracting"
-          :disabled="extractionMode === 'lightweight' && selectedFeatures.length === 0"
-          @click="extractionMode === 'tsfresh' ? extractTSFreshFeatures() : extractFeatures()"
-        >
-          <v-icon start>{{ extractionMode === 'tsfresh' ? 'mdi-atom' : 'mdi-lightning-bolt' }}</v-icon>
-          {{ extractionMode === 'tsfresh' ? 'Extract TSFresh Features' : 'Extract Features' }}
-        </v-btn>
+        <div v-if="activeTab === 'extract'" class="d-flex flex-column align-end mr-2">
+          <v-btn
+            color="secondary"
+            size="large"
+            :loading="extracting && !activeJobId"
+            :disabled="(extractionMode === 'lightweight' && selectedFeatures.length === 0) || !!activeJobId"
+            @click="extractionMode === 'tsfresh' ? extractTSFreshFeatures() : extractFeatures()"
+          >
+            <v-icon start>{{ extractionMode === 'tsfresh' ? 'mdi-atom' : 'mdi-lightning-bolt' }}</v-icon>
+            {{ extractionMode === 'tsfresh' ? 'Extract TSFresh Features' : 'Extract Features' }}
+          </v-btn>
+          <div class="text-caption text-medium-emphasis mt-1" style="max-width: 320px; text-align: right;">
+            Up to 5 users can extract features at the same time. Others queue automatically.
+          </div>
+        </div>
 
         <v-btn
           color="primary"
@@ -871,7 +936,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { usePipelineStore } from '@/stores/pipeline'
 import { useNotificationStore } from '@/stores/notification'
@@ -913,6 +978,81 @@ const recommendations = ref<any>(null)
 const extractionResult = ref<any>(pipelineStore.featureSelectionState.extractionResult)
 const loadingRecommendations = ref(false)
 const extracting = ref(false)
+
+// ---- Async extraction job state (Phase 1 backend queue) --------------------
+// Job lifecycle: submit → poll every 2s → done/error/cancelled.
+const activeJobId = ref<string>('')
+const jobStatus = ref<'' | 'queued' | 'running' | 'done' | 'error' | 'cancelled'>('')
+const jobQueuePosition = ref(0)
+const jobEstimatedWait = ref(0)
+const jobElapsedSeconds = ref(0)
+const jobError = ref('')
+let jobPollTimer: number | null = null
+
+const jobStatusLabel = computed(() => {
+  switch (jobStatus.value) {
+    case 'queued': return 'Queued'
+    case 'running': return 'Running'
+    case 'done': return 'Done'
+    case 'error': return 'Failed'
+    case 'cancelled': return 'Cancelled'
+    default: return ''
+  }
+})
+const jobStatusColor = computed(() => {
+  switch (jobStatus.value) {
+    case 'queued': return 'warning'
+    case 'running': return 'info'
+    case 'done': return 'success'
+    case 'error': return 'error'
+    case 'cancelled': return 'grey'
+    default: return 'grey'
+  }
+})
+const jobStatusIcon = computed(() => {
+  switch (jobStatus.value) {
+    case 'queued': return 'mdi-clock-outline'
+    case 'running': return 'mdi-progress-clock'
+    case 'done': return 'mdi-check-circle'
+    case 'error': return 'mdi-alert-circle'
+    case 'cancelled': return 'mdi-cancel'
+    default: return 'mdi-circle-small'
+  }
+})
+
+function _clearJobPolling() {
+  if (jobPollTimer !== null) {
+    window.clearInterval(jobPollTimer)
+    jobPollTimer = null
+  }
+}
+
+function _resetJobState() {
+  _clearJobPolling()
+  activeJobId.value = ''
+  jobStatus.value = ''
+  jobQueuePosition.value = 0
+  jobEstimatedWait.value = 0
+  jobElapsedSeconds.value = 0
+  jobError.value = ''
+}
+
+function dismissJobStatus() {
+  _resetJobState()
+}
+
+async function cancelExtractionJob() {
+  const jobId = activeJobId.value
+  if (!jobId) return
+  try {
+    await api.delete(`/api/features/extract/${jobId}`)
+  } catch {
+    // Ignore — polling stops regardless.
+  }
+  _clearJobPolling()
+  jobStatus.value = 'cancelled'
+  extracting.value = false
+}
 
 // Feature selection state
 const selectionMethod = ref('combined')
@@ -1193,31 +1333,84 @@ function applyRecommendations() {
 async function extractFeatures() {
   pipelineStore.selectedFeatures = selectedFeatures.value
   extracting.value = true
+  _resetJobState()
 
-  const result = await pipelineStore.extractFeatures(selectedFeatures.value)
-
-  if (result.success) {
-    extractionResult.value = result.data
-    // Store extraction result in pipeline store for persistence
-    pipelineStore.setExtractionResult({
-      session_id: result.data.session_id,
-      num_features: result.data.num_features,
-      num_windows: result.data.num_windows,
-      feature_set: result.data.feature_set
-    })
-
-    if (result.data.num_features === 0) {
-      notificationStore.showError('No features were extracted. Check that data has sufficient samples and variation.')
-    } else {
-      notificationStore.showSuccess(`Extracted ${result.data.num_features} features from ${result.data.num_windows} windows`)
-      await fetchFeaturePreview()
-      activeTab.value = 'select'
-    }
-  } else {
-    notificationStore.showError(result.error || 'Failed to extract features')
+  const submitResult = await pipelineStore.submitExtractionJob(selectedFeatures.value)
+  if (!submitResult.success) {
+    notificationStore.showError(submitResult.error || 'Failed to submit extraction')
+    extracting.value = false
+    return
   }
 
-  extracting.value = false
+  activeJobId.value = submitResult.data.job_id
+  jobStatus.value = submitResult.data.status || 'queued'
+  jobQueuePosition.value = submitResult.data.queue_position || 0
+  jobEstimatedWait.value = submitResult.data.estimated_wait_seconds || 0
+
+  // Poll every 2s. Never show a fake progress bar — the running state uses the
+  // indeterminate v-progress-linear rendered by the status card.
+  jobPollTimer = window.setInterval(async () => {
+    const jobId = activeJobId.value
+    if (!jobId) {
+      _clearJobPolling()
+      return
+    }
+    try {
+      const resp = await api.get(`/api/features/extract/${jobId}`)
+      const s = resp.data
+      jobStatus.value = s.status
+      jobElapsedSeconds.value = s.elapsed_seconds ?? jobElapsedSeconds.value
+      if (s.status === 'queued') {
+        jobQueuePosition.value = s.queue_position ?? 0
+        jobEstimatedWait.value = s.estimated_wait_seconds ?? 0
+      } else if (s.status === 'done') {
+        _clearJobPolling()
+        const data = s.features
+        extractionResult.value = data
+        pipelineStore.setExtractionResult({
+          session_id: data.session_id,
+          num_features: data.num_features,
+          num_windows: data.num_windows,
+          feature_set: data.feature_set,
+        })
+        pipelineStore.featureSession = data
+        if (!data.num_features) {
+          notificationStore.showError('No features were extracted. Check that data has sufficient samples and variation.')
+        } else {
+          notificationStore.showSuccess(`Extracted ${data.num_features} features from ${data.num_windows} windows`)
+          await fetchFeaturePreview()
+          activeTab.value = 'select'
+        }
+        extracting.value = false
+        // Briefly show the success indicator then clear.
+        jobStatus.value = 'done'
+        window.setTimeout(() => {
+          if (jobStatus.value === 'done') _resetJobState()
+        }, 1500)
+      } else if (s.status === 'error') {
+        _clearJobPolling()
+        jobError.value = s.error || 'Feature extraction failed'
+        notificationStore.showError(jobError.value)
+        extracting.value = false
+      } else if (s.status === 'cancelled') {
+        _clearJobPolling()
+        extracting.value = false
+      }
+    } catch (e: any) {
+      _clearJobPolling()
+      const status = e?.response?.status
+      if (status === 404) {
+        // Job vanished (probably janitor swept it) — treat as unknown.
+        jobError.value = 'Extraction job not found'
+        jobStatus.value = 'error'
+      } else {
+        jobError.value = e?.response?.data?.error || 'Failed to poll extraction status'
+        jobStatus.value = 'error'
+      }
+      notificationStore.showError(jobError.value)
+      extracting.value = false
+    }
+  }, 2000)
 }
 
 async function extractTSFreshFeatures() {
@@ -1515,6 +1708,10 @@ onMounted(async () => {
 
   fetchLLMStatus()
 })
+
+onBeforeUnmount(() => {
+  _clearJobPolling()
+})
 </script>
 
 <style scoped lang="scss">
@@ -1552,6 +1749,11 @@ onMounted(async () => {
 // Feature count card styles
 .feature-count-card {
   border-left: 4px solid rgb(var(--v-theme-success));
+}
+
+// Job status card styles
+.job-status-card {
+  border-left: 4px solid rgb(var(--v-theme-primary));
 }
 
 .feature-counts {

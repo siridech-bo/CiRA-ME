@@ -72,7 +72,16 @@ def create_app(config=None):
     # Health check endpoint
     @app.route('/api/health')
     def health_check():
-        return {'status': 'healthy', 'app': 'CiRA ME', 'version': '1.0.0'}
+        payload = {'status': 'healthy', 'app': 'CiRA ME', 'version': '1.0.0'}
+        # Add feature-extraction queue snapshot so operators can watch backpressure.
+        # Guarded because the queue module is created lazily at first import; we
+        # never want a health check to fail because of a queue init edge case.
+        try:
+            from .services.feature_job_queue import feature_job_queue
+            payload['feature_queue'] = feature_job_queue.snapshot()
+        except Exception:
+            pass
+        return payload
 
     # Rehydrate any folder watchers whose persisted status is 'running'.
     # Skip in the Flask dev-reloader's *monitor* process (both parent and
