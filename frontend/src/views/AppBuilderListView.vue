@@ -162,39 +162,25 @@
       </p>
 
       <div class="d-flex align-center gap-2 mb-3" style="flex-wrap: wrap;">
-        <v-autocomplete
-          v-model="mqttTestFile"
-          :items="mqttDatasetItems"
-          item-title="display"
-          item-value="path"
-          label="CSV Dataset"
-          placeholder="Type to filter…"
+        <v-btn
           variant="outlined"
-          density="compact"
-          hide-details
-          clearable
-          auto-select-first
-          style="min-width: 420px; max-width: 560px; flex: 1;"
-          :loading="loadingDatasets"
-          :menu-props="{ maxHeight: 420 }"
+          density="comfortable"
+          :prepend-icon="mqttTestFile ? 'mdi-file-delimited-outline' : 'mdi-folder-search-outline'"
+          style="min-width: 320px; max-width: 500px; justify-content: flex-start; text-transform: none; height: 40px;"
+          @click="openCsvPicker"
         >
-          <template #item="{ props, item }">
-            <v-list-item v-bind="props" :title="undefined">
-              <template #title>
-                <div class="d-flex align-center">
-                  <v-icon size="14" color="grey" class="mr-1">mdi-file-delimited-outline</v-icon>
-                  <span class="font-weight-medium">{{ item.raw.filename }}</span>
-                  <span v-if="item.raw.folder" class="text-caption text-medium-emphasis ml-2">
-                    {{ item.raw.folder }}
-                  </span>
-                </div>
-              </template>
-              <template #subtitle>
-                <span class="text-caption text-medium-emphasis">{{ item.raw.size_kb }} KB</span>
-              </template>
-            </v-list-item>
-          </template>
-        </v-autocomplete>
+          <div class="text-truncate" style="text-align: left;">
+            <div v-if="mqttTestFile" class="text-body-2">
+              {{ mqttTestFile.split('/').pop() }}
+            </div>
+            <div v-else class="text-body-2 text-medium-emphasis">
+              Choose CSV dataset…
+            </div>
+            <div v-if="mqttTestFile" class="text-caption text-medium-emphasis text-truncate">
+              {{ mqttTestFile }}
+            </div>
+          </div>
+        </v-btn>
         <v-text-field
           v-model="mqttTestTopic"
           label="Topic"
@@ -258,6 +244,108 @@
         {{ mqttError }}
       </v-alert>
     </v-card>
+
+    <!-- CSV File Picker Dialog -->
+    <v-dialog v-model="showCsvPicker" max-width="720" scrollable>
+      <v-card>
+        <v-card-title class="d-flex align-center pt-4 pb-2 px-4">
+          <v-icon class="mr-2">mdi-folder-search-outline</v-icon>
+          Choose CSV dataset
+          <v-spacer />
+          <v-text-field
+            v-model="csvPickerSearch"
+            density="compact"
+            variant="outlined"
+            placeholder="Filter…"
+            hide-details
+            prepend-inner-icon="mdi-magnify"
+            clearable
+            style="max-width: 240px;"
+          />
+        </v-card-title>
+
+        <!-- Breadcrumbs -->
+        <div class="px-4 py-2" style="border-top: 1px solid rgba(255,255,255,0.08); border-bottom: 1px solid rgba(255,255,255,0.08);">
+          <span class="text-caption text-medium-emphasis mr-1">Path:</span>
+          <a href="#" class="text-caption" style="color: #a78bfa;" @click.prevent="csvPickerFolder = ''">Root</a>
+          <template v-for="(seg, idx) in csvPickerCrumbs" :key="idx">
+            <v-icon size="12" class="mx-1 text-medium-emphasis">mdi-chevron-right</v-icon>
+            <a
+              href="#"
+              class="text-caption"
+              style="color: #a78bfa;"
+              @click.prevent="csvPickerFolder = csvPickerCrumbs.slice(0, idx + 1).join('/')"
+            >{{ seg }}</a>
+          </template>
+        </div>
+
+        <v-card-text style="max-height: 60vh; padding: 8px 0;">
+          <v-progress-linear v-if="loadingDatasets" indeterminate color="primary" />
+          <v-list v-else density="compact" nav>
+            <v-list-item
+              v-if="csvPickerFolder"
+              class="csv-picker-row"
+              @click="navigateUp"
+            >
+              <template #prepend>
+                <v-icon color="grey">mdi-arrow-up-bold-box-outline</v-icon>
+              </template>
+              <v-list-item-title class="text-body-2 text-medium-emphasis">
+                .. (up one level)
+              </v-list-item-title>
+            </v-list-item>
+
+            <v-list-item
+              v-for="folder in csvPickerFolders"
+              :key="'d-' + folder.name"
+              class="csv-picker-row"
+              @click="enterFolder(folder.name)"
+            >
+              <template #prepend>
+                <v-icon color="warning">mdi-folder-outline</v-icon>
+              </template>
+              <v-list-item-title class="text-body-2 font-weight-medium">
+                {{ folder.name }}
+              </v-list-item-title>
+              <v-list-item-subtitle class="text-caption">
+                {{ folder.file_count }} CSV{{ folder.file_count === 1 ? '' : 's' }}
+              </v-list-item-subtitle>
+            </v-list-item>
+
+            <v-list-item
+              v-for="file in csvPickerFiles"
+              :key="'f-' + file.path"
+              class="csv-picker-row"
+              @click="selectCsv(file.path)"
+            >
+              <template #prepend>
+                <v-icon color="success">mdi-file-delimited-outline</v-icon>
+              </template>
+              <v-list-item-title class="text-body-2">
+                {{ file.name }}
+              </v-list-item-title>
+              <v-list-item-subtitle class="text-caption text-medium-emphasis">
+                {{ file.size_kb }} KB
+              </v-list-item-subtitle>
+            </v-list-item>
+
+            <v-list-item v-if="!loadingDatasets && csvPickerFolders.length === 0 && csvPickerFiles.length === 0">
+              <v-list-item-title class="text-caption text-medium-emphasis text-center py-4">
+                {{ csvPickerSearch ? `No CSVs matching "${csvPickerSearch}"` : 'This folder has no CSV files' }}
+              </v-list-item-title>
+            </v-list-item>
+          </v-list>
+        </v-card-text>
+
+        <v-card-actions class="px-4 pb-3">
+          <span class="text-caption text-medium-emphasis">
+            {{ mqttDatasets.length }} CSV{{ mqttDatasets.length === 1 ? '' : 's' }} in library
+          </span>
+          <v-spacer />
+          <v-btn variant="text" @click="showCsvPicker = false">Cancel</v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
 
     <!-- Create App Dialog -->
     <v-dialog v-model="showCreateDialog" max-width="560">
@@ -627,9 +715,22 @@ const mqttTestLoop = ref(false)
 const mqttDatasets = ref([])
 const loadingDatasets = ref(false)
 
-// Deduplicate by path, split filename vs folder, and prepend a display string
-// so v-autocomplete can filter across both filename and folder text.
-const mqttDatasetItems = computed(() => {
+// CSV File Picker dialog state
+const showCsvPicker = ref(false)
+const csvPickerFolder = ref('') // current folder within the datasets tree (empty = root)
+const csvPickerSearch = ref('')
+
+function openCsvPicker() {
+  showCsvPicker.value = true
+  csvPickerFolder.value = ''
+  csvPickerSearch.value = ''
+  if (mqttDatasets.value.length === 0) fetchMqttDatasets()
+}
+
+const csvPickerCrumbs = computed(() => (csvPickerFolder.value || '').split('/').filter(Boolean))
+
+// Deduplicated file entries with derived filename + folder path.
+const csvPickerAllEntries = computed(() => {
   const seen = new Set()
   const items = []
   for (const d of (mqttDatasets.value || [])) {
@@ -637,25 +738,69 @@ const mqttDatasetItems = computed(() => {
     if (!path || seen.has(path)) continue
     seen.add(path)
     const slash = path.lastIndexOf('/')
-    const filename = slash >= 0 ? path.slice(slash + 1) : path
+    const name = slash >= 0 ? path.slice(slash + 1) : path
     const folder = slash >= 0 ? path.slice(0, slash) : ''
-    items.push({
-      path,
-      filename,
-      folder,
-      size_kb: d.size_kb,
-      // display is what v-autocomplete uses for filtering; include both
-      // filename and folder text so typing either matches.
-      display: folder ? `${filename} — ${folder}` : filename,
-    })
+    items.push({ path, name, folder, size_kb: d.size_kb })
   }
-  // Sort by folder then filename so related files cluster.
-  items.sort((a, b) => {
-    if (a.folder !== b.folder) return a.folder.localeCompare(b.folder)
-    return a.filename.localeCompare(b.filename)
-  })
   return items
 })
+
+// Files in the current folder (with optional search filter across all files).
+const csvPickerFiles = computed(() => {
+  const search = (csvPickerSearch.value || '').trim().toLowerCase()
+  if (search) {
+    return csvPickerAllEntries.value
+      .filter(e => e.path.toLowerCase().includes(search))
+      .sort((a, b) => a.path.localeCompare(b.path))
+      .slice(0, 200)
+  }
+  const cur = csvPickerFolder.value
+  return csvPickerAllEntries.value
+    .filter(e => e.folder === cur)
+    .sort((a, b) => a.name.localeCompare(b.name))
+})
+
+// Direct child folders of the current folder (only shown when NOT searching).
+const csvPickerFolders = computed(() => {
+  if ((csvPickerSearch.value || '').trim()) return []
+  const cur = csvPickerFolder.value
+  const prefix = cur ? cur + '/' : ''
+  const seen = new Map<string, number>() // name → cumulative file count under it
+  for (const e of csvPickerAllEntries.value) {
+    if (!e.folder) continue
+    if (cur && !e.folder.startsWith(prefix)) continue
+    if (!cur && e.folder.includes('/')) {
+      const top = e.folder.split('/')[0]
+      seen.set(top, (seen.get(top) || 0) + 1)
+      continue
+    }
+    if (!cur) {
+      seen.set(e.folder, (seen.get(e.folder) || 0) + 1)
+      continue
+    }
+    const rest = e.folder.slice(prefix.length)
+    const top = rest.split('/')[0]
+    if (top) seen.set(top, (seen.get(top) || 0) + 1)
+  }
+  return Array.from(seen.entries())
+    .map(([name, file_count]) => ({ name, file_count }))
+    .sort((a, b) => a.name.localeCompare(b.name))
+})
+
+function enterFolder(name: string) {
+  csvPickerFolder.value = csvPickerFolder.value ? `${csvPickerFolder.value}/${name}` : name
+}
+
+function navigateUp() {
+  const parts = (csvPickerFolder.value || '').split('/').filter(Boolean)
+  parts.pop()
+  csvPickerFolder.value = parts.join('/')
+}
+
+function selectCsv(path: string) {
+  mqttTestFile.value = path
+  showCsvPicker.value = false
+}
 const mqttStarting = ref(false)
 const mqttPublishing = ref(false)
 const mqttPublished = ref(0)
@@ -945,5 +1090,14 @@ onMounted(() => {
 .published-link:hover {
   color: #c4b5fd;
   text-decoration: underline;
+}
+.csv-picker-row {
+  cursor: pointer;
+  border-radius: 6px;
+  padding: 4px 12px !important;
+  min-height: 40px !important;
+}
+.csv-picker-row:hover {
+  background: rgba(99, 102, 241, 0.10);
 }
 </style>

@@ -189,21 +189,35 @@ def stop_publish(session_id):
 @mqtt_bp.route('/datasets', methods=['GET'])
 @login_required
 def list_datasets():
-    """List available CSV files for publishing."""
+    """List available CSV files for publishing.
+
+    Skips internal / hidden folders (names starting with `.`) so operators
+    don't have to wade through `.multi_csv_selections/` artifacts. No count
+    cap — the frontend renders a browser dialog with folder navigation
+    rather than a flat dropdown.
+    """
     datasets_root = os.environ.get('DATASETS_ROOT_PATH',
                                     os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'datasets'))
     files = []
     for root, dirs, filenames in os.walk(datasets_root):
+        # Prune hidden / internal folders in-place so os.walk skips them.
+        dirs[:] = [d for d in dirs if not d.startswith('.')]
         for f in filenames:
-            if f.endswith('.csv'):
-                rel = os.path.relpath(os.path.join(root, f), datasets_root)
+            if not f.endswith('.csv'):
+                continue
+            if f.startswith('.'):
+                continue
+            rel = os.path.relpath(os.path.join(root, f), datasets_root)
+            try:
                 size = os.path.getsize(os.path.join(root, f))
-                files.append({
-                    'path': rel.replace('\\', '/'),
-                    'name': f,
-                    'size_kb': round(size / 1024, 1),
-                })
-    return jsonify(files[:100])  # Limit to 100 files
+            except OSError:
+                size = 0
+            files.append({
+                'path': rel.replace('\\', '/'),
+                'name': f,
+                'size_kb': round(size / 1024, 1),
+            })
+    return jsonify(files)
 
 
 @mqtt_bp.route('/broker-info', methods=['GET'])
