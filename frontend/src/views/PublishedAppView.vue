@@ -2959,56 +2959,56 @@ function parseSensorPayload(raw) {
 
   const targetCol = multiModelTargetCol.value
 
-  // If channels are configured, try case-insensitive full-key match first.
+  // If channels are configured, do a two-pass fill:
+  //  1) case-insensitive full-name match for each configured channel
+  //  2) for any channel that didn't match, positional fallback from the
+  //     UNUSED flattened leaves (in insertion order)
+  // If ANY channel needed positional fallback, surface the warning banner.
   if (channels.length > 0) {
     const lowerIndex = {}
     for (const fk of flatKeys) lowerIndex[fk.toLowerCase()] = fk
+
     const sample = {}
-    let matchCount = 0
+    const usedKeys = new Set()      // flat keys already claimed by a match
+    const unmatchedChannels = []    // configured channel names we still need
+
+    // Pass 1 — case-insensitive full-name matches.
     for (const ch of channels) {
       const hit = lowerIndex[ch.toLowerCase()]
       if (hit !== undefined) {
         sample[ch] = flat[hit]
-        matchCount++
+        usedKeys.add(hit)
+      } else {
+        unmatchedChannels.push(ch)
       }
     }
-    if (matchCount === channels.length) {
-      // All channels resolved — clean case.
-      if (targetCol && raw && typeof raw === 'object' && typeof raw[targetCol] === 'string') {
-        sample[targetCol] = raw[targetCol]
-      }
-      return sample
+
+    // Pass 2 — positional fallback for unmatched channels from unused leaves.
+    const unusedKeys = flatKeys.filter(k => !usedKeys.has(k))
+    const fallbackConfigured = []
+    const fallbackDetected = []
+    for (let i = 0; i < unmatchedChannels.length && i < unusedKeys.length; i++) {
+      const ch = unmatchedChannels[i]
+      const src = unusedKeys[i]
+      sample[ch] = flat[src]
+      fallbackConfigured.push(ch)
+      fallbackDetected.push(src)
     }
-    if (matchCount === 0) {
-      // Auto-fallback: assign flattened leaves to configured channel names by
-      // position (insertion order). Flag the session so we surface the
-      // warning banner until the operator fixes their App Builder config.
-      const fallbackSample = {}
-      for (let i = 0; i < channels.length && i < flatKeys.length; i++) {
-        fallbackSample[channels[i]] = flat[flatKeys[i]]
+
+    // If any channel needed positional fallback, flag the session banner.
+    if (fallbackConfigured.length > 0) {
+      sensorAutoFallbackActive.value = true
+      sensorAutoFallbackInfo.value = {
+        configured: fallbackConfigured,
+        detected: fallbackDetected,
       }
-      if (Object.keys(fallbackSample).length > 0) {
-        sensorAutoFallbackActive.value = true
-        sensorAutoFallbackInfo.value = {
-          configured: [...channels],
-          detected: flatKeys.slice(0, Math.max(channels.length, 8)),
-        }
-        if (targetCol && raw && typeof raw === 'object' && typeof raw[targetCol] === 'string') {
-          fallbackSample[targetCol] = raw[targetCol]
-        }
-        return fallbackSample
-      }
-      return null
     }
-    // Partial match — return what we have; missing channels will fall back to
-    // ?? 0 in the CSV writer. Attach target col if present.
-    if (Object.keys(sample).length > 0) {
-      if (targetCol && raw && typeof raw === 'object' && typeof raw[targetCol] === 'string') {
-        sample[targetCol] = raw[targetCol]
-      }
-      return sample
+
+    if (targetCol && raw && typeof raw === 'object' && typeof raw[targetCol] === 'string') {
+      sample[targetCol] = raw[targetCol]
     }
-    return null
+    if (Object.keys(sample).length === 0) return null
+    return sample
   }
 
   // No configured channels — publish the flattened leaves as-is under their
