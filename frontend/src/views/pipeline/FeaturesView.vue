@@ -34,6 +34,43 @@
           <!-- Feature Selection -->
           <v-col cols="12" md="8">
             <v-card class="pa-4">
+              <!-- Fast Mode Toggle (P2 Phase 2 — client-side extraction) -->
+              <v-card
+                variant="tonal"
+                :color="fastMode ? 'success' : 'surface'"
+                class="pa-3 mb-4"
+              >
+                <div class="d-flex align-center">
+                  <v-switch
+                    v-model="fastMode"
+                    color="success"
+                    density="compact"
+                    hide-details
+                    class="mr-3 mt-0"
+                  />
+                  <div class="flex-grow-1">
+                    <div class="d-flex align-center">
+                      <v-icon color="success" size="small" class="mr-2">mdi-flash</v-icon>
+                      <strong>Fast Mode</strong>
+                      <v-chip
+                        v-if="fastMode"
+                        size="x-small"
+                        color="success"
+                        variant="flat"
+                        class="ml-2"
+                      >
+                        ON
+                      </v-chip>
+                    </div>
+                    <div class="text-caption text-medium-emphasis mt-1">
+                      Compute features in your browser. Skips the server queue and finishes
+                      in ~2 seconds. Only works with the lightweight feature set
+                      ({{ SUPPORTED_FEATURES_COUNT }} features).
+                    </div>
+                  </div>
+                </div>
+              </v-card>
+
               <!-- Extraction Mode Toggle -->
               <div class="d-flex align-center mb-4">
                 <v-btn-toggle
@@ -44,9 +81,23 @@
                 >
                   <v-btn value="lightweight" size="small">
                     <v-icon start size="small">mdi-lightning-bolt</v-icon>
-                    Lightweight (44 features)
+                    Lightweight ({{ SUPPORTED_FEATURES_COUNT }} features)
                   </v-btn>
-                  <v-btn value="tsfresh" size="small">
+                  <v-tooltip
+                    v-if="fastMode"
+                    text="Fast Mode uses the lightweight set only. Turn off Fast Mode to use TSFresh Library."
+                    location="top"
+                  >
+                    <template #activator="{ props: tp }">
+                      <div v-bind="tp">
+                        <v-btn value="tsfresh" size="small" disabled>
+                          <v-icon start size="small">mdi-atom</v-icon>
+                          TSFresh Library (800+)
+                        </v-btn>
+                      </div>
+                    </template>
+                  </v-tooltip>
+                  <v-btn v-else value="tsfresh" size="small">
                     <v-icon start size="small">mdi-atom</v-icon>
                     TSFresh Library (800+)
                   </v-btn>
@@ -128,12 +179,14 @@
                 <v-list-item
                   v-for="feature in filteredTSFreshFeatures"
                   :key="feature"
-                  :class="{ 'selected': selectedFeatures.includes(feature) }"
+                  :class="{ 'selected': selectedFeatures.includes(feature), 'unsupported': fastMode && !isFastModeSupported(feature) }"
+                  :disabled="fastMode && !isFastModeSupported(feature)"
                   @click="toggleFeature(feature)"
                 >
                   <template #prepend>
                     <v-checkbox
                       :model-value="selectedFeatures.includes(feature)"
+                      :disabled="fastMode && !isFastModeSupported(feature)"
                       hide-details
                       density="compact"
                       @click.stop="toggleFeature(feature)"
@@ -151,12 +204,14 @@
                 <v-list-item
                   v-for="feature in filteredDSPFeatures"
                   :key="feature"
-                  :class="{ 'selected': selectedFeatures.includes(feature) }"
+                  :class="{ 'selected': selectedFeatures.includes(feature), 'unsupported': fastMode && !isFastModeSupported(feature) }"
+                  :disabled="fastMode && !isFastModeSupported(feature)"
                   @click="toggleFeature(feature)"
                 >
                   <template #prepend>
                     <v-checkbox
                       :model-value="selectedFeatures.includes(feature)"
+                      :disabled="fastMode && !isFastModeSupported(feature)"
                       hide-details
                       density="compact"
                       @click.stop="toggleFeature(feature)"
@@ -831,9 +886,56 @@
       </v-window-item>
     </v-window>
 
+    <!-- Fast Mode progress card (client-side extraction) -->
+    <v-card
+      v-if="fastModeRunning"
+      class="pa-3 mt-4 job-status-card"
+      variant="tonal"
+      color="success"
+    >
+      <div class="d-flex align-center">
+        <v-icon color="success" class="mr-3">mdi-flash</v-icon>
+        <div class="flex-grow-1">
+          <div class="d-flex align-center">
+            <strong class="text-body-1 mr-2">Extracting in browser</strong>
+            <v-chip size="x-small" color="success" variant="flat">
+              {{ fastProgress.done }} / {{ fastProgress.total }}
+            </v-chip>
+          </div>
+          <div class="text-caption text-medium-emphasis mt-1">
+            Computing {{ fastFeatureCount }} lightweight features per window locally.
+          </div>
+          <v-progress-linear
+            :model-value="fastProgressPct"
+            color="success"
+            class="mt-2"
+            height="6"
+          />
+        </div>
+        <v-btn size="small" variant="outlined" @click="cancelFastMode">
+          Cancel
+        </v-btn>
+      </div>
+    </v-card>
+
+    <!-- Fast Mode completion banner -->
+    <v-alert
+      v-if="fastLastRun && !fastModeRunning"
+      type="success"
+      variant="tonal"
+      density="compact"
+      class="mt-4"
+      closable
+      @click:close="fastLastRun = null"
+    >
+      Extracted <strong>{{ fastLastRun.numFeatures }}</strong> features from
+      <strong>{{ fastLastRun.numWindows }}</strong> windows in
+      <strong>{{ (fastLastRun.ms / 1000).toFixed(1) }}s</strong> (browser).
+    </v-alert>
+
     <!-- Extraction job status card (queued / running / done / error / cancelled) -->
     <v-card
-      v-if="jobStatus && jobStatus !== 'done'"
+      v-if="!fastMode && jobStatus && jobStatus !== 'done'"
       class="pa-3 mt-4 job-status-card"
       variant="tonal"
       :color="jobStatusColor"
@@ -907,6 +1009,18 @@
       <div>
         <div v-if="activeTab === 'extract'" class="d-flex flex-column align-end mr-2">
           <v-btn
+            v-if="fastMode"
+            color="success"
+            size="large"
+            :loading="fastModeRunning"
+            :disabled="selectedFeatures.length === 0"
+            @click="extractFeaturesFastMode()"
+          >
+            <v-icon start>mdi-flash</v-icon>
+            Extract in Browser
+          </v-btn>
+          <v-btn
+            v-else
             color="secondary"
             size="large"
             :loading="extracting && !activeJobId"
@@ -917,7 +1031,12 @@
             {{ extractionMode === 'tsfresh' ? 'Extract TSFresh Features' : 'Extract Features' }}
           </v-btn>
           <div class="text-caption text-medium-emphasis mt-1" style="max-width: 320px; text-align: right;">
-            Up to 5 users can extract features at the same time. Others queue automatically.
+            <template v-if="fastMode">
+              Runs entirely in your browser. No queue, no server load.
+            </template>
+            <template v-else>
+              Up to 5 users can extract features at the same time. Others queue automatically.
+            </template>
           </div>
         </div>
 
@@ -942,6 +1061,7 @@ import { usePipelineStore } from '@/stores/pipeline'
 import { useNotificationStore } from '@/stores/notification'
 import PipelineStepper from '@/components/PipelineStepper.vue'
 import api from '@/services/api'
+import { SUPPORTED_FEATURES } from '@/lib/featureExtraction'
 import { Bar } from 'vue-chartjs'
 import {
   Chart as ChartJS,
@@ -961,6 +1081,40 @@ const notificationStore = useNotificationStore()
 
 // Tab state
 const activeTab = ref('extract')
+
+// ---- Fast Mode (P2 Phase 2 — client-side extraction) ---------------------
+// Toggle persisted in localStorage so power users don't have to re-enable it
+// every workshop session. Default: off (keeps existing server-queue path).
+const FAST_MODE_STORAGE_KEY = 'cira.features.fast_mode'
+const fastMode = ref<boolean>(
+  (typeof window !== 'undefined' && window.localStorage.getItem(FAST_MODE_STORAGE_KEY) === '1'),
+)
+watch(fastMode, (v) => {
+  try { window.localStorage.setItem(FAST_MODE_STORAGE_KEY, v ? '1' : '0') } catch { /* ignore */ }
+  // Fast Mode forces lightweight — the tsfresh library path can't run
+  // client-side (it's C-backed and 800+ features that we don't port).
+  if (v) extractionMode.value = 'lightweight'
+})
+
+const SUPPORTED_FEATURES_COUNT = SUPPORTED_FEATURES.length
+
+const fastModeRunning = ref(false)
+const fastProgress = ref({ done: 0, total: 0 })
+const fastProgressPct = computed(() =>
+  fastProgress.value.total > 0 ? (fastProgress.value.done / fastProgress.value.total) * 100 : 0,
+)
+const fastLastRun = ref<{ numFeatures: number; numWindows: number; ms: number } | null>(null)
+let fastWorkerTerminator: (() => void) | null = null
+
+function isFastModeSupported(feature: string): boolean {
+  return SUPPORTED_FEATURES.includes(feature)
+}
+
+const fastFeatureCount = computed(() => {
+  // Actual # of _base_ features selected that Fast Mode will compute per
+  // window per channel — used in the progress card subtitle.
+  return selectedFeatures.value.filter(isFastModeSupported).length
+})
 
 // Extraction mode
 const extractionMode = ref<'lightweight' | 'tsfresh'>('lightweight')
@@ -1413,6 +1567,138 @@ async function extractFeatures() {
   }, 2000)
 }
 
+async function extractFeaturesFastMode() {
+  if (!pipelineStore.windowedSession) {
+    notificationStore.showError('No windowed data available')
+    return
+  }
+  // Filter to lightweight-only names — safety net in case a future backend
+  // addition shows up in `selectedFeatures` but has no client implementation.
+  const featuresToRun = selectedFeatures.value.filter(isFastModeSupported)
+  if (featuresToRun.length === 0) {
+    notificationStore.showError('Select at least one lightweight feature to run Fast Mode.')
+    return
+  }
+  pipelineStore.selectedFeatures = selectedFeatures.value
+
+  fastModeRunning.value = true
+  fastProgress.value = { done: 0, total: 0 }
+  fastLastRun.value = null
+
+  const handle = await pipelineStore.extractFeaturesFast(featuresToRun)
+  if (!handle.success) {
+    notificationStore.showError(handle.error || 'Failed to start Fast Mode')
+    fastModeRunning.value = false
+    return
+  }
+
+  // The store wires done/error via its own onmessage. We add a second
+  // listener JUST for progress frames. postMessage delivers to all
+  // registered listeners, so this doesn't conflict with the store handler.
+  const worker = handle.worker
+  fastProgress.value.total = handle.totalWindows
+  fastWorkerTerminator = handle.terminate
+
+  const progressListener = (evt: MessageEvent<any>) => {
+    if (evt.data?.type === 'progress') {
+      fastProgress.value = { done: evt.data.done, total: evt.data.total }
+    }
+  }
+  worker.addEventListener('message', progressListener)
+
+  const outcome = await handle.donePromise
+  worker.removeEventListener('message', progressListener)
+  fastWorkerTerminator = null
+
+  if (outcome.success) {
+    const data = outcome.data
+    extractionResult.value = {
+      session_id: data.session_id,
+      num_features: data.num_features,
+      num_windows: data.num_windows,
+      feature_set: 'fast_mode',
+      feature_names: data.feature_names,
+    }
+    fastLastRun.value = {
+      numFeatures: data.num_features,
+      numWindows: data.num_windows,
+      ms: data.extraction_ms,
+    }
+    // Build a local feature preview so the visualize/select tabs can show
+    // something without a backend round-trip. Backend preview endpoint is
+    // still available for server-side extractions.
+    featurePreview.value = _buildLocalPreview(data)
+    if (extractedFeatureNames.value.length > 0 && !selectedFeatureForViz.value) {
+      selectedFeatureForViz.value = extractedFeatureNames.value[0]
+    }
+    notificationStore.showSuccess(
+      `Extracted ${data.num_features} features from ${data.num_windows} windows in ${(data.extraction_ms / 1000).toFixed(1)}s (browser)`,
+    )
+    activeTab.value = 'select'
+  } else {
+    notificationStore.showError(outcome.error || 'Fast Mode extraction failed')
+  }
+  fastModeRunning.value = false
+}
+
+function cancelFastMode() {
+  if (fastWorkerTerminator) {
+    fastWorkerTerminator()
+    fastWorkerTerminator = null
+  }
+  fastModeRunning.value = false
+  fastProgress.value = { done: 0, total: 0 }
+}
+
+/**
+ * Build a lightweight local preview from Fast Mode's own output so tabs 2/3
+ * work without calling /api/features/preview (which reads server-side
+ * feature sessions we don't create in Fast Mode).
+ */
+function _buildLocalPreview(data: any) {
+  const featureNames: string[] = data.feature_names || []
+  const matrix: number[][] = data.features_df || []
+  const previewRows: Record<string, any>[] = []
+  const nRows = Math.min(matrix.length, 100)
+  for (let i = 0; i < nRows; i++) {
+    const row: Record<string, any> = {}
+    for (let j = 0; j < featureNames.length; j++) row[featureNames[j]] = matrix[i][j]
+    previewRows.push(row)
+  }
+  // Feature stats (mean/std/min/max/median) computed once so the Statistics
+  // panel in Visualize tab has numbers to show.
+  const stats: Record<string, any> = {}
+  for (let j = 0; j < featureNames.length; j++) {
+    const col: number[] = []
+    for (let i = 0; i < matrix.length; i++) col.push(matrix[i][j])
+    col.sort((a, b) => a - b)
+    const n = col.length
+    const meanV = col.reduce((s, v) => s + v, 0) / (n || 1)
+    let variance = 0
+    for (const v of col) variance += (v - meanV) ** 2
+    variance /= (n || 1)
+    stats[featureNames[j]] = {
+      mean: meanV,
+      std: Math.sqrt(variance),
+      min: col[0] ?? 0,
+      max: col[n - 1] ?? 0,
+      median: n === 0 ? 0 : n % 2 === 0 ? (col[n / 2 - 1] + col[n / 2]) / 2 : col[Math.floor(n / 2)],
+    }
+  }
+  return {
+    session_id: data.session_id,
+    num_features: featureNames.length,
+    num_windows: matrix.length,
+    columns: featureNames,
+    feature_names: featureNames,
+    feature_stats: stats,
+    preview: previewRows,
+    // Label counts intentionally omitted — Fast Mode doesn't ship labels to
+    // the worker (they stay on the server for training).
+    label_counts: null,
+  }
+}
+
 async function extractTSFreshFeatures() {
   if (!pipelineStore.windowedSession) {
     notificationStore.showError('No windowed data available')
@@ -1711,6 +1997,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   _clearJobPolling()
+  if (fastWorkerTerminator) fastWorkerTerminator()
 })
 </script>
 
@@ -1726,6 +2013,11 @@ onBeforeUnmount(() => {
 
     &:hover {
       background: rgba(var(--v-theme-surface-variant), 0.5);
+    }
+
+    // Fast Mode: features not portable to the client are visible but muted.
+    &.unsupported {
+      opacity: 0.4;
     }
   }
 }

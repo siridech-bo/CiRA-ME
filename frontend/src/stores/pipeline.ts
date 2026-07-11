@@ -7,6 +7,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import api from '@/services/api'
+import { SUPPORTED_FEATURES } from '@/lib/featureExtraction'
 
 export type PipelineMode = 'anomaly' | 'classification' | 'regression'
 export type PipelineStep = 'data' | 'windowing' | 'features' | 'training' | 'deploy'
@@ -302,6 +303,143 @@ export const usePipelineStore = defineStore('pipeline', () => {
   }
 
   /**
+   * P2 Phase 2 — Fast Mode client-side feature extraction.
+   *
+   * Downloads the raw windows for the current windowed session, spins up a
+   * Web Worker (see `frontend/src/workers/features.worker.ts`), and lets the
+   * worker compute the lightweight feature set entirely in the browser.
+   * Bypasses the 5-slot backend queue completely so 60 concurrent workshop
+   * users don't have to wait on each other.
+   *
+   * Returns a handle so the calling view can:
+   *   - listen to `worker.onmessage` for `progress` frames
+   *   - call `terminate()` to cancel a run mid-flight
+   *
+   * On the `done` frame the store's `featureSession` / `extractionResult`
+   * are already updated and `currentStep` has moved to 'training'; the view
+   * just needs to close its progress card.
+   */
+  async function extractFeaturesFast(features?: string[]) {
+    if (!windowedSession.value) {
+      return { success: false as const, error: 'No windowed data' }
+    }
+
+    const featureList = features && features.length > 0
+      ? features
+      : (selectedFeatures.value.length > 0 ? selectedFeatures.value : SUPPORTED_FEATURES)
+
+    try {
+      loading.value = true
+      error.value = null
+
+      // Fetch raw windows. Backend gzips the JSON on the wire.
+      const sid = windowedSession.value.session_id
+      const resp = await api.get(`/api/features/windows/${sid}`)
+      const { windows, sensor_columns, sampling_rate, num_windows } = resp.data
+
+      // ?worker suffix is the Vite convention — the module is compiled to a
+      // separate chunk with a proper Worker constructor.
+      // Note: we use the new URL() form (not `?worker`) because the ?worker
+      // import must be a static string and TS gets grumpy about the type.
+      const worker = new Worker(
+        new URL('../workers/features.worker.ts', import.meta.url),
+        { type: 'module' },
+      )
+
+      // Wire success + error handlers before posting the extract message so
+      // a synchronous failure inside the worker doesn't race the listener.
+      const donePromise = new Promise<{ success: true; data: any } | { success: false; error: string }>(
+        (resolve) => {
+          worker.onmessage = async (evt: MessageEvent<any>) => {
+            const msg = evt.data
+            if (!msg) return
+            if (msg.type === 'done') {
+              worker.terminate()
+              // Register the Fast Mode result with the backend so downstream
+              // steps (selection, visualization, training) can look it up in
+              // _feature_sessions like any server-side extraction.
+              try {
+                const reg = await api.post('/api/features/register-fast', {
+                  windowed_session_id: sid,
+                  feature_names: msg.feature_names,
+                  features_df: msg.features_df,
+                })
+                const featureData = {
+                  session_id: reg.data.session_id,
+                  num_windows: reg.data.num_windows,
+                  num_features: reg.data.num_features,
+                  feature_names: reg.data.feature_names,
+                  feature_set: 'fast_mode',
+                  preview: reg.data.preview,
+                  features_df: msg.features_df,
+                  extraction_ms: msg.extraction_ms,
+                }
+                featureSession.value = featureData as any
+                setExtractionResult({
+                  session_id: featureData.session_id,
+                  num_features: featureData.num_features,
+                  num_windows: featureData.num_windows,
+                  feature_set: 'fast_mode',
+                })
+                currentStep.value = 'training'
+                resolve({ success: true, data: featureData })
+              } catch (regErr: any) {
+                error.value = regErr.response?.data?.error || 'Failed to register Fast Mode session on server'
+                resolve({ success: false, error: error.value })
+              }
+            } else if (msg.type === 'error') {
+              error.value = msg.message || 'Fast Mode extraction failed'
+              worker.terminate()
+              resolve({ success: false, error: error.value })
+            }
+            // 'progress' frames are handled by the view via its own listener.
+          }
+          worker.onerror = (e) => {
+            error.value = e.message || 'Fast Mode worker crashed'
+            worker.terminate()
+            resolve({ success: false, error: error.value })
+          }
+        },
+      )
+
+      worker.postMessage({
+        type: 'extract',
+        windows,
+        channelNames: sensor_columns,
+        selectedFeatures: featureList,
+        samplingRate: sampling_rate,
+        sessionId: `fast_${sid}`,
+      })
+
+      return {
+        success: true as const,
+        worker,
+        donePromise,
+        totalWindows: num_windows,
+        terminate: () => worker.terminate(),
+      }
+    } catch (e: any) {
+      error.value = e.response?.data?.error || 'Failed to start Fast Mode extraction'
+      return { success: false as const, error: error.value }
+    } finally {
+      loading.value = false
+    }
+  }
+
+  /**
+   * Utility for the FeaturesView to decide which lightweight features to
+   * grey out when Fast Mode is on. Right now the client covers 100% of the
+   * lightweight set — this returns `unsupported: []` today — but leaving
+   * this as a helper means adding a backend-only feature later just requires
+   * omitting it from SUPPORTED_FEATURES.
+   */
+  function fastModeAvailable(features: string[]): { available: boolean; unsupported: string[] } {
+    const supportedSet = new Set(SUPPORTED_FEATURES)
+    const unsupported = features.filter((f) => !supportedSet.has(f))
+    return { available: unsupported.length === 0, unsupported }
+  }
+
+  /**
    * Kept for backwards compatibility with callers that expect the old
    * synchronous shape. Wraps submit + polling internally. Views that need to
    * render queue status should call `submitExtractionJob` directly.
@@ -587,6 +725,8 @@ export const usePipelineStore = defineStore('pipeline', () => {
     applyWindowing,
     extractFeatures,
     submitExtractionJob,
+    extractFeaturesFast,
+    fastModeAvailable,
     trainModel,
     trainTimesNet,
     reset,

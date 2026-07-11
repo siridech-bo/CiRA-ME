@@ -37,6 +37,139 @@ def get_available_features():
     })
 
 
+@features_bp.route('/windows/<session_id>', methods=['GET'])
+@login_required
+def get_windows_for_client_extraction(session_id: str):
+    """
+    Return raw windowed data for client-side (browser) feature extraction.
+
+    Used by Fast Mode (Phase 2) — the browser Web Worker downloads windows,
+    computes the same lightweight feature set locally, and never touches the
+    server-side extraction queue. Result: 60 concurrent workshop users no
+    longer bottleneck on the 5-slot backend queue.
+
+    Payload size guideline: 1000 windows x 128 samples x 3 channels x 8B
+    JSON floats ≈ ~3 MB uncompressed. gzip cuts this ~5x. If sessions ever
+    grow beyond ~5000 windows we may want to switch to a binary transport,
+    but for the workshop dataset sizes JSON + gzip is fine.
+    """
+    session = _data_sessions.get(session_id)
+    if not session:
+        return jsonify({'error': f'Session not found: {session_id}'}), 404
+
+    if 'windows' not in session:
+        return jsonify({
+            'error': 'Session does not contain windowed data. Apply windowing first.'
+        }), 400
+
+    windows = session['windows']  # np.ndarray (num_windows, window_size, num_channels)
+    metadata = session.get('metadata', {})
+
+    # np.ndarray from Windower is already stacked, but be defensive: some
+    # code paths keep it as a list-of-ndarrays until stored.
+    import numpy as np
+    if isinstance(windows, list):
+        windows = np.array(windows)
+
+    if windows.ndim != 3:
+        return jsonify({
+            'error': f'Unexpected window shape {windows.shape}; expected 3D'
+        }), 500
+
+    num_windows, window_size, num_channels = windows.shape
+    sensor_columns = metadata.get(
+        'sensor_columns',
+        [f'ch_{i}' for i in range(num_channels)]
+    )
+    sampling_rate = float(metadata.get('sampling_rate', 100.0))
+
+    # tolist() is O(num_windows * window_size * num_channels) — for a typical
+    # workshop session (300 windows x 128 x 3) that's ~30ms. Streaming would
+    # add complexity for no measurable benefit.
+    return jsonify({
+        'session_id': session_id,
+        'num_windows': int(num_windows),
+        'window_size': int(window_size),
+        'num_channels': int(num_channels),
+        'sensor_columns': list(sensor_columns),
+        'sampling_rate': sampling_rate,
+        'windows': windows.tolist(),
+    })
+
+
+@features_bp.route('/register-fast', methods=['POST'])
+@login_required
+def register_fast_mode_features():
+    """
+    Register a Fast Mode (client-side extracted) feature session on the backend.
+
+    Fast Mode computes features in the browser (Web Worker) to avoid the
+    5-slot extraction queue. But downstream steps — selection, visualization,
+    training — all read from ``_feature_sessions`` on the backend. This
+    endpoint bridges them: the client POSTs its feature matrix and we build
+    the same session record that ``extract()`` would have built.
+
+    Labels/categories come from the corresponding windowed session
+    (``_data_sessions``), so the client never needs to send them.
+    """
+    import numpy as np
+    import pandas as pd
+    from ..services.feature_extractor import _feature_sessions
+
+    data = request.get_json()
+    if not data:
+        return jsonify({'error': 'No data provided'}), 400
+
+    windowed_session_id = data.get('windowed_session_id')
+    feature_names = data.get('feature_names')
+    features_df = data.get('features_df')  # [num_windows][num_features]
+
+    if not windowed_session_id or not feature_names or features_df is None:
+        return jsonify({
+            'error': 'windowed_session_id, feature_names, features_df required'
+        }), 400
+
+    windowed = _data_sessions.get(windowed_session_id)
+    if not windowed:
+        return jsonify({
+            'error': f'Windowed session not found: {windowed_session_id}'
+        }), 404
+
+    matrix = np.array(features_df, dtype=float)
+    if matrix.ndim != 2 or matrix.shape[1] != len(feature_names):
+        return jsonify({
+            'error': f'features_df shape {matrix.shape} does not match {len(feature_names)} feature_names'
+        }), 400
+
+    labels = windowed.get('labels')
+    categories = windowed.get('categories')
+    metadata = windowed.get('metadata', {})
+
+    features_df_pd = pd.DataFrame(matrix, columns=feature_names)
+
+    feature_session_id = f"features_fast_{windowed_session_id}"
+    _feature_sessions[feature_session_id] = {
+        'features': features_df_pd,
+        'labels': labels,
+        'categories': categories,
+        'feature_names': feature_names,
+        'metadata': {
+            **metadata,
+            'num_features': len(feature_names),
+            'feature_set': 'fast_mode',
+            'source': 'client_web_worker',
+        }
+    }
+
+    return jsonify({
+        'session_id': feature_session_id,
+        'num_windows': int(matrix.shape[0]),
+        'num_features': len(feature_names),
+        'feature_names': feature_names,
+        'preview': features_df_pd.head(5).to_dict(orient='records'),
+    })
+
+
 @features_bp.route('/extract-tsfresh', methods=['POST'])
 @login_required
 def extract_tsfresh_features():
