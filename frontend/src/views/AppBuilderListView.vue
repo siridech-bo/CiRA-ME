@@ -162,18 +162,39 @@
       </p>
 
       <div class="d-flex align-center gap-2 mb-3" style="flex-wrap: wrap;">
-        <v-select
+        <v-autocomplete
           v-model="mqttTestFile"
-          :items="mqttDatasets"
-          item-title="name"
+          :items="mqttDatasetItems"
+          item-title="display"
           item-value="path"
           label="CSV Dataset"
+          placeholder="Type to filter…"
           variant="outlined"
           density="compact"
           hide-details
-          style="max-width: 300px;"
+          clearable
+          auto-select-first
+          style="min-width: 420px; max-width: 560px; flex: 1;"
           :loading="loadingDatasets"
-        />
+          :menu-props="{ maxHeight: 420 }"
+        >
+          <template #item="{ props, item }">
+            <v-list-item v-bind="props" :title="undefined">
+              <template #title>
+                <div class="d-flex align-center">
+                  <v-icon size="14" color="grey" class="mr-1">mdi-file-delimited-outline</v-icon>
+                  <span class="font-weight-medium">{{ item.raw.filename }}</span>
+                  <span v-if="item.raw.folder" class="text-caption text-medium-emphasis ml-2">
+                    {{ item.raw.folder }}
+                  </span>
+                </div>
+              </template>
+              <template #subtitle>
+                <span class="text-caption text-medium-emphasis">{{ item.raw.size_kb }} KB</span>
+              </template>
+            </v-list-item>
+          </template>
+        </v-autocomplete>
         <v-text-field
           v-model="mqttTestTopic"
           label="Topic"
@@ -605,6 +626,36 @@ const mqttTestRate = ref(10)
 const mqttTestLoop = ref(false)
 const mqttDatasets = ref([])
 const loadingDatasets = ref(false)
+
+// Deduplicate by path, split filename vs folder, and prepend a display string
+// so v-autocomplete can filter across both filename and folder text.
+const mqttDatasetItems = computed(() => {
+  const seen = new Set()
+  const items = []
+  for (const d of (mqttDatasets.value || [])) {
+    const path = d.path || ''
+    if (!path || seen.has(path)) continue
+    seen.add(path)
+    const slash = path.lastIndexOf('/')
+    const filename = slash >= 0 ? path.slice(slash + 1) : path
+    const folder = slash >= 0 ? path.slice(0, slash) : ''
+    items.push({
+      path,
+      filename,
+      folder,
+      size_kb: d.size_kb,
+      // display is what v-autocomplete uses for filtering; include both
+      // filename and folder text so typing either matches.
+      display: folder ? `${filename} — ${folder}` : filename,
+    })
+  }
+  // Sort by folder then filename so related files cluster.
+  items.sort((a, b) => {
+    if (a.folder !== b.folder) return a.folder.localeCompare(b.folder)
+    return a.filename.localeCompare(b.filename)
+  })
+  return items
+})
 const mqttStarting = ref(false)
 const mqttPublishing = ref(false)
 const mqttPublished = ref(0)

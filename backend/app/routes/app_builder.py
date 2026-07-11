@@ -1089,14 +1089,15 @@ def detect_channels():
     Body: {"sample": <any JSON — object, array, or scalar>}
     Response: {"channels": ["X", "Y", "Z", ...]}
     """
-    # Enforce a small size cap up front — a sample MQTT message should be tiny,
-    # and this endpoint has no reason to accept large payloads.
-    raw_body = request.get_data(cache=False, as_text=False) or b''
-    if len(raw_body) > _DETECT_CHANNELS_MAX_BYTES:
+    # Enforce a small size cap up front — a sample MQTT message should be tiny.
+    # Use Content-Length so we don't consume the request stream (which would
+    # break the subsequent get_json call).
+    content_length = request.content_length or 0
+    if content_length > _DETECT_CHANNELS_MAX_BYTES:
         return jsonify({
             'error': (
                 f'Sample payload too large '
-                f'({len(raw_body)} bytes > {_DETECT_CHANNELS_MAX_BYTES} byte cap). '
+                f'({content_length} bytes > {_DETECT_CHANNELS_MAX_BYTES} byte cap). '
                 f'Paste only ONE MQTT message.'
             )
         }), 400
