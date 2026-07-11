@@ -1664,6 +1664,15 @@ const displayFontSize = ref('L') // 'S' | 'M' | 'L' | 'XL'
 const displayView = ref('chart')  // 'chart' | 'table'
 const DASH_TABLE_ROWS = 20
 
+// P1 Layer 1 — auto-fallback banner state (referenced by templates above; kept
+// here so the ref exists before display-prefs load/save reference it).
+const sensorAutoFallbackActive = ref(false)
+const sensorAutoFallbackInfo = ref(null) // { configured: string[], detected: string[] } | null
+
+// P1 Layer 3 — Show raw MQTT toggle + ring buffer (max 3 messages).
+const showRawMqtt = ref(false)
+const rawMqttBuffer = ref([]) // string[] — newest first, max 3
+
 function _prefsKey() { return `dash-prefs-${slug.value || 'app'}` }
 function loadDisplayPrefs() {
   const key = _prefsKey()
@@ -2070,17 +2079,8 @@ const liveStride = computed(() => {
 
 const autoDetectedChannels = ref([])
 
-// ── MQTT robustness (Layer 1 auto-fallback state) ─────────────
-// Flipped on when parseSensorPayload() had to auto-match discovered numeric
-// leaves by position because the configured channel names didn't overlap the
-// payload. Persists for the whole session so the operator sees the banner
-// while they diagnose (do NOT clear per message).
-const sensorAutoFallbackActive = ref(false)
-const sensorAutoFallbackInfo = ref(null) // { configured: string[], detected: string[] } | null
-
-// ── MQTT robustness (Layer 3 raw payload ring buffer) ─────────
-const showRawMqtt = ref(false)
-const rawMqttBuffer = ref([]) // string[] — newest first, max 3
+// (sensorAutoFallback* and showRawMqtt / rawMqttBuffer refs are declared
+//  earlier in the display-prefs block so load/save can see them before use.)
 
 const liveChannels = computed(() => {
   const channels = liveStreamConfig.value.channels || ''
