@@ -349,7 +349,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, nextTick } from 'vue'
+import { ref, computed, onMounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import api from '@/services/api'
 import { useNotificationStore } from '@/stores/notification'
