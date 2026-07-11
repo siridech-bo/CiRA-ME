@@ -405,6 +405,45 @@
 
           <!-- ────────── Signal Recorder preview ────────── -->
           <div v-if="isRecorderMode && mqttConnected" class="dash-content dash-recorder">
+            <!-- Auto-fallback warning banner (Layer 1) — shown when the parser had
+                 to positionally match discovered numeric leaves to configured
+                 channel names because no names overlapped. -->
+            <v-alert
+              v-if="sensorAutoFallbackActive"
+              type="warning"
+              variant="tonal"
+              density="compact"
+              closable
+              @click:close="sensorAutoFallbackActive = false"
+            >
+              Configured channels
+              <strong>{{ (sensorAutoFallbackInfo?.configured || []).join(', ') }}</strong>
+              didn't match any payload keys. Auto-matched by position from detected keys
+              <strong>{{ (sensorAutoFallbackInfo?.detected || []).join(', ') }}</strong>.
+              Update your App Builder MQTT node to future-proof.
+            </v-alert>
+
+            <!-- Show raw MQTT toggle (Layer 3) — diagnostic view of the last 3
+                 payloads so the operator can eyeball payload shape without
+                 leaving the recorder. -->
+            <div class="raw-mqtt-controls">
+              <v-btn
+                size="x-small"
+                variant="tonal"
+                :prepend-icon="showRawMqtt ? 'mdi-eye-off-outline' : 'mdi-eye-outline'"
+                @click="showRawMqtt = !showRawMqtt"
+              >
+                {{ showRawMqtt ? 'Hide raw MQTT' : 'Show raw MQTT' }}
+              </v-btn>
+            </div>
+            <div v-if="showRawMqtt && rawMqttBuffer.length > 0" class="raw-mqtt-wrap">
+              <pre
+                v-for="(msg, i) in rawMqttBuffer"
+                :key="'raw-' + i"
+                class="raw-mqtt-block"
+              >{{ msg.length > 500 ? msg.slice(0, 500) + '…' : msg }}</pre>
+            </div>
+
             <div v-if="liveChannels.length > 0" class="preview-panel dash-preview">
               <div class="preview-header">
                 <span class="text-caption font-weight-bold text-medium-emphasis">LIVE PREVIEW</span>
@@ -768,6 +807,24 @@
           {{ mqttError }}
         </v-alert>
 
+        <!-- Auto-fallback warning banner (Layer 1) — surfaced here too so operators
+             running in inference mode (not recorder) also see the miscoding warning. -->
+        <v-alert
+          v-if="sensorAutoFallbackActive"
+          type="warning"
+          variant="tonal"
+          density="compact"
+          class="mb-3"
+          closable
+          @click:close="sensorAutoFallbackActive = false"
+        >
+          Configured channels
+          <strong>{{ (sensorAutoFallbackInfo?.configured || []).join(', ') }}</strong>
+          didn't match any payload keys. Auto-matched by position from detected keys
+          <strong>{{ (sensorAutoFallbackInfo?.detected || []).join(', ') }}</strong>.
+          Update your App Builder MQTT node to future-proof.
+        </v-alert>
+
         <!-- Live stats -->
         <div v-if="mqttConnected" class="d-flex flex-wrap gap-3 mb-3">
           <div class="live-stat">
@@ -838,6 +895,42 @@
 
         <!-- Signal Recorder Mode -->
         <div v-if="isRecorderMode && mqttConnected" class="recorder-section">
+          <!-- Auto-fallback warning banner (Layer 1) -->
+          <v-alert
+            v-if="sensorAutoFallbackActive"
+            type="warning"
+            variant="tonal"
+            density="compact"
+            closable
+            class="mb-3"
+            @click:close="sensorAutoFallbackActive = false"
+          >
+            Configured channels
+            <strong>{{ (sensorAutoFallbackInfo?.configured || []).join(', ') }}</strong>
+            didn't match any payload keys. Auto-matched by position from detected keys
+            <strong>{{ (sensorAutoFallbackInfo?.detected || []).join(', ') }}</strong>.
+            Update your App Builder MQTT node to future-proof.
+          </v-alert>
+
+          <!-- Show raw MQTT toggle (Layer 3) -->
+          <div class="raw-mqtt-controls">
+            <v-btn
+              size="x-small"
+              variant="tonal"
+              :prepend-icon="showRawMqtt ? 'mdi-eye-off-outline' : 'mdi-eye-outline'"
+              @click="showRawMqtt = !showRawMqtt"
+            >
+              {{ showRawMqtt ? 'Hide raw MQTT' : 'Show raw MQTT' }}
+            </v-btn>
+          </div>
+          <div v-if="showRawMqtt && rawMqttBuffer.length > 0" class="raw-mqtt-wrap">
+            <pre
+              v-for="(msg, i) in rawMqttBuffer"
+              :key="'raw-fb-' + i"
+              class="raw-mqtt-block"
+            >{{ msg.length > 500 ? msg.slice(0, 500) + '…' : msg }}</pre>
+          </div>
+
           <!-- Live preview panel: always shown while connected, even before Record -->
           <div v-if="liveChannels.length > 0" class="preview-panel">
             <div class="preview-header">
@@ -1583,12 +1676,14 @@ function loadDisplayPrefs() {
       displayPrecision.value = typeof p.precision === 'number' ? p.precision : 3
       displayFontSize.value = p.fontSize || 'L'
       displayView.value = p.view || defaultView
+      showRawMqtt.value = !!p.showRawMqtt
       return
     } catch { /* fall through */ }
   }
   displayPrecision.value = 3
   displayFontSize.value = 'L'
   displayView.value = defaultView
+  showRawMqtt.value = false
 }
 function saveDisplayPrefs() {
   const key = _prefsKey()
@@ -1596,11 +1691,12 @@ function saveDisplayPrefs() {
     precision: displayPrecision.value,
     fontSize: displayFontSize.value,
     view: displayView.value,
+    showRawMqtt: showRawMqtt.value,
   }))
 }
 watch(slug, () => { if (slug.value) loadDisplayPrefs() })
 watch(() => appMode.value, () => { if (slug.value) loadDisplayPrefs() }, { immediate: false })
-watch([displayPrecision, displayFontSize, displayView], () => { saveDisplayPrefs() })
+watch([displayPrecision, displayFontSize, displayView, showRawMqtt], () => { saveDisplayPrefs() })
 
 // Precision-formatted latest prediction (used in the dashboard card).
 const displayedPrediction = computed(() => {
@@ -1974,6 +2070,18 @@ const liveStride = computed(() => {
 
 const autoDetectedChannels = ref([])
 
+// ── MQTT robustness (Layer 1 auto-fallback state) ─────────────
+// Flipped on when parseSensorPayload() had to auto-match discovered numeric
+// leaves by position because the configured channel names didn't overlap the
+// payload. Persists for the whole session so the operator sees the banner
+// while they diagnose (do NOT clear per message).
+const sensorAutoFallbackActive = ref(false)
+const sensorAutoFallbackInfo = ref(null) // { configured: string[], detected: string[] } | null
+
+// ── MQTT robustness (Layer 3 raw payload ring buffer) ─────────
+const showRawMqtt = ref(false)
+const rawMqttBuffer = ref([]) // string[] — newest first, max 3
+
 const liveChannels = computed(() => {
   const channels = liveStreamConfig.value.channels || ''
   if (channels) return channels.split(',').map((c) => c.trim()).filter(Boolean)
@@ -2311,6 +2419,16 @@ async function startLiveStream() {
       rateCounter++
       try {
         const raw = JSON.parse(payload.toString())
+        // Layer 3: ring-buffer the raw payload for the "Show raw MQTT" panel.
+        // Pretty-print to 2-space JSON so operators can eyeball payload shape
+        // without a separate viewer. Newest-first, capped at 3 entries.
+        try {
+          const pretty = JSON.stringify(raw, null, 2)
+          rawMqttBuffer.value.unshift(pretty)
+          if (rawMqttBuffer.value.length > 3) {
+            rawMqttBuffer.value = rawMqttBuffer.value.slice(0, 3)
+          }
+        } catch { /* stringify should not fail on parseable JSON */ }
         const sample = parseSensorPayload(raw)
         if (sample) {
           // Preview buffer (recorder-mode only): always updates while connected,
@@ -2727,67 +2845,182 @@ function downloadRecordedCSV() {
   URL.revokeObjectURL(url)
 }
 
+// Recursive numeric-leaf flattener. Walks any JSON value and returns
+// { [dotted_key]: number } for every numeric leaf.
+//
+//   {X:1, Y:2}                    -> {X:1, Y:2}
+//   {data:{x:1, y:2}}             -> {"data.x":1, "data.y":2}
+//   {values:[1,2,3]}              -> {"values[0]":1, "values[1]":2, "values[2]":3}
+//   [1,2,3]                       -> {"[0]":1, "[1]":2, "[2]":3}
+//   5.5                           -> {value:5.5}
+//   {ts:1, temp:2, device:"a"}    -> {ts:1, temp:2}  (non-numeric dropped)
+//
+// Insertion order is preserved by Object.entries + push semantics — the caller
+// relies on this for the auto-fallback positional assignment.
+function flattenNumericLeaves(obj, prefix = '') {
+  const out = {}
+  const isNum = (v) => typeof v === 'number' && Number.isFinite(v)
+
+  // Bare number — return under 'value' when at the root, otherwise honor prefix.
+  if (isNum(obj)) {
+    out[prefix || 'value'] = obj
+    return out
+  }
+  if (obj === null || obj === undefined) return out
+
+  if (Array.isArray(obj)) {
+    obj.forEach((v, i) => {
+      const key = `${prefix}[${i}]`
+      if (isNum(v)) {
+        out[key] = v
+      } else if (v !== null && typeof v === 'object') {
+        Object.assign(out, flattenNumericLeaves(v, key))
+      }
+      // strings / bools / null at leaves are dropped (not numeric)
+    })
+    return out
+  }
+
+  if (typeof obj === 'object') {
+    for (const [k, v] of Object.entries(obj)) {
+      const key = prefix ? `${prefix}.${k}` : k
+      if (isNum(v)) {
+        out[key] = v
+      } else if (v !== null && typeof v === 'object') {
+        Object.assign(out, flattenNumericLeaves(v, key))
+      }
+      // strings / bools / null at leaves are dropped
+    }
+    return out
+  }
+
+  return out
+}
+
 function parseSensorPayload(raw) {
   // Normalize different MQTT payload formats into { channel: value } object
   const channels = liveChannels.value
 
-  // Format 1: { "values": [1.2, 3.4, 5.6] } (Android SensorSpot, array)
-  if (raw.values && Array.isArray(raw.values)) {
-    // Auto-detect channel names if not configured
+  // ── Format 1 (preserved): { "values": [1.2, 3.4, 5.6] } ──────
+  // Android SensorSpot and other array-shaped emitters. Only use this branch's
+  // result if it fully resolves — otherwise fall through to the generic
+  // flatten/match logic below.
+  if (raw && raw.values && Array.isArray(raw.values)) {
     if (channels.length === 0 && autoDetectedChannels.value.length === 0) {
       autoDetectedChannels.value = raw.values.map((_, i) => `ch${i}`)
     }
     const ch = channels.length > 0 ? channels : autoDetectedChannels.value
     const sample = {}
+    let ok = true
     raw.values.forEach((v, i) => {
       const name = ch[i] || `ch${i}`
-      sample[name] = typeof v === 'number' ? v : parseFloat(v) || 0
+      const num = typeof v === 'number' ? v : parseFloat(v)
+      if (!Number.isFinite(num)) { ok = false; return }
+      sample[name] = num
     })
-    return sample
+    // Attach string target column if present (for ground-truth comparison)
+    const targetCol = multiModelTargetCol.value
+    if (targetCol && raw && typeof raw === 'object' && typeof raw[targetCol] === 'string') {
+      sample[targetCol] = raw[targetCol]
+    }
+    if (ok && Object.keys(sample).length > 0) return sample
+    // fall through
   }
 
-  // Format 2: { "values": { "v0": 1.2, "v1": 3.4 } } (SensorSpot named)
-  if (raw.values && typeof raw.values === 'object' && !Array.isArray(raw.values)) {
+  // ── Format 2 (preserved): { "values": { "v0": 1.2, "v1": 3.4 } } ──
+  if (raw && raw.values && typeof raw.values === 'object' && !Array.isArray(raw.values)) {
     const keys = Object.keys(raw.values)
     if (channels.length === 0 && autoDetectedChannels.value.length === 0) {
       autoDetectedChannels.value = keys
     }
     const ch = channels.length > 0 ? channels : autoDetectedChannels.value
     const sample = {}
+    let ok = true
     keys.forEach((k, i) => {
       const name = ch[i] || k
-      sample[name] = typeof raw.values[k] === 'number' ? raw.values[k] : parseFloat(raw.values[k]) || 0
+      const num = typeof raw.values[k] === 'number' ? raw.values[k] : parseFloat(raw.values[k])
+      if (!Number.isFinite(num)) { ok = false; return }
+      sample[name] = num
     })
-    return sample
+    const targetCol = multiModelTargetCol.value
+    if (targetCol && typeof raw[targetCol] === 'string') {
+      sample[targetCol] = raw[targetCol]
+    }
+    if (ok && Object.keys(sample).length > 0) return sample
+    // fall through
   }
 
-  // Format 3: { "accX": 1.2, "accY": 3.4, "accZ": 5.6 } (flat object with sensor keys)
-  if (typeof raw === 'object') {
-    const skip = new Set(['type', 'timestamp', 'time', '_timestamp', '_index', 'name', 'id'])
+  // ── Generic path: flatten to numeric leaves, then case-insensitive
+  //    match, then positional auto-fallback. Handles bare numbers, bare
+  //    arrays, uppercase-keyed flat objects, nested objects, etc.
+  const flat = flattenNumericLeaves(raw)
+  const flatKeys = Object.keys(flat)
+  if (flatKeys.length === 0) return null
+
+  const targetCol = multiModelTargetCol.value
+
+  // If channels are configured, try case-insensitive full-key match first.
+  if (channels.length > 0) {
+    const lowerIndex = {}
+    for (const fk of flatKeys) lowerIndex[fk.toLowerCase()] = fk
     const sample = {}
-    let hasNumeric = false
-    const detectedKeys = []
-    const targetCol = multiModelTargetCol.value
-    for (const [k, v] of Object.entries(raw)) {
-      if (skip.has(k)) continue
-      if (typeof v === 'number') {
-        sample[k] = v
-        hasNumeric = true
-        detectedKeys.push(k)
-      } else if (typeof v === 'string' && k === targetCol) {
-        // Include string label column for ground truth comparison
-        sample[k] = v
+    let matchCount = 0
+    for (const ch of channels) {
+      const hit = lowerIndex[ch.toLowerCase()]
+      if (hit !== undefined) {
+        sample[ch] = flat[hit]
+        matchCount++
       }
     }
-    if (hasNumeric) {
-      if (autoDetectedChannels.value.length === 0) {
-        autoDetectedChannels.value = detectedKeys
+    if (matchCount === channels.length) {
+      // All channels resolved — clean case.
+      if (targetCol && raw && typeof raw === 'object' && typeof raw[targetCol] === 'string') {
+        sample[targetCol] = raw[targetCol]
       }
       return sample
     }
+    if (matchCount === 0) {
+      // Auto-fallback: assign flattened leaves to configured channel names by
+      // position (insertion order). Flag the session so we surface the
+      // warning banner until the operator fixes their App Builder config.
+      const fallbackSample = {}
+      for (let i = 0; i < channels.length && i < flatKeys.length; i++) {
+        fallbackSample[channels[i]] = flat[flatKeys[i]]
+      }
+      if (Object.keys(fallbackSample).length > 0) {
+        sensorAutoFallbackActive.value = true
+        sensorAutoFallbackInfo.value = {
+          configured: [...channels],
+          detected: flatKeys.slice(0, Math.max(channels.length, 8)),
+        }
+        if (targetCol && raw && typeof raw === 'object' && typeof raw[targetCol] === 'string') {
+          fallbackSample[targetCol] = raw[targetCol]
+        }
+        return fallbackSample
+      }
+      return null
+    }
+    // Partial match — return what we have; missing channels will fall back to
+    // ?? 0 in the CSV writer. Attach target col if present.
+    if (Object.keys(sample).length > 0) {
+      if (targetCol && raw && typeof raw === 'object' && typeof raw[targetCol] === 'string') {
+        sample[targetCol] = raw[targetCol]
+      }
+      return sample
+    }
+    return null
   }
 
-  return null
+  // No configured channels — publish the flattened leaves as-is under their
+  // dotted keys and let the caller auto-detect channel names.
+  const sample = { ...flat }
+  if (autoDetectedChannels.value.length === 0) {
+    autoDetectedChannels.value = flatKeys
+  }
+  if (targetCol && raw && typeof raw === 'object' && typeof raw[targetCol] === 'string') {
+    sample[targetCol] = raw[targetCol]
+  }
+  return sample
 }
 
 function pushSensorSample(sample) {
@@ -3877,5 +4110,32 @@ async function runPipeline() {
 .dash-rail .recorder-label-btn {
   padding: 4px 10px;
   font-size: 11px;
+}
+
+/* ── Raw MQTT diagnostic panel (Layer 3) ────────────────── */
+.raw-mqtt-controls {
+  display: flex;
+  justify-content: flex-end;
+  margin: 4px 0;
+}
+.raw-mqtt-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 6px 0 10px;
+}
+.raw-mqtt-block {
+  background: #0d1117;
+  border: 1px solid #21262d;
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin: 0;
+  font-size: 11px;
+  font-family: monospace;
+  color: #8b949e;
+  max-height: 220px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 </style>

@@ -1039,6 +1039,88 @@ def run_app(slug):
     return jsonify(response)
 
 
+# ─── Sample Payload Channel Detection ────────────────────────────
+
+_DETECT_CHANNELS_MAX_BYTES = 4096
+
+
+def _flatten_numeric_leaves(value, prefix=''):
+    """Walk a JSON tree and return [(key_path, numeric_value)] for every
+    numeric leaf. Nested objects use dotted key-paths; arrays use bracket
+    notation. Booleans are excluded (they are not sensor channels even
+    though isinstance(True, int) is True in Python).
+
+    Examples:
+        {"X": 1.2, "Y": 3.4}                -> [("X", 1.2), ("Y", 3.4)]
+        {"data": {"x": 1.2}}                -> [("data.x", 1.2)]
+        {"values": [1.2, 3.4]}              -> [("values[0]", 1.2), ("values[1]", 3.4)]
+        [1.2, 3.4]                          -> [("[0]", 1.2), ("[1]", 3.4)]
+        5.5                                 -> [("value", 5.5)]
+    """
+    leaves = []
+    if isinstance(value, bool):
+        # bool is a subclass of int — exclude it explicitly.
+        return leaves
+    if isinstance(value, (int, float)):
+        key = prefix if prefix else 'value'
+        leaves.append((key, value))
+        return leaves
+    if isinstance(value, dict):
+        for k, v in value.items():
+            child_prefix = f'{prefix}.{k}' if prefix else str(k)
+            leaves.extend(_flatten_numeric_leaves(v, child_prefix))
+        return leaves
+    if isinstance(value, list):
+        for i, v in enumerate(value):
+            child_prefix = f'{prefix}[{i}]' if prefix else f'[{i}]'
+            leaves.extend(_flatten_numeric_leaves(v, child_prefix))
+        return leaves
+    # Strings, None, etc. — not a numeric leaf.
+    return leaves
+
+
+@app_builder_bp.route('/detect-channels', methods=['POST'])
+@login_required
+def detect_channels():
+    """Scan a sample MQTT/JSON payload for numeric leaves and return their
+    key-paths. Powers the App Builder's "Detect channels from sample MQTT
+    message" helper on the live_stream input node.
+
+    Body: {"sample": <any JSON — object, array, or scalar>}
+    Response: {"channels": ["X", "Y", "Z", ...]}
+    """
+    # Enforce a small size cap up front — a sample MQTT message should be tiny,
+    # and this endpoint has no reason to accept large payloads.
+    raw_body = request.get_data(cache=False, as_text=False) or b''
+    if len(raw_body) > _DETECT_CHANNELS_MAX_BYTES:
+        return jsonify({
+            'error': (
+                f'Sample payload too large '
+                f'({len(raw_body)} bytes > {_DETECT_CHANNELS_MAX_BYTES} byte cap). '
+                f'Paste only ONE MQTT message.'
+            )
+        }), 400
+
+    data = request.get_json(silent=True) or {}
+    if 'sample' not in data:
+        return jsonify({'error': 'Request must include "sample" field with the JSON payload.'}), 400
+
+    sample = data['sample']
+    leaves = _flatten_numeric_leaves(sample)
+
+    # Preserve insertion order (first-seen wins) and dedupe case-insensitively.
+    seen_lower = set()
+    channels = []
+    for key, _val in leaves:
+        lk = key.lower()
+        if lk in seen_lower:
+            continue
+        seen_lower.add(lk)
+        channels.append(key)
+
+    return jsonify({'channels': channels})
+
+
 # ─── Capabilities ────────────────────────────────────────────────
 
 @app_builder_bp.route('/capabilities', methods=['GET'])

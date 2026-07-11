@@ -359,6 +359,29 @@
                 </div>
               </div>
 
+              <!-- Live-stream channels field with "Detect from sample" helper -->
+              <div v-else-if="field.type === 'text' && field.key === 'channels' && selectedNode?.type === 'input.live_stream'" class="mb-2">
+                <v-text-field
+                  :model-value="getConfigVal(selectedNode, field)"
+                  @update:model-value="v => updateConfig(selectedNode.id, field.key, v)"
+                  variant="outlined"
+                  density="compact"
+                  hide-details
+                  placeholder="X, Y, Z"
+                  class="config-input"
+                />
+                <v-btn
+                  size="x-small"
+                  variant="tonal"
+                  color="info"
+                  class="mt-2"
+                  @click="openDetectChannels"
+                >
+                  <v-icon start size="12">mdi-auto-fix</v-icon>
+                  Detect channels from sample MQTT message
+                </v-btn>
+              </div>
+
               <!-- text (generic) -->
               <v-text-field
                 v-else-if="field.type === 'text'"
@@ -768,6 +791,54 @@
       </div>
     </div>
 
+    <!-- Detect channels dialog -->
+    <v-dialog v-model="detectChannelsDialog" max-width="560">
+      <v-card>
+        <v-card-title class="text-subtitle-1">
+          Detect channels from a sample MQTT message
+        </v-card-title>
+        <v-card-text>
+          <v-alert
+            type="info"
+            variant="tonal"
+            density="compact"
+            class="mb-3"
+          >
+            Paste ONE JSON message from your sensor board. We'll extract the numeric fields and fill the Channels list.
+          </v-alert>
+          <div class="text-caption text-medium-emphasis mb-2">
+            e.g. <code>{"X": -9.73, "Y": 0.9, "Z": -1.61}</code>
+          </div>
+          <v-textarea
+            v-model="detectChannelsSample"
+            variant="outlined"
+            density="compact"
+            :rows="5"
+            auto-grow
+            hide-details
+            placeholder='{"X": -9.73, "Y": 0.9, "Z": -1.61}'
+            class="detect-channels-textarea"
+          />
+          <div v-if="detectChannelsError" class="mt-2 text-caption text-error">
+            <v-icon size="12" color="error" class="mr-1">mdi-alert</v-icon>
+            {{ detectChannelsError }}
+          </div>
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="text" @click="detectChannelsDialog = false">Cancel</v-btn>
+          <v-btn
+            color="purple"
+            variant="tonal"
+            :loading="detectChannelsLoading"
+            @click="runDetectChannels"
+          >
+            Detect
+          </v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
+
   </div>
 
 </template>
@@ -776,6 +847,9 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import api from '@/services/api'
+import { useNotificationStore } from '@/stores/notification'
+
+const notificationStore = useNotificationStore()
 
 // ── Router ──────────────────────────────────────────────────────────
 const router = useRouter()
@@ -1160,6 +1234,60 @@ async function discoverTopics() {
     discoveredTopics.value = []
   }
   discoveringTopics.value = false
+}
+
+// ── Detect channels from sample MQTT message ─────────────────────
+const detectChannelsDialog = ref(false)
+const detectChannelsSample = ref('')
+const detectChannelsError = ref('')
+const detectChannelsLoading = ref(false)
+
+function openDetectChannels() {
+  detectChannelsSample.value = ''
+  detectChannelsError.value = ''
+  detectChannelsLoading.value = false
+  detectChannelsDialog.value = true
+}
+
+async function runDetectChannels() {
+  detectChannelsError.value = ''
+  const text = (detectChannelsSample.value || '').trim()
+  if (!text) {
+    detectChannelsError.value = 'Paste a sample JSON message first.'
+    return
+  }
+
+  let parsed
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    detectChannelsError.value = "That doesn't look like JSON — check for missing quotes or braces."
+    return
+  }
+
+  detectChannelsLoading.value = true
+  try {
+    const resp = await api.post('/api/app-builder/detect-channels', { sample: parsed })
+    const channels = resp.data?.channels || []
+    if (channels.length === 0) {
+      detectChannelsError.value = 'No numeric fields found in that payload.'
+      return
+    }
+
+    // The channels field on input.live_stream is a comma-separated text field.
+    if (selectedNode.value?.type === 'input.live_stream') {
+      updateConfig(selectedNode.value.id, 'channels', channels.join(', '))
+    }
+
+    notificationStore.showSuccess(
+      `Detected ${channels.length} channel${channels.length === 1 ? '' : 's'}: ${channels.join(', ')}`
+    )
+    detectChannelsDialog.value = false
+  } catch (e) {
+    detectChannelsError.value = e.response?.data?.error || 'Failed to detect channels from sample.'
+  } finally {
+    detectChannelsLoading.value = false
+  }
 }
 
 function getMultiselectOptions(node, field) {
