@@ -506,6 +506,82 @@ def publish_app(app_id):
 
 # ─── Runtime (API Key or Session Auth) ───────────────────────────
 
+@app_builder_bp.route('/run/<slug>/inference-config', methods=['GET'])
+def get_inference_config(slug):
+    """Return the normalization + feature contract the browser needs to
+    replicate this app's pipeline entirely client-side (Fast Mode).
+
+    The browser normalizes the raw window with these exact params, then runs
+    featureExtraction.ts to produce a feature vector that matches what the
+    server-side pipeline would have computed. Server can then skip
+    window/normalize/feature_extract entirely.
+
+    Auth mirrors /run/<slug> — public apps are open, team apps require login,
+    private apps require ownership.
+    """
+    app = AppBuilderApp.get_by_slug(slug)
+    if not app:
+        return jsonify({'error': 'App not found'}), 404
+    if app['status'] != 'published':
+        return jsonify({'error': 'App is not published'}), 400
+
+    access = app.get('access', 'private')
+    user_id = _auth_from_session_or_apikey()
+    if access == 'team' and not user_id:
+        return jsonify({'error': 'Login required'}), 401
+    if access == 'private':
+        if not user_id:
+            return jsonify({'error': 'Auth required'}), 401
+        if app['user_id'] != user_id:
+            return jsonify({'error': 'Access denied'}), 403
+
+    nodes = app.get('nodes', [])
+
+    # Find the first model.endpoint.* node in the pipeline and pull its
+    # normalization + feature contract from the SavedModel's pipeline_config.
+    normalization = None
+    sensor_columns = []
+    feature_names = []
+    for node in nodes:
+        ntype = node.get('type', '')
+        if ntype == 'transform.feature_extract':
+            fnames = (node.get('config') or {}).get('features') or []
+            if fnames and not feature_names:
+                feature_names = list(fnames)
+        if ntype.startswith('model.endpoint.'):
+            eid = ntype.replace('model.endpoint.', '')
+            ep = MeLabEndpoint.get_by_id(eid)
+            if not ep:
+                continue
+            saved = SavedModel.get_by_id(ep.get('saved_model_id'))
+            if not saved:
+                continue
+            pc = saved.get('pipeline_config', {})
+            if isinstance(pc, str):
+                pc = json.loads(pc) if pc else {}
+            model_norm = pc.get('normalization') or {}
+            if model_norm and not normalization:
+                normalization = {
+                    'method': model_norm.get('method', 'min_max'),
+                    'sensor_columns': list(model_norm.get('sensor_columns', [])),
+                    'channel_min': list(model_norm.get('channel_min', [])),
+                    'channel_max': list(model_norm.get('channel_max', [])),
+                    'channel_mean': list(model_norm.get('channel_mean', [])),
+                    'channel_std': list(model_norm.get('channel_std', [])),
+                    'channel_median': list(model_norm.get('channel_median', [])),
+                    'channel_iqr': list(model_norm.get('channel_iqr', [])),
+                }
+                sensor_columns = normalization['sensor_columns']
+            if normalization and feature_names:
+                break
+
+    return jsonify({
+        'normalization': normalization,   # null if the model was trained without normalization
+        'sensor_columns': sensor_columns,
+        'feature_names': feature_names,
+    })
+
+
 @app_builder_bp.route('/run/<slug>', methods=['POST'])
 def run_app(slug):
     """Execute a published app pipeline."""
@@ -542,15 +618,43 @@ def run_app(slug):
     # Sort nodes by pipeline order using edges (topological-ish: follow edge order)
     ordered_nodes = _order_nodes(nodes, edges)
 
-    # Parse input data from request
-    input_data = _parse_input(request)
-    if isinstance(input_data, tuple):
-        # Error response
-        return input_data
+    # ─── Phase 3: Fast Mode (client-side feature extraction) ──────────
+    # If the client sends a pre-computed feature matrix, skip _parse_input
+    # (which requires a raw "data" field) and inject the features directly.
+    # See the pipeline loop below — window/feature_extract nodes are bypassed.
+    request_body = request.get_json(silent=True)
+    client_feature_vector = None
+    client_feature_names = None
+    if request_body and request_body.get('feature_vector') is not None:
+        try:
+            _fv = np.array(request_body['feature_vector'], dtype=np.float64)
+            if _fv.ndim == 1:
+                _fv = _fv.reshape(1, -1)
+            if _fv.ndim != 2:
+                return jsonify({'error': 'feature_vector must be 2D [num_windows][num_features]'}), 400
+            client_feature_vector = _fv
+            client_feature_names = request_body.get('feature_names') or []
+            logger.info(
+                f"[AppBuilder] Fast Mode: client-side feature_vector received "
+                f"shape={client_feature_vector.shape}, {len(client_feature_names)} names"
+            )
+        except (ValueError, TypeError) as e:
+            return jsonify({'error': f'Invalid feature_vector: {e}'}), 400
+
+    if client_feature_vector is not None:
+        # Fast Mode path — the numpy array replaces the DataFrame/ndarray that
+        # _parse_input would have returned. Downstream nodes see a 2D matrix
+        # exactly like the output of _apply_feature_extraction (line 1595).
+        input_data = client_feature_vector
+    else:
+        # Parse input data from request (raw path — existing behavior)
+        input_data = _parse_input(request)
+        if isinstance(input_data, tuple):
+            # Error response
+            return input_data
 
     # Check for live target values and channels (from MQTT with ground truth column)
     live_target_values = None
-    request_body = request.get_json(silent=True)
     if request_body and request_body.get('target_values'):
         live_target_values = request_body['target_values']
 
@@ -600,31 +704,35 @@ def run_app(slug):
 
         # If input is a DataFrame, remember column names and extract target
         import pandas as pd
-        # Save raw input signal for multi-model timeline visualization
+        # Save raw input signal for multi-model timeline visualization.
+        # Fast Mode (client_feature_vector) skips this — the input is already a
+        # feature matrix, not raw samples, so a "signal preview" would be
+        # meaningless (columns are e.g. mean/std, not the underlying waveform).
         raw_signal_preview = None
-        try:
-            if isinstance(current_data, pd.DataFrame):
-                # Pick first numeric column (most representative) and downsample to max 500 points
-                numeric_cols = current_data.select_dtypes(include=[np.number]).columns.tolist()
-                non_sensor = {'timestamp', 'time', 'index', 'label', 'class', 'target', 'category', 'sample_id'}
-                sensor_only = [c for c in numeric_cols if c.lower() not in non_sensor]
-                if sensor_only:
-                    sig = current_data[sensor_only[0]].values
-                    if len(sig) > 500:
-                        idx = np.linspace(0, len(sig) - 1, 500, dtype=int)
-                        sig = sig[idx]
-                    raw_signal_preview = [float(v) for v in sig if not np.isnan(v)]
-            elif isinstance(current_data, np.ndarray):
-                # MQTT live: flatten and take first channel
-                arr = current_data
-                if arr.ndim == 2 and arr.shape[1] > 0:
-                    sig = arr[:, 0]
-                    if len(sig) > 500:
-                        idx = np.linspace(0, len(sig) - 1, 500, dtype=int)
-                        sig = sig[idx]
-                    raw_signal_preview = [float(v) for v in sig if not np.isnan(v)]
-        except Exception as _e:
-            raw_signal_preview = None
+        if client_feature_vector is None:
+            try:
+                if isinstance(current_data, pd.DataFrame):
+                    # Pick first numeric column (most representative) and downsample to max 500 points
+                    numeric_cols = current_data.select_dtypes(include=[np.number]).columns.tolist()
+                    non_sensor = {'timestamp', 'time', 'index', 'label', 'class', 'target', 'category', 'sample_id'}
+                    sensor_only = [c for c in numeric_cols if c.lower() not in non_sensor]
+                    if sensor_only:
+                        sig = current_data[sensor_only[0]].values
+                        if len(sig) > 500:
+                            idx = np.linspace(0, len(sig) - 1, 500, dtype=int)
+                            sig = sig[idx]
+                        raw_signal_preview = [float(v) for v in sig if not np.isnan(v)]
+                elif isinstance(current_data, np.ndarray):
+                    # MQTT live: flatten and take first channel
+                    arr = current_data
+                    if arr.ndim == 2 and arr.shape[1] > 0:
+                        sig = arr[:, 0]
+                        if len(sig) > 500:
+                            idx = np.linspace(0, len(sig) - 1, 500, dtype=int)
+                            sig = sig[idx]
+                        raw_signal_preview = [float(v) for v in sig if not np.isnan(v)]
+            except Exception as _e:
+                raw_signal_preview = None
 
         if isinstance(current_data, pd.DataFrame):
             column_names = list(current_data.columns)
@@ -726,6 +834,16 @@ def run_app(slug):
             params = node.get('config', {}) or {}
 
             if ntype.startswith('input.'):
+                continue
+
+            elif client_feature_vector is not None and ntype in ('transform.window', 'transform.feature_extract', 'transform.normalize', 'transform.fill_missing'):
+                # Fast Mode: client already produced the feature matrix in the
+                # browser (Web Worker). Skip every pre-model transform — the
+                # feature vector is already the shape model_endpoint expects.
+                logger.info(
+                    f"[AppBuilder] Fast Mode: skipping {ntype} "
+                    f"(client-side feature_vector supplied, {len(client_feature_names)} features)"
+                )
                 continue
 
             elif is_raw_mode_model and ntype in ('transform.window', 'transform.feature_extract'):

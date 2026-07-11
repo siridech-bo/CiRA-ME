@@ -266,6 +266,34 @@
               {{ mqttError }}
             </v-alert>
 
+            <!-- Fast Mode toggle (dashboard rail) — P2 Phase 3 -->
+            <div v-if="fastModeAvailable" class="rail-fast-mode mt-3">
+              <div class="d-flex align-center gap-1">
+                <v-icon size="14" :color="fastModeEnabled ? 'success' : 'grey'">mdi-lightning-bolt</v-icon>
+                <span class="text-caption" style="font-weight: 600;">Fast Mode</span>
+                <v-switch
+                  v-model="fastModeEnabled"
+                  color="success"
+                  hide-details
+                  density="compact"
+                  inset
+                  class="mt-0 ml-auto"
+                  style="transform: scale(0.75); transform-origin: right;"
+                />
+              </div>
+              <div class="text-caption text-medium-emphasis" style="font-size: 10px; line-height: 1.3;">
+                Extract features in browser (skips server tsfresh — 47 features only).
+              </div>
+              <span
+                class="fast-mode-badge mt-1"
+                :class="{ on: fastModeEnabled }"
+                style="font-size: 9px;"
+              >
+                <v-icon size="10" class="mr-1">{{ fastModeEnabled ? 'mdi-lightning-bolt' : 'mdi-server' }}</v-icon>
+                {{ fastModeEnabled ? 'Fast (browser)' : 'Server extraction' }}
+              </span>
+            </div>
+
             <!-- Connect / Disconnect -->
             <v-btn
               v-if="!mqttConnected"
@@ -824,6 +852,33 @@
           <strong>{{ (sensorAutoFallbackInfo?.detected || []).join(', ') }}</strong>.
           Update your App Builder MQTT node to future-proof.
         </v-alert>
+
+        <!-- Fast Mode toggle (P2 Phase 3) — only for MQTT apps with a
+             feature_extract node; CSV-upload / raw-mode apps never see it. -->
+        <div v-if="fastModeAvailable" class="fast-mode-card mb-3">
+          <div class="d-flex align-center flex-wrap gap-2">
+            <v-icon size="18" :color="fastModeEnabled ? 'success' : 'grey'">mdi-lightning-bolt</v-icon>
+            <span class="text-subtitle-2" style="font-weight: 600;">Fast Mode</span>
+            <v-switch
+              v-model="fastModeEnabled"
+              color="success"
+              hide-details
+              density="compact"
+              inset
+              class="mt-0 ml-2"
+            />
+            <span
+              class="fast-mode-badge ml-2"
+              :class="{ on: fastModeEnabled }"
+            >
+              <v-icon size="12" class="mr-1">{{ fastModeEnabled ? 'mdi-lightning-bolt' : 'mdi-server' }}</v-icon>
+              {{ fastModeEnabled ? 'Fast (browser)' : 'Server extraction' }}
+            </span>
+          </div>
+          <div class="text-caption text-medium-emphasis mt-1" style="line-height: 1.35;">
+            Compute features in your browser. Skips server-side extraction — inference is faster and doesn't load the server. (47 lightweight features only.)
+          </div>
+        </div>
 
         <!-- Live stats -->
         <div v-if="mqttConnected" class="d-flex flex-wrap gap-3 mb-3">
@@ -1823,6 +1878,13 @@ onMounted(async () => {
     mqttBrokerUrl.value = brokerUrl
     mqttTopic.value = cfg.topic || 'sensors/#'
   }
+  // Load Fast Mode preference (per-app localStorage key). If it was ON from a
+  // previous session, fetch the inference-config now so the first live window
+  // can be normalized correctly — otherwise we'd race with the first MQTT tick.
+  loadFastModePref()
+  if (fastModeEnabled.value && fastModeAvailable.value) {
+    fetchFastInferenceConfig()
+  }
   loading.value = false
 
   // Dashboard layout listeners
@@ -1833,6 +1895,8 @@ onMounted(async () => {
 onUnmounted(() => {
   window.removeEventListener('resize', onResize)
   document.removeEventListener('fullscreenchange', updateFullscreenState)
+  // Clean up the Fast Mode worker if it's still running (page navigation)
+  terminateFastModeWorker()
 })
 
 // Multi-model comparison
@@ -2147,6 +2211,223 @@ let sensorBuffer = []
 let rateCounter = 0
 let rateInterval = null
 
+// ── Fast Mode (P2 Phase 3) ─────────────────────────────────────
+// When ON, live MQTT inference computes features in the browser (Web Worker
+// reused from Phase 2) and posts a `feature_vector` instead of raw samples.
+// The backend skips its tsfresh path — protects the server under workshop load.
+// Persisted per-app in localStorage so different apps can independently opt in.
+const fastModeKey = computed(() => `cira.publishedApp.fastMode.${slug.value || 'app'}`)
+const fastModeEnabled = ref(false)
+// Feature names the trained model expects (fetched from the pipeline's
+// transform.feature_extract node config). If empty, Fast Mode won't be shown.
+const modelFeatureNames = computed(() => {
+  const featNode = parsedNodes.value.find(n => n.type === 'transform.feature_extract')
+  const feats = featNode?.config?.features
+  return Array.isArray(feats) ? feats : []
+})
+const hasFeatureExtractNode = computed(() => modelFeatureNames.value.length > 0)
+// Only meaningful for MQTT-live apps; toggle stays hidden for CSV-upload apps.
+const fastModeAvailable = computed(() => isLiveStream.value && hasFeatureExtractNode.value)
+// One long-lived worker for the whole MQTT session. Spawned when Fast Mode is
+// enabled + MQTT connects; torn down on disable / disconnect / unmount.
+let fastModeWorker = null
+// Pending window promises keyed by session_id → resolver
+const fastPending = new Map()
+let fastSessionCounter = 0
+
+// Model's training normalization + feature contract, fetched from the backend
+// when Fast Mode is turned on. Without this, client-computed features won't
+// match what the model was trained on (min-max/z-score scaling matters).
+// See backend `/api/app-builder/run/<slug>/inference-config`.
+const fastInferenceConfig = ref(null)  // { normalization, sensor_columns, feature_names } | null
+
+async function fetchFastInferenceConfig() {
+  if (!slug.value) return
+  try {
+    const resp = await api.get(`/api/app-builder/run/${slug.value}/inference-config`)
+    fastInferenceConfig.value = resp.data
+  } catch (e) {
+    console.warn('[Fast Mode] failed to fetch inference-config:', e?.response?.data?.error || e?.message || e)
+    fastInferenceConfig.value = null
+  }
+}
+
+/** Apply the model's training normalization to a raw window client-side.
+ *  Matches backend `_apply_normalization` when `_model_norm` is supplied.
+ *  Returns a fresh 2D array; original csvRows are not mutated. */
+function normalizeWindowForFastMode(csvRows, channels) {
+  const cfg = fastInferenceConfig.value?.normalization
+  // No normalization params from server, or model was trained without it —
+  // pass through untouched. Same as backend's train_method === 'none' branch.
+  if (!cfg || cfg.method === 'none') return csvRows
+
+  const trainCols = cfg.sensor_columns || []
+  const nCh = channels.length
+  if (trainCols.length === 0 || nCh === 0) return csvRows
+
+  // Build per-channel scale/offset arrays aligned to the incoming `channels`
+  // order. If a channel doesn't appear in the model's sensor_columns, leave
+  // it alone (offset 0, scale 1) — matches the backend loop that only writes
+  // into positions where `col in sensor_cols`.
+  const offset = new Array(nCh).fill(0)
+  const scale = new Array(nCh).fill(1)
+
+  const method = cfg.method || 'min_max'
+  if (method === 'z_score') {
+    const mean = cfg.channel_mean || []
+    const std = cfg.channel_std || []
+    for (let i = 0; i < nCh; i++) {
+      const idx = trainCols.indexOf(channels[i])
+      if (idx >= 0 && idx < mean.length && idx < std.length) {
+        offset[i] = mean[idx]
+        const s = std[idx]
+        scale[i] = s === 0 ? 1 : s
+      }
+    }
+  } else if (method === 'robust') {
+    const median = cfg.channel_median || []
+    const iqr = cfg.channel_iqr || []
+    for (let i = 0; i < nCh; i++) {
+      const idx = trainCols.indexOf(channels[i])
+      if (idx >= 0 && idx < median.length && idx < iqr.length) {
+        offset[i] = median[idx]
+        const s = iqr[idx]
+        scale[i] = s === 0 ? 1 : s
+      }
+    }
+  } else {
+    // min_max (default) — offset = min, scale = max - min (0 → 1)
+    const cMin = cfg.channel_min || []
+    const cMax = cfg.channel_max || []
+    for (let i = 0; i < nCh; i++) {
+      const idx = trainCols.indexOf(channels[i])
+      if (idx >= 0 && idx < cMin.length && idx < cMax.length) {
+        offset[i] = cMin[idx]
+        const denom = cMax[idx] - cMin[idx]
+        scale[i] = denom === 0 ? 1 : denom
+      }
+    }
+  }
+
+  const out = new Array(csvRows.length)
+  for (let r = 0; r < csvRows.length; r++) {
+    const row = csvRows[r]
+    const newRow = new Array(nCh)
+    for (let i = 0; i < nCh; i++) newRow[i] = (row[i] - offset[i]) / scale[i]
+    out[r] = newRow
+  }
+  return out
+}
+
+function loadFastModePref() {
+  try {
+    const v = localStorage.getItem(fastModeKey.value)
+    if (v === '1' || v === 'true') fastModeEnabled.value = true
+    else if (v === '0' || v === 'false') fastModeEnabled.value = false
+  } catch { /* localStorage may be blocked */ }
+}
+function persistFastModePref() {
+  try { localStorage.setItem(fastModeKey.value, fastModeEnabled.value ? '1' : '0') } catch { /* ignore */ }
+}
+
+function spawnFastModeWorker() {
+  if (fastModeWorker) return fastModeWorker
+  try {
+    fastModeWorker = new Worker(
+      new URL('../workers/features.worker.ts', import.meta.url),
+      { type: 'module' },
+    )
+    fastModeWorker.onmessage = (evt) => {
+      const msg = evt.data
+      if (!msg) return
+      if (msg.type === 'done') {
+        const pending = fastPending.get(msg.session_id)
+        if (pending) {
+          fastPending.delete(msg.session_id)
+          pending.resolve({
+            feature_vector: msg.features_df,
+            feature_names: msg.feature_names,
+          })
+        }
+      } else if (msg.type === 'error') {
+        // Reject all outstanding — main thread falls back to raw path per-window.
+        console.warn('[Fast Mode] worker error:', msg.message)
+        for (const [, pending] of fastPending) pending.reject(new Error(msg.message))
+        fastPending.clear()
+      }
+    }
+    fastModeWorker.onerror = (e) => {
+      console.warn('[Fast Mode] worker crashed:', e.message || e)
+      for (const [, pending] of fastPending) pending.reject(new Error(e.message || 'worker crashed'))
+      fastPending.clear()
+      // Force teardown so the next window either respawns or falls back.
+      try { fastModeWorker.terminate() } catch { /* ignore */ }
+      fastModeWorker = null
+    }
+  } catch (e) {
+    console.warn('[Fast Mode] failed to spawn worker:', e)
+    fastModeWorker = null
+  }
+  return fastModeWorker
+}
+
+function terminateFastModeWorker() {
+  if (fastModeWorker) {
+    try { fastModeWorker.terminate() } catch { /* ignore */ }
+    fastModeWorker = null
+  }
+  for (const [, pending] of fastPending) pending.reject(new Error('worker terminated'))
+  fastPending.clear()
+}
+
+/** Compute features for a single window in the worker. Resolves with
+ *  {feature_vector: number[][], feature_names: string[]} or rejects on error. */
+function extractWindowFeaturesFast(csvRows, channels) {
+  return new Promise((resolve, reject) => {
+    const worker = spawnFastModeWorker()
+    if (!worker) {
+      reject(new Error('worker unavailable'))
+      return
+    }
+    const sessionId = `fastlive_${++fastSessionCounter}`
+    fastPending.set(sessionId, { resolve, reject })
+    // Apply the model's training normalization to the raw window before
+    // handing it to the worker so features match server-side pipeline output.
+    // No-op when the model was trained without normalization.
+    const normRows = normalizeWindowForFastMode(csvRows, channels)
+    worker.postMessage({
+      type: 'extract',
+      windows: [normRows],   // single-window batch (already normalized)
+      channelNames: channels,
+      selectedFeatures: modelFeatureNames.value,
+      samplingRate: 100,    // used only by spectral features; matches Phase 2 default
+      sessionId,
+    })
+    // Safety: if the worker never responds within 15s, reject and let the
+    // caller fall back to raw so a stuck window doesn't block inference.
+    setTimeout(() => {
+      const pending = fastPending.get(sessionId)
+      if (pending) {
+        fastPending.delete(sessionId)
+        pending.reject(new Error('worker timeout'))
+      }
+    }, 15000)
+  })
+}
+
+// Toggle handler: persist + tear down worker when disabling so we don't leak
+// a worker when the user flips off mid-session. When enabling, fetch the
+// inference-config so subsequent window inferences can be normalized correctly.
+watch(fastModeEnabled, (val) => {
+  persistFastModePref()
+  if (val) {
+    fetchFastInferenceConfig()
+  } else {
+    terminateFastModeWorker()
+    fastInferenceConfig.value = null
+  }
+})
+
 // ── Signal Recorder live preview ──────────────────────────────
 const previewWindowSec = ref(10)
 const previewBuffer = ref([]) // Array<{ts: number, [channel]: number}>
@@ -2403,6 +2684,11 @@ async function startLiveStream() {
       if (autoRecordPredictions.value && !isRecorderMode.value) {
         startPredictionRecording()
       }
+      // Warm up the Fast Mode worker so the first window doesn't pay the cold-
+      // start cost (dynamic import + parse) — only when the app supports it.
+      if (fastModeEnabled.value && fastModeAvailable.value) {
+        spawnFastModeWorker()
+      }
     })
 
     mqttClient.on('error', (err) => {
@@ -2507,6 +2793,8 @@ function stopLiveStream() {
   sensorBuffer = []
   sensorBufferLen.value = 0
   sensorBufferProgress.value = 0
+  // Free the Fast Mode worker when the stream stops (spawn again on reconnect)
+  terminateFastModeWorker()
 }
 
 function startPredictionRecording() {
@@ -3059,12 +3347,37 @@ async function runLiveInference(windowData) {
     }
   }
 
+  // ── P2 Phase 3: Fast Mode ────────────────────────────────────────
+  // If enabled + we have a feature list to compute + the worker is healthy,
+  // extract features in the browser and POST a feature_vector. Server skips
+  // its tsfresh path entirely. On any worker failure we fall back to the
+  // raw payload for THIS window only — Fast Mode stays enabled for the next.
+  let usedFastMode = false
+  let fastPayload = null
+  if (fastModeEnabled.value && fastModeAvailable.value && windowData.length > 0) {
+    try {
+      const fastRes = await extractWindowFeaturesFast(csvRows, channels)
+      fastPayload = {
+        feature_vector: fastRes.feature_vector,
+        feature_names: fastRes.feature_names,
+        target_values: targetColValues,
+      }
+      usedFastMode = true
+    } catch (fmErr) {
+      console.warn('[Fast Mode] falling back to raw for this window:', fmErr?.message || fmErr)
+    }
+  }
+
   try {
-    const resp = await api.post(`/api/app-builder/run/${slug.value}`, {
-      data: csvRows,
-      channels: channels,
-      target_values: targetColValues,
-    }, { timeout: 30000 })
+    const resp = await api.post(
+      `/api/app-builder/run/${slug.value}`,
+      usedFastMode ? fastPayload : {
+        data: csvRows,
+        channels: channels,
+        target_values: targetColValues,
+      },
+      { timeout: 30000 },
+    )
 
     liveInferenceCount.value++
     liveLastUpdated.value = Date.now()
@@ -3570,6 +3883,33 @@ async function runPipeline() {
 }
 .table-toggle:hover {
   color: #c9d1d9;
+}
+
+.fast-mode-card {
+  background: #0d1117;
+  border: 1px solid #21262d;
+  border-radius: 8px;
+  padding: 10px 14px;
+}
+.fast-mode-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 600;
+  background: rgba(139, 148, 158, 0.15);
+  color: #8b949e;
+}
+.fast-mode-badge.on {
+  background: rgba(46, 160, 67, 0.18);
+  color: #56d364;
+}
+.rail-fast-mode {
+  background: #0d1117;
+  border: 1px solid #21262d;
+  border-radius: 6px;
+  padding: 6px 8px;
 }
 
 .live-stat {
