@@ -220,6 +220,131 @@ def list_datasets():
     return jsonify(files)
 
 
+@mqtt_bp.route('/ws-info', methods=['GET'])
+@login_required
+def ws_info():
+    """Lightweight endpoint: return MQTT WebSocket host + port for the browser.
+
+    Unlike /broker-info this does NOT connect to the broker (no 2s sleep for
+    $SYS scrape). Used by the browser-side MQTT Test Publisher so ~65 workshop
+    attendees don't slam Flask.
+    """
+    broker_host = os.environ.get('MQTT_BROKER_HOST', 'cirame-mosquitto')
+    ws_port = int(os.environ.get('MQTT_BROKER_WS_PORT', '9001'))
+    return jsonify({
+        'host': broker_host,
+        'ws_port': ws_port,
+    })
+
+
+@mqtt_bp.route('/csv-rows', methods=['GET'])
+@login_required
+def csv_rows():
+    """Return CSV file as parsed JSON rows for browser-side MQTT publishing.
+
+    Query params:
+      path: relative path under DATASETS_ROOT_PATH
+
+    Response matches what _publish_worker would produce, so the browser can
+    build the same payload shape (sensor cols + optional label decoding).
+    """
+    file_path = request.args.get('path', '')
+    if not file_path:
+        return jsonify({'error': 'path required'}), 400
+
+    datasets_root = os.environ.get('DATASETS_ROOT_PATH',
+                                    os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'datasets'))
+    full_path = os.path.join(datasets_root, file_path)
+    if not os.path.exists(full_path):
+        return jsonify({'error': f'File not found: {file_path}'}), 404
+
+    # Load CSV — verbatim from start_publish sensor-column detection.
+    try:
+        df = pd.read_csv(full_path)
+        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        non_sensor = ('timestamp', 'time', 'index', 'label', 'labels', 'class', 'class_name',
+                      'target', 'category', 'sample_id')
+        sensor_cols = [c for c in numeric_cols if c.lower() not in non_sensor]
+        if not sensor_cols:
+            return jsonify({'error': 'CSV has no numeric sensor columns'}), 400
+    except Exception as e:
+        return jsonify({'error': f'Failed to read CSV: {e}'}), 400
+
+    # Detect label column — verbatim from start_publish.
+    label_col = None
+    for candidate in ['label', 'labels', 'class', 'class_name', 'target', 'category']:
+        if candidate in df.columns:
+            label_col = candidate
+            break
+
+    # Build integer→string label map for CBOR-converted CSVs — verbatim from start_publish.
+    label_decode_map = None
+    if label_col:
+        fname = os.path.basename(file_path).lower()
+        parts = fname.split('.')
+        if len(parts) >= 3 and 'cbor' in fname:
+            string_label = parts[0]
+            int_label = df[label_col].iloc[0]
+            label_decode_map = {int_label: string_label}
+            dataset_dir = os.path.dirname(full_path)
+            try:
+                for f2 in os.listdir(dataset_dir):
+                    if f2.endswith('.csv') and 'cbor' in f2.lower():
+                        p2 = f2.split('.')
+                        if len(p2) >= 3:
+                            lbl_str = p2[0]
+                            try:
+                                df2 = pd.read_csv(os.path.join(dataset_dir, f2), nrows=1)
+                                if label_col in df2.columns:
+                                    lbl_int = df2[label_col].iloc[0]
+                                    label_decode_map[lbl_int] = lbl_str
+                            except Exception:
+                                pass
+            except Exception:
+                pass
+
+    # Build row list: sensor columns as floats + label column (raw, unicoded).
+    # Frontend applies label_decode_map when constructing the MQTT payload.
+    cols_to_emit = list(sensor_cols)
+    if label_col and label_col in df.columns:
+        cols_to_emit.append(label_col)
+
+    rows = []
+    sub = df[cols_to_emit]
+    for rec in sub.to_dict(orient='records'):
+        clean = {}
+        for c in sensor_cols:
+            v = rec.get(c)
+            try:
+                clean[c] = float(v)
+            except (TypeError, ValueError):
+                clean[c] = None
+        if label_col:
+            raw = rec.get(label_col)
+            # Match _publish_worker: unwrap numpy scalars.
+            if hasattr(raw, 'item'):
+                raw = raw.item()
+            clean[label_col] = raw
+        rows.append(clean)
+
+    # JSON keys must be strings — stringify int keys in label_decode_map.
+    decode_out = None
+    if label_decode_map:
+        decode_out = {}
+        for k, v in label_decode_map.items():
+            if hasattr(k, 'item'):
+                k = k.item()
+            decode_out[str(k)] = v
+
+    return jsonify({
+        'rows': rows,
+        'sensor_columns': sensor_cols,
+        'label_column': label_col,
+        'label_decode_map': decode_out,
+        'total_rows': len(df),
+    })
+
+
 @mqtt_bp.route('/broker-info', methods=['GET'])
 @login_required
 def broker_info():

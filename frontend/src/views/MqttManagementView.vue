@@ -209,7 +209,13 @@
       </div>
 
       <v-alert v-if="publishers.length === 0 && !loadingPublishers" type="info" variant="tonal" density="compact">
-        No active MQTT test publishers running.
+        <div class="text-body-2">
+          MQTT test publishers now run in the browser tab that started them — nothing to show here.
+        </div>
+        <div class="text-caption text-medium-emphasis mt-1">
+          To stop a publisher, use the Stop button in the tab that owns it.
+          (The server-side <code>/publish</code> endpoint is still available for scripts; any active server-side publishers will appear below.)
+        </div>
       </v-alert>
 
       <v-table v-if="publishers.length > 0" density="comfortable">

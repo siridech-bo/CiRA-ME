@@ -316,6 +316,21 @@
               <v-icon start>mdi-stop</v-icon>Disconnect
             </v-btn>
 
+            <!-- Test Publisher (rail) — logged-in users only. Rail is too
+                 narrow for the full panel; open in a dialog on demand. -->
+            <v-btn
+              v-if="isAuthenticated && isLiveStream"
+              variant="tonal"
+              color="info"
+              size="small"
+              block
+              class="mt-2"
+              @click="showTestPublisherDialog = true"
+            >
+              <v-icon start size="14">mdi-test-tube</v-icon>
+              Test Publisher
+            </v-btn>
+
             <!-- Recorder-specific rail controls -->
             <template v-if="isRecorderMode && mqttConnected">
               <div class="rail-section-title mt-3">
@@ -1131,6 +1146,23 @@
         </div>
       </div>
 
+      <!-- MQTT Test Publisher (logged-in users only, MQTT apps only).
+           Wrapped in a collapsed accordion so it stays out of the way of the
+           primary live-inference view — one click to open when needed. -->
+      <div v-if="isAuthenticated && isLiveStream" class="app-section" style="padding: 10px 16px;">
+        <v-expansion-panels variant="accordion">
+          <v-expansion-panel>
+            <v-expansion-panel-title>
+              <v-icon start size="small" class="mr-2">mdi-test-tube</v-icon>
+              Test Publisher (simulate sensor data)
+            </v-expansion-panel-title>
+            <v-expansion-panel-text>
+              <MqttTestPublisher />
+            </v-expansion-panel-text>
+          </v-expansion-panel>
+        </v-expansion-panels>
+      </div>
+
       <!-- CSV Upload Mode -->
       <div v-else class="app-section">
         <div class="app-section-title">
@@ -1536,6 +1568,33 @@
       </template>
       <!-- /fallback layout -->
     </div>
+
+    <!-- Test Publisher dialog (opened from rail button). Auth-gated at the
+         outer v-if. `eager` keeps the panel mounted even when the dialog is
+         closed, so an active publish session survives the user closing the
+         dialog to watch inference charts — reopening resumes the same run
+         instead of terminating the WebSocket. -->
+    <v-dialog
+      v-if="isAuthenticated && isLiveStream"
+      v-model="showTestPublisherDialog"
+      max-width="720"
+      scrollable
+      eager
+    >
+      <v-card>
+        <v-card-title class="d-flex align-center">
+          <v-icon start>mdi-test-tube</v-icon>
+          Test Publisher
+          <v-spacer />
+          <v-btn icon size="small" variant="text" @click="showTestPublisherDialog = false">
+            <v-icon>mdi-close</v-icon>
+          </v-btn>
+        </v-card-title>
+        <v-card-text style="max-height: 70vh;">
+          <MqttTestPublisher />
+        </v-card-text>
+      </v-card>
+    </v-dialog>
   </div>
 </template>
 
@@ -1544,6 +1603,8 @@ import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import api from '@/services/api'
 import { Line } from 'vue-chartjs'
+import MqttTestPublisher from '@/components/MqttTestPublisher.vue'
+import { useAuthStore } from '@/stores/auth'
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -1563,6 +1624,15 @@ let mqtt = null
 const route = useRoute()
 const slug = computed(() => route.params.slug)
 const isStandalone = computed(() => route.meta?.standalone === true)
+
+// Auth store — used to gate the MQTT Test Publisher panel to logged-in users only.
+// Public/anonymous viewers of /standalone/<slug> won't see the panel.
+const authStore = useAuthStore()
+const isAuthenticated = computed(() => authStore.isAuthenticated)
+
+// Test Publisher dialog — opened from the rail button (rail is too narrow to
+// host the full panel inline).
+const showTestPublisherDialog = ref(false)
 
 const loading = ref(true)
 const error = ref(null)
