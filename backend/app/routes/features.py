@@ -19,6 +19,47 @@ logger = logging.getLogger(__name__)
 features_bp = Blueprint('features', __name__)
 
 
+def _persist_selected_feature_session(project_id, result: dict, user_id: int) -> None:
+    """Persist a derived (selection/reordering) feature session to disk +
+    write a matching feature_sessions row.
+
+    Called from /apply-selection route paths so the new selected_<uuid>
+    session survives backend restarts alongside the original extraction.
+    Silent no-op if project_id is missing or ownership check fails.
+    """
+    if not project_id or not result:
+        return
+    sid = result.get('session_id')
+    if not sid:
+        return
+    try:
+        pid = int(project_id)
+        proj = Project.get_by_id(pid)
+        if not proj or proj.get('user_id') != user_id:
+            return
+        wins = WindowedSession.get_by_project(pid)
+        win_id = wins[0]['id'] if wins else None
+        if not win_id:
+            return
+        FeatureSession.create(
+            project_id=pid,
+            windowed_session_id=win_id,
+            method='selection',
+            feature_names=result.get('feature_names') or result.get('selected_features') or [],
+            num_features=result.get('num_features'),
+            selection={'derived': True, 'raw_signals': result.get('raw_signals')},
+            session_id=sid,
+        )
+        Project.touch(pid, 'features')
+        from ..services.feature_extractor import _feature_sessions
+        from ..services.session_persistence import persist_feature_session
+        entry = _feature_sessions.get(sid)
+        if entry is not None:
+            persist_feature_session(pid, sid, entry)
+    except Exception as e:
+        logger.warning(f"[persist] apply-selection persistence failed: {e}")
+
+
 @features_bp.route('/available', methods=['GET'])
 @login_required
 def get_available_features():
@@ -123,6 +164,7 @@ def register_fast_mode_features():
     windowed_session_id = data.get('windowed_session_id')
     feature_names = data.get('feature_names')
     features_df = data.get('features_df')  # [num_windows][num_features]
+    project_id = data.get('project_id')
 
     if not windowed_session_id or not feature_names or features_df is None:
         return jsonify({
@@ -148,7 +190,7 @@ def register_fast_mode_features():
     features_df_pd = pd.DataFrame(matrix, columns=feature_names)
 
     feature_session_id = f"features_fast_{windowed_session_id}"
-    _feature_sessions[feature_session_id] = {
+    session_entry = {
         'features': features_df_pd,
         'labels': labels,
         'categories': categories,
@@ -160,6 +202,34 @@ def register_fast_mode_features():
             'source': 'client_web_worker',
         }
     }
+    _feature_sessions[feature_session_id] = session_entry
+
+    # Approach 2b: persist Fast Mode results too — they populate
+    # _feature_sessions the same way the server-side extractor does, and
+    # every downstream view (selection / training / ME-LAB) relies on the
+    # entry surviving a backend restart.
+    if project_id:
+        try:
+            pid = int(project_id)
+            proj = Project.get_by_id(pid)
+            if proj and proj.get('user_id') == request.current_user['id']:
+                wins = WindowedSession.get_by_project(pid)
+                win_id = wins[0]['id'] if wins else None
+                if win_id:
+                    FeatureSession.create(
+                        project_id=pid,
+                        windowed_session_id=win_id,
+                        method='fast_mode',
+                        feature_names=feature_names,
+                        num_features=len(feature_names),
+                        selection={'source': 'client_web_worker'},
+                        session_id=feature_session_id,
+                    )
+                    Project.touch(pid, 'features')
+                    from ..services.session_persistence import persist_feature_session
+                    persist_feature_session(pid, feature_session_id, session_entry)
+        except Exception as e:
+            logger.warning(f"[persist] register-fast persistence failed: {e}")
 
     return jsonify({
         'session_id': feature_session_id,
@@ -404,6 +474,7 @@ def _do_extract(payload: dict) -> dict:
                 wins = WindowedSession.get_by_project(pid)
                 win_id = wins[0]['id'] if wins else None
                 if win_id:
+                    feat_sid = result.get('session_id')
                     FeatureSession.create(
                         project_id=pid,
                         windowed_session_id=win_id,
@@ -411,8 +482,20 @@ def _do_extract(payload: dict) -> dict:
                         feature_names=result.get('feature_names', []),
                         num_features=result.get('num_features'),
                         selection={'template_version': template.get('version') if template else None},
+                        session_id=feat_sid,
                     )
                     Project.touch(pid, 'features')
+
+                    # Approach 2b: pickle the feature session so hydrate can
+                    # restore it after a backend restart.
+                    try:
+                        from ..services.feature_extractor import _feature_sessions
+                        from ..services.session_persistence import persist_feature_session
+                        entry = _feature_sessions.get(feat_sid) if feat_sid else None
+                        if entry is not None:
+                            persist_feature_session(pid, feat_sid, entry)
+                    except Exception as e:
+                        logger.warning(f"[persist] Feature pickle failed: {e}")
         except Exception as e:
             logger.warning(f"[F4] Persisting feature state failed: {e}")
 
@@ -749,6 +832,7 @@ def apply_feature_selection():
     raw_signals = data.get('raw_signals', [])
     raw_signal_method = data.get('raw_signal_method', 'last')  # 'last' or 'first'
     windowed_session_id = data.get('windowed_session_id')
+    project_id = data.get('project_id')
 
     print(f"[Apply Selection] features={len(selected_features)}, raw_signals={raw_signals}, "
           f"windowed_session={windowed_session_id}")
@@ -797,9 +881,11 @@ def apply_feature_selection():
                     )
                     print(f"[Apply Selection] Result: {result.get('num_features')} features, "
                           f"names: {result.get('feature_names')}")
+                    _persist_selected_feature_session(project_id, result, request.current_user['id'])
                     return jsonify(result)
 
         result = extractor.apply_selection(session_id, selected_features)
+        _persist_selected_feature_session(project_id, result, request.current_user['id'])
         return jsonify(result)
     except Exception as e:
         return jsonify({'error': str(e)}), 400

@@ -363,6 +363,7 @@ export const usePipelineStore = defineStore('pipeline', () => {
                   windowed_session_id: sid,
                   feature_names: msg.feature_names,
                   features_df: msg.features_df,
+                  project_id: projectId.value || undefined,
                 })
                 const featureData = {
                   session_id: reg.data.session_id,

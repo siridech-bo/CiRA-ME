@@ -306,6 +306,17 @@ def init_db(db_path: str):
             cursor.execute('ALTER TABLE projects ADD COLUMN current_stage TEXT')
         except Exception:
             pass
+        # Persist in-memory session_id UUIDs on windowed/feature rows so the
+        # hydrate endpoint can restore the corresponding pickle blobs after a
+        # backend restart (Approach 2b — session persistence to disk).
+        try:
+            cursor.execute('ALTER TABLE windowed_sessions ADD COLUMN session_id TEXT')
+        except Exception:
+            pass
+        try:
+            cursor.execute('ALTER TABLE feature_sessions ADD COLUMN session_id TEXT')
+        except Exception:
+            pass
         # Q3: Legacy project's mode column must permit NULL to render as "mixed".
         # The original schema declared `mode NOT NULL DEFAULT 'anomaly'`, which
         # would reject our Legacy row. SQLite can't drop NOT NULL in-place, so
@@ -843,20 +854,28 @@ class DataSession:
 class WindowedSession:
     @staticmethod
     def create(project_id: int, data_session_id: int, config: dict = None,
-               num_windows: int = None, window_shape=None, normalization=None) -> int:
+               num_windows: int = None, window_shape=None, normalization=None,
+               session_id: str = None) -> int:
+        """Insert a windowed_sessions row.
+
+        session_id is the in-memory UUID handed back by DataLoader.apply_windowing.
+        Persisted so the hydrate endpoint can locate the matching pickle blob
+        after a backend restart (Approach 2b — session persistence to disk).
+        """
         import json
         with get_db() as conn:
             cursor = conn.cursor()
             cursor.execute(
                 '''INSERT INTO windowed_sessions
                    (project_id, data_session_id, config, num_windows,
-                    window_shape, normalization, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)''',
+                    window_shape, normalization, session_id, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
                 (project_id, data_session_id,
                  json.dumps(config) if config else None,
                  num_windows,
                  json.dumps(window_shape) if window_shape else None,
                  json.dumps(normalization) if normalization else None,
+                 session_id,
                  datetime.utcnow().isoformat())
             )
             conn.commit()
@@ -877,19 +896,27 @@ class FeatureSession:
     @staticmethod
     def create(project_id: int, windowed_session_id: int, method: str = None,
                feature_names=None, num_features: int = None,
-               selection=None) -> int:
+               selection=None, session_id: str = None) -> int:
+        """Insert a feature_sessions row.
+
+        session_id is the in-memory key for _feature_sessions (e.g.
+        ``features_<uuid>`` or ``features_fast_<uuid>``). Persisted so the
+        hydrate endpoint can locate the matching pickle blob after a backend
+        restart (Approach 2b — session persistence to disk).
+        """
         import json
         with get_db() as conn:
             cursor = conn.cursor()
             cursor.execute(
                 '''INSERT INTO feature_sessions
                    (project_id, windowed_session_id, method, feature_names,
-                    num_features, selection, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)''',
+                    num_features, selection, session_id, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
                 (project_id, windowed_session_id, method,
                  json.dumps(feature_names) if feature_names else None,
                  num_features,
                  json.dumps(selection) if selection else None,
+                 session_id,
                  datetime.utcnow().isoformat())
             )
             conn.commit()

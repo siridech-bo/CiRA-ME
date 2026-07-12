@@ -1063,6 +1063,7 @@ def apply_windowing():
                         total_rows=src_meta.get('total_rows'),
                     )
                     win_meta = result.get('metadata') or {}
+                    windowed_sid = result.get('session_id')
                     WindowedSession.create(
                         project_id=pid,
                         data_session_id=ds_id,
@@ -1080,8 +1081,31 @@ def apply_windowing():
                         num_windows=result.get('num_windows'),
                         window_shape=result.get('window_shape'),
                         normalization=win_meta.get('normalization'),
+                        session_id=windowed_sid,
                     )
                     Project.touch(pid, 'windowing')
+
+                    # Approach 2b: pickle the raw + windowed session dicts
+                    # from the loader's in-memory store so we can restore
+                    # them on hydrate without re-parsing the CSV or
+                    # re-windowing. Runs BELOW the DB writes so we never
+                    # persist a pickle without a matching DB row.
+                    try:
+                        from ..services.data_loader import _data_sessions
+                        from ..services.session_persistence import (
+                            persist_data_session, persist_windowed_session,
+                        )
+                        raw = _data_sessions.get(session_id)
+                        if raw is not None:
+                            persist_data_session(pid, session_id, raw)
+                        win = _data_sessions.get(windowed_sid) if windowed_sid else None
+                        if win is not None:
+                            persist_windowed_session(pid, windowed_sid, win)
+                    except Exception as e:
+                        import logging
+                        logging.getLogger(__name__).warning(
+                            f"[persist] Windowing pickle failed: {e}"
+                        )
             except Exception as e:
                 # Don't let persistence break the windowing response
                 import logging

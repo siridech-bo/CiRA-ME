@@ -1872,6 +1872,7 @@ async function applyFeatureSelection() {
       raw_signals: rawSignalSelections.value.length > 0 ? rawSignalSelections.value : undefined,
       raw_signal_method: rawSignalMethod.value,
       windowed_session_id: pipelineStore.windowedSession?.session_id || undefined,
+      project_id: pipelineStore.projectId || undefined,
     })
 
     appliedSelection.value = response.data

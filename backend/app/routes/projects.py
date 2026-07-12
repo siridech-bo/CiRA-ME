@@ -128,6 +128,22 @@ def delete_project(project_id):
     if not p:
         return jsonify({'error': 'Project not found'}), 404
     Project.delete(project_id)
+    # Approach 2b: also evict pickled session blobs so /data/projects/
+    # doesn't accumulate orphans. Runs after the DB delete succeeds so a
+    # partial failure keeps the pickles paired with their metadata.
+    try:
+        from ..services.session_persistence import delete_project_sessions
+        evicted = delete_project_sessions(project_id)
+        if evicted:
+            logger.info(
+                '[projects] deleted %d persisted session pickle(s) for pid=%s',
+                evicted, project_id,
+            )
+    except Exception as e:
+        logger.warning(
+            '[projects] delete_project_sessions failed for pid=%s: %s',
+            project_id, e,
+        )
     return jsonify({'message': 'Project deleted'})
 
 
@@ -191,11 +207,21 @@ def hydrate_project(project_id):
     if not p:
         return jsonify({'error': 'Project not found'}), 404
 
+    # `rehydrated` flags let the frontend show a targeted toast when only
+    # some stages could be restored from disk (Approach 2b — persist to
+    # disk). data:false means the pickle was missing AND we had to re-parse
+    # the CSV. windowed/features flags are true only when the pickle was
+    # loaded successfully into the in-memory session dicts.
     result = {
         'project_id': project_id,
         'data_session': None,
         'windowing_config': None,
         'feature_session': None,
+        'rehydrated': {
+            'data': False,
+            'windowed': False,
+            'features': False,
+        },
     }
 
     ds_rows = DataSession.get_by_project(project_id)
@@ -208,6 +234,8 @@ def hydrate_project(project_id):
     if not file_path:
         return jsonify({'error': 'DataSession has no file_path'}), 500
 
+    persisted_sid = ds.get('session_id')
+
     # Re-load into the same LRU-capped in-memory dict the ingest endpoints
     # populate. This gives the frontend a fresh session_id it can use as a
     # normal handle for windowing / features downstream.
@@ -219,47 +247,78 @@ def hydrate_project(project_id):
     # So we dispatch on path-is-directory first, then on format.
     try:
         import os
-        from ..services.data_loader import DataLoader
+        from ..services.data_loader import DataLoader, _data_sessions, _sessions_lock
+        from ..services.session_persistence import (
+            load_data_session, load_windowed_session, load_feature_session,
+        )
         loader = DataLoader()
 
-        if not os.path.exists(file_path):
-            return jsonify({
-                'error': f'Persisted file no longer exists: {file_path}'
-            }), 410
-
-        if os.path.isdir(file_path):
-            # Multi-CSV selection dir (T3 pattern). Glob for CSVs and
-            # reload as a batch.
-            import glob as _g
-            csv_files = sorted(_g.glob(os.path.join(file_path, '*.csv')))
-            if not csv_files:
-                return jsonify({
-                    'error': f'Multi-CSV directory contains no .csv files: {file_path}'
-                }), 410
-            loaded = loader.load_csv_multiple(csv_files)
-        elif fmt == 'csv':
-            loaded = loader.load_csv(file_path)
-        elif fmt in ('edge_impulse_json', 'ei_json'):
-            loaded = loader.load_edge_impulse_json(file_path)
-        elif fmt in ('edge_impulse_cbor', 'ei_cbor'):
-            loaded = loader.load_edge_impulse_cbor(file_path)
-        elif fmt in ('cira_cbor', 'cira'):
-            loaded = loader.load_cira_cbor(file_path)
+        # Approach 2b: try the pickle first — it's O(1MB) reads instead of
+        # re-parsing potentially large CSVs. Also handles the case where
+        # the source CSV has been moved / deleted since ingest.
+        restored = None
+        if persisted_sid:
+            restored = load_data_session(project_id, persisted_sid)
+        if restored is not None:
+            with _sessions_lock:
+                _data_sessions[persisted_sid] = restored
+            meta = restored.get('metadata', {}) or {}
+            loaded = {
+                'session_id': persisted_sid,
+                'metadata': meta,
+            }
+            # Provide a small preview so the frontend Data Source view has
+            # rows to render without another round-trip. Guard against
+            # non-DataFrame sessions (windowed dicts don't carry 'data').
+            df = restored.get('data')
+            if df is not None:
+                try:
+                    loaded['preview'] = df.head(10).to_dict(orient='records')
+                    loaded['total_rows'] = len(df)
+                except Exception:
+                    pass
+            result['data_session'] = loaded
+            result['rehydrated']['data'] = True
         else:
-            return jsonify({
-                'error': f'Unsupported persisted format: {fmt}'
-            }), 400
-        if not loaded:
-            return jsonify({
-                'error': 'Persisted file could not be re-loaded (deleted or moved)'
-            }), 410
-        result['data_session'] = loaded
+            if not os.path.exists(file_path):
+                return jsonify({
+                    'error': f'Persisted file no longer exists: {file_path}'
+                }), 410
+
+            if os.path.isdir(file_path):
+                # Multi-CSV selection dir (T3 pattern). Glob for CSVs and
+                # reload as a batch.
+                import glob as _g
+                csv_files = sorted(_g.glob(os.path.join(file_path, '*.csv')))
+                if not csv_files:
+                    return jsonify({
+                        'error': f'Multi-CSV directory contains no .csv files: {file_path}'
+                    }), 410
+                loaded = loader.load_csv_multiple(csv_files)
+            elif fmt == 'csv':
+                loaded = loader.load_csv(file_path)
+            elif fmt in ('edge_impulse_json', 'ei_json'):
+                loaded = loader.load_edge_impulse_json(file_path)
+            elif fmt in ('edge_impulse_cbor', 'ei_cbor'):
+                loaded = loader.load_edge_impulse_cbor(file_path)
+            elif fmt in ('cira_cbor', 'cira'):
+                loaded = loader.load_cira_cbor(file_path)
+            else:
+                return jsonify({
+                    'error': f'Unsupported persisted format: {fmt}'
+                }), 400
+            if not loaded:
+                return jsonify({
+                    'error': 'Persisted file could not be re-loaded (deleted or moved)'
+                }), 410
+            result['data_session'] = loaded
     except Exception as e:
         logger.exception(f'[projects] hydrate failed for project {project_id}: {e}')
         return jsonify({'error': f'Reload failed: {e}'}), 500
 
-    # Persisted windowing / feature configs — return for form pre-fill,
-    # but do NOT auto-replay them (user should click Apply, matching Q4).
+    # Persisted windowing / feature configs — return for form pre-fill AND
+    # try to rehydrate the in-memory session dict from disk so the user
+    # doesn't have to re-click Apply on Windowing (Approach 2b).
     ws_rows = WindowedSession.get_by_project(project_id)
     if ws_rows:
         ws = ws_rows[0]
@@ -268,6 +327,32 @@ def hydrate_project(project_id):
             result['windowing_config'] = json.loads(cfg) if isinstance(cfg, str) else cfg
         except (TypeError, json.JSONDecodeError):
             result['windowing_config'] = None
+
+        ws_sid = ws.get('session_id')
+        if ws_sid:
+            try:
+                win_entry = load_windowed_session(project_id, ws_sid)
+                if win_entry is not None:
+                    with _sessions_lock:
+                        _data_sessions[ws_sid] = win_entry
+                    result['rehydrated']['windowed'] = True
+                    # Also expose the restored session_id so the frontend
+                    # can use it directly for downstream calls (features,
+                    # window-sample, etc.) without re-applying windowing.
+                    result['windowed_session'] = {
+                        'session_id': ws_sid,
+                        'num_windows': ws.get('num_windows'),
+                    }
+                else:
+                    logger.warning(
+                        '[hydrate] windowed pickle missing for pid=%s sid=%s',
+                        project_id, ws_sid,
+                    )
+            except Exception as e:
+                logger.warning(
+                    '[hydrate] windowed rehydrate failed pid=%s: %s',
+                    project_id, e,
+                )
 
     fs_rows = FeatureSession.get_by_project(project_id)
     if fs_rows:
@@ -281,7 +366,27 @@ def hydrate_project(project_id):
             'method': fs.get('method'),
             'feature_names': names or [],
             'num_features': fs.get('num_features'),
+            'session_id': fs.get('session_id'),
         }
+
+        fs_sid = fs.get('session_id')
+        if fs_sid:
+            try:
+                from ..services.feature_extractor import _feature_sessions
+                feat_entry = load_feature_session(project_id, fs_sid)
+                if feat_entry is not None:
+                    _feature_sessions[fs_sid] = feat_entry
+                    result['rehydrated']['features'] = True
+                else:
+                    logger.warning(
+                        '[hydrate] feature pickle missing for pid=%s sid=%s',
+                        project_id, fs_sid,
+                    )
+            except Exception as e:
+                logger.warning(
+                    '[hydrate] feature rehydrate failed pid=%s: %s',
+                    project_id, e,
+                )
 
     return jsonify(result)
 
