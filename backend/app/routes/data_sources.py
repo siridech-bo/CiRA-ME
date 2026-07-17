@@ -4,6 +4,7 @@ Handles CSV, Edge Impulse JSON, Edge Impulse CBOR, and CiRA CBOR formats
 """
 
 import os
+import shutil
 import tempfile
 import uuid
 from urllib.parse import urlsplit
@@ -103,6 +104,14 @@ def browse_directory():
         ext = os.path.splitext(item)[1].lower() if not is_dir else None
         size = os.path.getsize(item_path) if not is_dir else None
 
+        # Modified time (unix seconds) — used by the File Manager UI's
+        # "Modified" column and sort. `getmtime` is safe on missing entries
+        # here because we just os.listdir()'d the parent.
+        try:
+            modified = os.path.getmtime(item_path)
+        except OSError:
+            modified = None
+
         # Determine file type
         file_type = None
         if ext == '.csv':
@@ -120,7 +129,8 @@ def browse_directory():
             'is_dir': is_dir,
             'extension': ext,
             'size': size,
-            'file_type': file_type
+            'file_type': file_type,
+            'modified': modified,
         })
 
     # Sort: directories first, then files
@@ -181,8 +191,16 @@ def upload_file():
         os.makedirs(user_upload_dir, exist_ok=True)
         upload_dir = user_upload_dir
 
-    # Secure the filename and handle duplicates
-    original_filename = secure_filename(file.filename)
+    # Secure the filename and handle duplicates.
+    # Some browsers (Firefox, Chromium on Linux via drag-drop) put the full
+    # relative path in file.filename. secure_filename() would then replace
+    # every '/' and '\' with '_', producing flat names like
+    # "USED_for_time_series_dataset_train_idle.csv". Strip to basename first
+    # so the leaf name stays clean; nested folders are re-created below from
+    # the separately-sent `relative_path` form field.
+    fname_raw = (file.filename or '').replace('\\', '/')
+    fname_base = os.path.basename(fname_raw)
+    original_filename = secure_filename(fname_base)
     if not original_filename:
         original_filename = f"upload_{uuid.uuid4().hex[:8]}.csv"
 
@@ -316,7 +334,11 @@ def upload_multiple_files():
         else:
             target_dir = upload_dir
 
-        filename = secure_filename(file.filename)
+        # Strip path from file.filename before securing — see comment on the
+        # single-file /upload endpoint for why this matters (Firefox / Linux
+        # drag-drop send full relative path in filename).
+        fname_raw = (file.filename or '').replace('\\', '/')
+        filename = secure_filename(os.path.basename(fname_raw))
         file_path = os.path.join(target_dir, filename)
 
         try:
@@ -1185,3 +1207,227 @@ def download_file():
         as_attachment=True,
         download_name=os.path.basename(file_path)
     )
+
+
+# ---------------------------------------------------------------------------
+# File Manager endpoints — full folder/file management for the Manage Files UI
+# ---------------------------------------------------------------------------
+# All four endpoints:
+#   * gated by @login_required
+#   * validate every path with validate_path (user must be inside their
+#     allowed area — private folder + shared folder + admin-any-datasets)
+#   * reject targets that already exist (409)
+#   * reject sources equal to destination (400)
+#   * reject anything that would leave the datasets root
+
+
+def _norm(p: str) -> str:
+    """Absolute + normpath. Used everywhere for containment / equality checks."""
+    return os.path.normpath(os.path.abspath(p))
+
+
+@data_sources_bp.route('/mkdir', methods=['POST'])
+@login_required
+def create_folder():
+    """
+    Create a new (sub-)folder inside an allowed area.
+
+    Body: { folder: <parent-abs-path>, name: <new-folder-name> }
+    """
+    data = request.get_json() or {}
+    parent = data.get('folder')
+    raw_name = (data.get('name') or '').strip()
+
+    if not parent or not raw_name:
+        return jsonify({'error': 'folder and name are required'}), 400
+
+    name = secure_filename(raw_name)
+    if not name:
+        return jsonify({'error': 'Invalid folder name'}), 400
+
+    datasets_root = current_app.config['DATASETS_ROOT_PATH']
+    shared_folder = current_app.config['SHARED_FOLDER_PATH']
+    user = request.current_user
+
+    if not validate_path(parent, user, datasets_root, shared_folder):
+        return jsonify({'error': 'Access denied to parent folder'}), 403
+
+    if not os.path.isdir(parent):
+        return jsonify({'error': 'Parent folder not found'}), 404
+
+    target = _norm(os.path.join(parent, name))
+
+    # Re-validate the target — belt & suspenders against a name that somehow
+    # dodges secure_filename (shouldn't happen, but this is cheap insurance).
+    if not validate_path(target, user, datasets_root, shared_folder):
+        return jsonify({'error': 'Target path outside allowed area'}), 403
+
+    if os.path.exists(target):
+        return jsonify({'error': 'A file or folder with that name already exists'}), 409
+
+    try:
+        os.makedirs(target)
+    except OSError as e:
+        return jsonify({'error': f'Failed to create folder: {e}'}), 500
+
+    return jsonify({'ok': True, 'path': target})
+
+
+@data_sources_bp.route('/rename', methods=['POST'])
+@login_required
+def rename_item():
+    """
+    Rename a single file or folder in place.
+
+    Body: { path: <abs-src-path>, new_name: <new-basename> }
+    """
+    data = request.get_json() or {}
+    src = data.get('path')
+    raw_new = (data.get('new_name') or '').strip()
+
+    if not src or not raw_new:
+        return jsonify({'error': 'path and new_name are required'}), 400
+
+    new_name = secure_filename(raw_new)
+    if not new_name:
+        return jsonify({'error': 'Invalid new_name'}), 400
+
+    datasets_root = current_app.config['DATASETS_ROOT_PATH']
+    shared_folder = current_app.config['SHARED_FOLDER_PATH']
+    user = request.current_user
+
+    if not validate_path(src, user, datasets_root, shared_folder):
+        return jsonify({'error': 'Access denied to source path'}), 403
+
+    if not os.path.exists(src):
+        return jsonify({'error': 'Source path not found'}), 404
+
+    parent = os.path.dirname(_norm(src))
+    target = _norm(os.path.join(parent, new_name))
+
+    if target == _norm(src):
+        return jsonify({'error': 'New name is the same as current name'}), 400
+
+    if not validate_path(target, user, datasets_root, shared_folder):
+        return jsonify({'error': 'Target path outside allowed area'}), 403
+
+    if os.path.exists(target):
+        return jsonify({'error': 'A file or folder with that name already exists'}), 409
+
+    try:
+        os.rename(src, target)
+    except OSError as e:
+        return jsonify({'error': f'Rename failed: {e}'}), 500
+
+    return jsonify({'ok': True, 'path': target})
+
+
+def _bulk_transfer(op_name: str):
+    """
+    Shared body for /move and /copy — both take the same request shape,
+    only differ in the per-item action.
+    """
+    data = request.get_json() or {}
+    sources = data.get('sources')
+    destination = data.get('destination')
+
+    if not isinstance(sources, list) or not sources:
+        return jsonify({'error': 'sources (non-empty list) is required'}), 400
+
+    if not destination or not isinstance(destination, str):
+        return jsonify({'error': 'destination is required'}), 400
+
+    datasets_root = current_app.config['DATASETS_ROOT_PATH']
+    shared_folder = current_app.config['SHARED_FOLDER_PATH']
+    user = request.current_user
+
+    if not validate_path(destination, user, datasets_root, shared_folder):
+        return jsonify({'error': 'Access denied to destination'}), 403
+
+    if not os.path.isdir(destination):
+        return jsonify({'error': 'Destination is not a folder'}), 400
+
+    dest_norm = _norm(destination)
+
+    ok_paths = []
+    errors = []
+
+    for src in sources:
+        try:
+            if not isinstance(src, str) or not src:
+                errors.append({'path': str(src), 'reason': 'Invalid source path'})
+                continue
+
+            if not validate_path(src, user, datasets_root, shared_folder):
+                errors.append({'path': src, 'reason': 'Access denied'})
+                continue
+
+            if not os.path.exists(src):
+                errors.append({'path': src, 'reason': 'Not found'})
+                continue
+
+            src_norm = _norm(src)
+            name = os.path.basename(src_norm)
+            if not name:
+                errors.append({'path': src, 'reason': 'Cannot resolve basename'})
+                continue
+
+            target = _norm(os.path.join(dest_norm, name))
+
+            # Refuse no-op operations
+            if src_norm == target:
+                errors.append({'path': src, 'reason': 'Source and destination are the same'})
+                continue
+
+            # Refuse moving/copying a folder into itself or a child of itself
+            if os.path.isdir(src_norm) and _is_path_within(dest_norm, src_norm):
+                errors.append({'path': src, 'reason': 'Cannot place folder into itself'})
+                continue
+
+            if not validate_path(target, user, datasets_root, shared_folder):
+                errors.append({'path': src, 'reason': 'Target outside allowed area'})
+                continue
+
+            if os.path.exists(target):
+                errors.append({'path': src, 'reason': 'Target already exists'})
+                continue
+
+            if op_name == 'move':
+                shutil.move(src_norm, target)
+            else:  # copy
+                if os.path.isdir(src_norm):
+                    shutil.copytree(src_norm, target, dirs_exist_ok=False)
+                else:
+                    shutil.copy2(src_norm, target)
+
+            ok_paths.append(target)
+        except Exception as e:
+            errors.append({'path': src, 'reason': str(e)})
+
+    key = 'moved' if op_name == 'move' else 'copied'
+    return jsonify({'ok': True, key: ok_paths, 'errors': errors})
+
+
+@data_sources_bp.route('/move', methods=['POST'])
+@login_required
+def move_items():
+    """
+    Bulk move files/folders.
+
+    Body: { sources: [<abs>...], destination: <abs-folder> }
+    Per-item failures are collected; the request only 400s on shape errors.
+    """
+    return _bulk_transfer('move')
+
+
+@data_sources_bp.route('/copy', methods=['POST'])
+@login_required
+def copy_items():
+    """
+    Bulk copy files/folders.
+
+    Body: { sources: [<abs>...], destination: <abs-folder> }
+    Files use shutil.copy2 (preserves metadata); folders use shutil.copytree
+    with dirs_exist_ok=False (existing destination is an error).
+    """
+    return _bulk_transfer('copy')

@@ -153,6 +153,15 @@
               Upload
             </v-btn>
             <v-btn
+              variant="tonal"
+              size="small"
+              prepend-icon="mdi-folder-cog-outline"
+              class="mr-2"
+              @click="showFileManager = true"
+            >
+              Manage Files
+            </v-btn>
+            <v-btn
               variant="text"
               size="small"
               prepend-icon="mdi-refresh"
@@ -984,8 +993,17 @@
                     </v-icon>
                   </template>
 
-                  <v-list-item-title>{{ entry.relative_path }}</v-list-item-title>
-                  <v-list-item-subtitle>{{ formatFileSize(entry.file.size) }}</v-list-item-subtitle>
+                  <!-- Show basename as the title so a truncated container doesn't hide
+                       the only bit of the name that varies between rows. Full path
+                       (parent chain from webkitRelativePath) shown smaller below. -->
+                  <v-list-item-title>{{ entry.file.name }}</v-list-item-title>
+                  <v-list-item-subtitle>
+                    <span v-if="entry.relative_path && entry.relative_path !== entry.file.name" class="text-caption text-medium-emphasis">
+                      {{ entry.relative_path.slice(0, entry.relative_path.length - entry.file.name.length).replace(/[/\\]$/, '') || '(root)' }}
+                      <span class="mx-1">·</span>
+                    </span>
+                    {{ formatFileSize(entry.file.size) }}
+                  </v-list-item-subtitle>
                 </v-list-item>
               </v-list>
             </v-window-item>
@@ -1662,6 +1680,13 @@
         </v-card-actions>
       </v-card>
     </v-dialog>
+
+    <!-- Full File Manager (Manage Files) -->
+    <FileManagerDialog
+      v-model="showFileManager"
+      :initial-path="currentPath"
+      @refresh-requested="loadFolders"
+    />
   </v-container>
 </template>
 
@@ -1672,6 +1697,7 @@ import { usePipelineStore } from '@/stores/pipeline'
 import { useNotificationStore } from '@/stores/notification'
 import { useAuthStore } from '@/stores/auth'
 import PipelineStepper from '@/components/PipelineStepper.vue'
+import FileManagerDialog from '@/components/FileManagerDialog.vue'
 import { Line } from 'vue-chartjs'
 import {
   Chart as ChartJS,
@@ -1747,6 +1773,9 @@ const scanning = ref(false)
 // Upload state
 const showUploadDialog = ref(false)
 const showFormatGuide = ref(false)
+
+// File Manager (Manage Files) dialog state
+const showFileManager = ref(false)
 
 // Text Import wizard state
 type TextDelimiterChoice = ',' | '\t' | ';' | ' ' | '|' | 'other'
