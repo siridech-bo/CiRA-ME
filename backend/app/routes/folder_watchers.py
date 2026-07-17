@@ -4,9 +4,16 @@ Per-user watchers that poll a container-visible folder, run each row of
 each file through a ME-LAB endpoint, and write results to an output CSV.
 """
 
+import os
 import re
+import shutil
 import logging
-from flask import Blueprint, request, jsonify
+import tempfile
+import zipfile
+from datetime import datetime
+
+from flask import Blueprint, request, jsonify, send_file
+from werkzeug.utils import secure_filename
 
 from ..auth import login_required
 from ..models import FolderWatcher, MeLabEndpoint
@@ -364,32 +371,104 @@ _MAX_FILES_PER_FOLDER = 50
 # we return only the head + a note.
 _PREVIEW_MAX_BYTES = 200 * 1024
 
-_VALID_KINDS = ('input', 'output', 'error')
+# `processed` is the post-success archive folder created by
+# folder_watcher_service._move_to_processed. It's a sibling of the input
+# folder (technically nested at <input>/_processed/) so it needs its own kind
+# so the frontend can list, preview, download, and delete from it too.
+_VALID_KINDS = ('input', 'output', 'error', 'processed')
+
+# Per-file upload cap for the multipart upload endpoint. Matches the
+# data_sources.py upload cap so operators aren't surprised by different limits
+# across the app.
+_MAX_UPLOAD_BYTES = 100 * 1024 * 1024  # 100 MB
 
 
-def _list_folder(dir_path: str, glob_pattern: str | None = None) -> tuple[list[dict], int]:
-    """List files in a folder as {name, size, mtime}. Returns (list, total_count)."""
+def _folder_for_kind(watcher: dict, kind: str) -> str:
+    """Return the on-disk folder for one of `_VALID_KINDS`. Callers must
+    validate `kind` themselves first (this is a lookup, not a gatekeeper)."""
+    input_dir = watcher['input_folder']
+    if kind == 'input':
+        return input_dir
+    if kind == 'output':
+        return watcher['output_folder']
+    if kind == 'error':
+        return os.path.join(input_dir, '_error')
+    if kind == 'processed':
+        return os.path.join(input_dir, '_processed')
+    # Should never reach here — caller validated kind first.
+    raise ValueError(f'unknown kind: {kind}')
+
+
+def _safe_basename(filename: str) -> str | None:
+    """Reject any path-traversal attempt. Returns the safe basename or None
+    if the input is invalid. All file-manipulation endpoints must use this."""
+    if not isinstance(filename, str):
+        return None
+    safe_name = os.path.basename(filename)
+    if safe_name != filename or safe_name in ('', '.', '..'):
+        return None
+    return safe_name
+
+
+def _list_folder(dir_path: str, glob_pattern: str | None = None, include_error_reason: bool = False) -> tuple[list[dict], int]:
+    """List files in a folder as {name, size, mtime, matches_glob, error_reason?}.
+
+    Returns (list, total_count). If ``glob_pattern`` is supplied, every file
+    is still listed (so uploads that don't match the watcher's file_glob
+    remain visible), but each carries a ``matches_glob`` boolean the frontend
+    can use to badge / grey out files the runtime will ignore. Callers that
+    don't pass a pattern get ``matches_glob=True`` on every entry (nothing to
+    filter on).
+
+    When ``include_error_reason`` is True (used for the ``_error/`` folder),
+    each file entry is enriched with the first line of its sidecar
+    ``<name>.error`` file so the UI can render WHY it failed inline. Sidecar
+    files themselves are excluded from the listing.
+    """
     import os
-    import glob as _glob
+    import fnmatch
     if not os.path.isdir(dir_path):
         return [], 0
-    if glob_pattern:
-        matches = _glob.glob(os.path.join(dir_path, glob_pattern))
-    else:
-        matches = [os.path.join(dir_path, f) for f in os.listdir(dir_path)]
+    # Always list everything under the folder. Filtering is now a per-entry
+    # flag rather than a hide-vs-show decision so users can find and delete
+    # files they uploaded to the wrong watcher.
+    entries = os.listdir(dir_path)
     files = []
-    for p in matches:
+    for name in entries:
+        # Hide sidecar `.error` files from the listing — they're metadata for
+        # the actual failed input, not user-visible files.
+        if include_error_reason and name.endswith('.error'):
+            continue
+        p = os.path.join(dir_path, name)
         if not os.path.isfile(p):
             continue
         try:
             st = os.stat(p)
         except OSError:
             continue
-        files.append({
-            'name': os.path.basename(p),
+        matches_glob = True
+        if glob_pattern:
+            matches_glob = fnmatch.fnmatch(name, glob_pattern)
+        entry = {
+            'name': name,
             'size': st.st_size,
             'mtime': st.st_mtime,
-        })
+            'matches_glob': matches_glob,
+        }
+        if include_error_reason:
+            # First line of the sidecar is the exception summary; keep only
+            # that so the table row stays short. Preview endpoint can show
+            # the full traceback on click.
+            sidecar = os.path.join(dir_path, f"{name}.error")
+            try:
+                if os.path.isfile(sidecar):
+                    with open(sidecar, 'r', encoding='utf-8', errors='replace') as ef:
+                        first_line = ef.readline().rstrip('\r\n')
+                        if first_line:
+                            entry['error_reason'] = first_line[:300]
+            except OSError:
+                pass
+        files.append(entry)
     total = len(files)
     files.sort(key=lambda f: f['mtime'], reverse=True)
     return files[:_MAX_FILES_PER_FOLDER], total
@@ -398,15 +477,15 @@ def _list_folder(dir_path: str, glob_pattern: str | None = None) -> tuple[list[d
 @folder_watchers_bp.route('/<int:watcher_id>/files', methods=['GET'])
 @login_required
 def list_files(watcher_id):
-    """List files in this watcher's input / output / error folders.
+    """List files in this watcher's input / output / error / processed folders.
 
-    Response: {input: {files: [...], total: N},
-               output: {...},
-               error:  {...}}
+    Response: {input:     {files: [...], total: N, folder: ...},
+               output:    {...},
+               error:     {...},
+               processed: {...}}
     Each file: {name, size, mtime}. Sorted newest-first, capped at
     _MAX_FILES_PER_FOLDER.
     """
-    import os
     watcher = _owned_or_404(watcher_id, request.current_user['id'])
     if not watcher:
         return jsonify({'error': 'Watcher not found'}), 404
@@ -414,17 +493,24 @@ def list_files(watcher_id):
     input_dir = watcher['input_folder']
     output_dir = watcher['output_folder']
     error_dir = os.path.join(input_dir, '_error')
+    processed_dir = os.path.join(input_dir, '_processed')
 
-    # Input pass through the watcher's glob so we don't advertise unrelated
-    # files sitting in the folder — matches the runtime's actual pick-up set.
+    # List every file in the input folder; the glob just decides which
+    # entries carry matches_glob=True. Hiding non-matches would leave
+    # accidentally-uploaded files invisible and un-deletable in the UI.
     input_files, input_total = _list_folder(input_dir, watcher.get('file_glob') or '*.txt')
     output_files, output_total = _list_folder(output_dir)
-    error_files, error_total = _list_folder(error_dir)
+    # Enrich error entries with the first line of their sidecar `.error`
+    # file so the UI can show WHY each file failed instead of a bare
+    # "Failed at HH:MM:SS".
+    error_files, error_total = _list_folder(error_dir, include_error_reason=True)
+    processed_files, processed_total = _list_folder(processed_dir)
 
     return jsonify({
-        'input':  {'files': input_files,  'total': input_total,  'folder': input_dir},
-        'output': {'files': output_files, 'total': output_total, 'folder': output_dir},
-        'error':  {'files': error_files,  'total': error_total,  'folder': error_dir},
+        'input':     {'files': input_files,     'total': input_total,     'folder': input_dir},
+        'output':    {'files': output_files,    'total': output_total,    'folder': output_dir},
+        'error':     {'files': error_files,     'total': error_total,     'folder': error_dir},
+        'processed': {'files': processed_files, 'total': processed_total, 'folder': processed_dir},
     })
 
 
@@ -434,31 +520,22 @@ def get_file_content(watcher_id, kind, filename):
     """Read a specific file's content for preview. Response: {content, size,
     truncated: bool}.
 
-    `kind` is one of `input`, `output`, `error`. `filename` is validated to
-    be a bare basename (no path traversal). Content is capped at
+    `kind` is one of `input`, `output`, `error`, `processed`. `filename` is
+    validated to be a bare basename (no path traversal). Content is capped at
     _PREVIEW_MAX_BYTES; larger files return only the head + `truncated: true`
     so the UI can offer a download link instead.
     """
-    import os
     watcher = _owned_or_404(watcher_id, request.current_user['id'])
     if not watcher:
         return jsonify({'error': 'Watcher not found'}), 404
     if kind not in _VALID_KINDS:
         return jsonify({'error': f'kind must be one of {_VALID_KINDS}'}), 400
 
-    # Reject any path-traversal attempt. os.path.basename strips separators.
-    safe_name = os.path.basename(filename)
-    if safe_name != filename or safe_name in ('', '.', '..'):
+    safe_name = _safe_basename(filename)
+    if safe_name is None:
         return jsonify({'error': 'invalid filename'}), 400
 
-    input_dir = watcher['input_folder']
-    if kind == 'input':
-        folder = input_dir
-    elif kind == 'output':
-        folder = watcher['output_folder']
-    else:  # 'error'
-        folder = os.path.join(input_dir, '_error')
-
+    folder = _folder_for_kind(watcher, kind)
     full_path = os.path.join(folder, safe_name)
     if not os.path.isfile(full_path):
         return jsonify({'error': 'file not found'}), 404
@@ -483,6 +560,502 @@ def get_file_content(watcher_id, kind, filename):
         'content': content,
         'truncated': truncated,
     })
+
+
+# ---------------------------------------------------------------------------
+# File manager — upload / download / delete / bulk zip / retry / paths / history.
+# Everything below is scoped to a single watcher, ownership-checked, and
+# path-traversal-safe via _safe_basename.
+# ---------------------------------------------------------------------------
+
+@folder_watchers_bp.route('/<int:watcher_id>/upload', methods=['POST'])
+@login_required
+def upload_files(watcher_id):
+    """Multipart upload one-or-more files into the watcher's input folder.
+
+    Uses the same basename-strip pattern as data_sources.py because Firefox
+    and Linux drag-drop send the full relative path in `file.filename`.
+    Duplicate names are suffixed `_1`, `_2`, matching the Data Source upload.
+    """
+    watcher = _owned_or_404(watcher_id, request.current_user['id'])
+    if not watcher:
+        return jsonify({'error': 'Watcher not found'}), 404
+
+    files = request.files.getlist('files')
+    if not files or all((f.filename or '') == '' for f in files):
+        return jsonify({'error': 'No files provided'}), 400
+
+    input_dir = watcher['input_folder']
+    try:
+        os.makedirs(input_dir, exist_ok=True)
+    except OSError as e:
+        return jsonify({'error': f'Could not create input folder: {e}'}), 500
+
+    uploaded: list = []
+    errors: list = []
+
+    for f in files:
+        raw_name = f.filename or ''
+        if not raw_name:
+            continue
+
+        # Firefox / Linux drag-drop bug: filename may be a nested path. Strip
+        # to the leaf so secure_filename doesn't collapse the slashes into
+        # underscores.
+        fname_raw = raw_name.replace('\\', '/')
+        fname_base = os.path.basename(fname_raw)
+        safe_name = secure_filename(fname_base)
+        if not safe_name:
+            errors.append({'name': raw_name, 'reason': 'invalid filename'})
+            continue
+
+        # Size gate — check before saving, without loading the whole thing.
+        try:
+            f.stream.seek(0, os.SEEK_END)
+            size = f.stream.tell()
+            f.stream.seek(0)
+        except Exception:
+            size = None
+        if size is not None and size > _MAX_UPLOAD_BYTES:
+            return jsonify({
+                'error': (
+                    f"{safe_name} is larger than the "
+                    f"{_MAX_UPLOAD_BYTES // (1024 * 1024)} MB per-file limit"
+                )
+            }), 413
+
+        # De-duplicate the target name if a file with the same basename already
+        # exists in the input folder (mirrors data_sources.py behaviour).
+        stem, ext = os.path.splitext(safe_name)
+        final_name = safe_name
+        counter = 1
+        while os.path.exists(os.path.join(input_dir, final_name)):
+            final_name = f"{stem}_{counter}{ext}"
+            counter += 1
+            if counter > 1000:
+                # Pathological collision — fall back to timestamp for guaranteed uniqueness.
+                ts = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+                final_name = f"{stem}_{ts}{ext}"
+                break
+
+        dest = os.path.join(input_dir, final_name)
+        try:
+            f.save(dest)
+        except Exception as e:
+            errors.append({'name': raw_name, 'reason': f'save failed: {e}'})
+            continue
+
+        try:
+            saved_size = os.path.getsize(dest)
+        except OSError:
+            saved_size = size or 0
+
+        uploaded.append({'name': final_name, 'size': saved_size})
+
+    return jsonify({
+        'ok': True,
+        'uploaded': uploaded,
+        'errors': errors,
+    }), 200 if uploaded or not errors else 400
+
+
+@folder_watchers_bp.route(
+    '/<int:watcher_id>/files/<kind>/<path:filename>/download', methods=['GET']
+)
+@login_required
+def download_file(watcher_id, kind, filename):
+    """Binary download of a file from the watcher's input/output/error/processed
+    folder. Uses send_file with `as_attachment=True` so the browser prompts
+    for save rather than trying to render binary CSVs inline.
+    """
+    watcher = _owned_or_404(watcher_id, request.current_user['id'])
+    if not watcher:
+        return jsonify({'error': 'Watcher not found'}), 404
+    if kind not in _VALID_KINDS:
+        return jsonify({'error': f'kind must be one of {_VALID_KINDS}'}), 400
+
+    safe_name = _safe_basename(filename)
+    if safe_name is None:
+        return jsonify({'error': 'invalid filename'}), 400
+
+    full_path = os.path.join(_folder_for_kind(watcher, kind), safe_name)
+    if not os.path.isfile(full_path):
+        return jsonify({'error': 'file not found'}), 404
+
+    # send_file wants an absolute path so behaviour is stable across CWDs.
+    return send_file(
+        os.path.abspath(full_path),
+        as_attachment=True,
+        download_name=safe_name,
+    )
+
+
+@folder_watchers_bp.route(
+    '/<int:watcher_id>/files/<kind>/<path:filename>', methods=['DELETE']
+)
+@login_required
+def delete_file(watcher_id, kind, filename):
+    """Delete a single file from the watcher's input/output/error/processed
+    folder. Refuses subdirectories — we only manage flat files here.
+    """
+    watcher = _owned_or_404(watcher_id, request.current_user['id'])
+    if not watcher:
+        return jsonify({'error': 'Watcher not found'}), 404
+    if kind not in _VALID_KINDS:
+        return jsonify({'error': f'kind must be one of {_VALID_KINDS}'}), 400
+
+    safe_name = _safe_basename(filename)
+    if safe_name is None:
+        return jsonify({'error': 'invalid filename'}), 400
+
+    full_path = os.path.join(_folder_for_kind(watcher, kind), safe_name)
+    if os.path.isdir(full_path):
+        return jsonify({'error': 'cannot delete a subdirectory'}), 400
+    if not os.path.isfile(full_path):
+        return jsonify({'error': 'file not found'}), 404
+
+    try:
+        os.remove(full_path)
+    except OSError as e:
+        return jsonify({'error': f'delete failed: {e}'}), 500
+
+    # When deleting an error file, also remove its sidecar `.error` metadata
+    # so we don't leak stale reason-of-failure files across retries.
+    if kind == 'error':
+        sidecar = full_path + '.error'
+        if os.path.isfile(sidecar):
+            try:
+                os.remove(sidecar)
+            except OSError:
+                pass
+
+    return jsonify({'ok': True})
+
+
+@folder_watchers_bp.route(
+    '/<int:watcher_id>/files/output/zip', methods=['GET']
+)
+@login_required
+def download_output_zip(watcher_id):
+    """Zip up every regular file in the top level of the watcher's output
+    folder and stream it back as a single attachment.
+
+    Skips subdirectories (output is typically flat) so a stray _error/ or
+    other admin folder doesn't get bundled. If the output folder is empty
+    we return 404 — the frontend disables the button in that case, but this
+    catches the race.
+    """
+    watcher = _owned_or_404(watcher_id, request.current_user['id'])
+    if not watcher:
+        return jsonify({'error': 'Watcher not found'}), 404
+
+    output_dir = watcher['output_folder']
+    if not os.path.isdir(output_dir):
+        return jsonify({'error': 'output folder does not exist yet'}), 404
+
+    # Collect files first so we can 404 before allocating a tempfile.
+    entries: list = []
+    for name in os.listdir(output_dir):
+        full = os.path.join(output_dir, name)
+        if os.path.isfile(full):
+            entries.append((name, full))
+    if not entries:
+        return jsonify({'error': 'output folder is empty'}), 404
+
+    watcher_slug = folder_watcher_service._slug(watcher.get('name') or f"watcher_{watcher_id}")
+    ts = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+    zip_name = f"{watcher_slug}_outputs_{ts}.zip"
+
+    # NamedTemporaryFile with delete=False so Flask/send_file can stream the
+    # file back after we close it. We rely on the OS temp cleanup here rather
+    # than deleting manually — deleting mid-stream races with Flask's send.
+    tmp = tempfile.NamedTemporaryFile(
+        prefix=f"watcher_{watcher_id}_zip_", suffix='.zip', delete=False
+    )
+    tmp_path = tmp.name
+    tmp.close()
+    try:
+        with zipfile.ZipFile(tmp_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for name, full in entries:
+                zf.write(full, arcname=name)
+    except Exception as e:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+        return jsonify({'error': f'could not build zip: {e}'}), 500
+
+    logger.info(
+        f"[FolderWatcher {watcher_id}] built output zip with "
+        f"{len(entries)} file(s) → {zip_name}"
+    )
+    return send_file(
+        tmp_path,
+        as_attachment=True,
+        download_name=zip_name,
+        mimetype='application/zip',
+    )
+
+
+@folder_watchers_bp.route(
+    '/<int:watcher_id>/files/error/<path:filename>/retry', methods=['POST']
+)
+@login_required
+def retry_error_file(watcher_id, filename):
+    """Move an errored file back to the input folder so the watcher picks it
+    up again on the next tick. On name-collision with something already in
+    input, suffix with a timestamp so both are preserved.
+    """
+    watcher = _owned_or_404(watcher_id, request.current_user['id'])
+    if not watcher:
+        return jsonify({'error': 'Watcher not found'}), 404
+
+    safe_name = _safe_basename(filename)
+    if safe_name is None:
+        return jsonify({'error': 'invalid filename'}), 400
+
+    input_dir = watcher['input_folder']
+    error_dir = os.path.join(input_dir, '_error')
+    error_path = os.path.join(error_dir, safe_name)
+    if not os.path.isfile(error_path):
+        return jsonify({'error': 'error file not found'}), 404
+
+    try:
+        os.makedirs(input_dir, exist_ok=True)
+    except OSError as e:
+        return jsonify({'error': f'could not ensure input folder: {e}'}), 500
+
+    target_name = safe_name
+    target_path = os.path.join(input_dir, target_name)
+    if os.path.exists(target_path):
+        stem, ext = os.path.splitext(safe_name)
+        ts = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+        target_name = f"{stem}_retry_{ts}{ext}"
+        target_path = os.path.join(input_dir, target_name)
+
+    try:
+        shutil.move(error_path, target_path)
+    except OSError as e:
+        return jsonify({'error': f'retry move failed: {e}'}), 500
+
+    # Retry means "have another go" — the previous failure reason no longer
+    # applies. Delete the sidecar so the next run's error (if any) is what
+    # the operator sees instead of the stale one.
+    sidecar = error_path + '.error'
+    if os.path.isfile(sidecar):
+        try:
+            os.remove(sidecar)
+        except OSError:
+            pass
+
+    logger.info(
+        f"[FolderWatcher {watcher_id}] retry {safe_name} → {target_path}"
+    )
+    return jsonify({'ok': True, 'new_path': target_path, 'new_name': target_name})
+
+
+# ---------------------------------------------------------------------------
+# Path introspection (Tier 2) — helps customers rsync / scp / automate against
+# the container's folder set without having to shell in and figure out the
+# host-side mount points themselves.
+# ---------------------------------------------------------------------------
+
+# The container mount root — folder_watcher_service creates watcher subtrees
+# under /app/watcher-data by default. If the deployment overrides this we
+# still want to expose whatever the watcher was configured with, so we split
+# on this prefix rather than assume it.
+_CONTAINER_WATCHER_ROOT = '/app/watcher-data'
+
+
+def _to_host_path(container_path: str, host_base: str | None) -> str | None:
+    """Map a container-side path to its host-side equivalent by rebasing off
+    _CONTAINER_WATCHER_ROOT. Returns None if the container path isn't under
+    that root, or if the operator hasn't set WATCHER_HOST_BASE_PATH.
+    """
+    if not host_base:
+        return None
+    if not container_path:
+        return None
+    root = _CONTAINER_WATCHER_ROOT.rstrip('/')
+    # Normalise the leading slash + trailing whitespace.
+    p = container_path.strip()
+    if not (p == root or p.startswith(root + '/')):
+        return None
+    remainder = p[len(root):].lstrip('/')
+    host_base_clean = host_base.rstrip('/')
+    if not remainder:
+        return host_base_clean
+    return f"{host_base_clean}/{remainder}"
+
+
+@folder_watchers_bp.route('/<int:watcher_id>/paths', methods=['GET'])
+@login_required
+def watcher_paths(watcher_id):
+    """Return container + host paths + API URLs for each of this watcher's
+    input / output / processed / error folders. Read-only introspection —
+    doesn't touch any file.
+    """
+    watcher = _owned_or_404(watcher_id, request.current_user['id'])
+    if not watcher:
+        return jsonify({'error': 'Watcher not found'}), 404
+
+    input_dir = watcher['input_folder']
+    output_dir = watcher['output_folder']
+    processed_dir = os.path.join(input_dir, '_processed')
+    error_dir = os.path.join(input_dir, '_error')
+
+    host_base = os.environ.get('WATCHER_HOST_BASE_PATH') or None
+
+    # request.host_url includes scheme + host + trailing slash, e.g.
+    # "https://me.cira-core.com/". Strip the trailing slash so we don't emit
+    # double slashes when concatenating with the API path.
+    base_url = (request.host_url or '').rstrip('/')
+
+    def _entry(container_path: str, api_extra: dict) -> dict:
+        entry = {
+            'container': container_path,
+            'host': _to_host_path(container_path, host_base),
+        }
+        entry.update(api_extra)
+        return entry
+
+    return jsonify({
+        'input': _entry(input_dir, {
+            'api_upload': f"{base_url}/api/folder-watchers/{watcher_id}/upload",
+        }),
+        'output': _entry(output_dir, {
+            'api_download_zip':
+                f"{base_url}/api/folder-watchers/{watcher_id}/files/output/zip",
+        }),
+        'processed': _entry(processed_dir, {}),
+        'error': _entry(error_dir, {}),
+        'watcher_host_base_configured': bool(host_base),
+    })
+
+
+# ---------------------------------------------------------------------------
+# History inference — no new DB table. We reconstruct pairs of input →
+# output by matching basenames (stem, then substring fallback) between the
+# processed archive and the output folder.
+# ---------------------------------------------------------------------------
+
+_HISTORY_MAX_ENTRIES = 200
+
+
+def _infer_history(watcher: dict) -> list[dict]:
+    """Return a list of {input_name, output_name, processed_at, output_size,
+    status} entries, newest-first, capped at _HISTORY_MAX_ENTRIES.
+
+    Matching heuristic:
+      1. Same stem (foo.csv ↔ foo.csv)
+      2. Output-basename starts with input-basename's stem
+         (foo.csv ↔ foo_predictions.csv) — handles the collision-suffix path.
+    Any leftover outputs that never matched are reported as status="output_only"
+    so the operator can still see them in history.
+    """
+    input_dir = watcher['input_folder']
+    output_dir = watcher['output_folder']
+    processed_dir = os.path.join(input_dir, '_processed')
+
+    def _scan(dir_path: str) -> list[dict]:
+        if not os.path.isdir(dir_path):
+            return []
+        out = []
+        for name in os.listdir(dir_path):
+            full = os.path.join(dir_path, name)
+            if not os.path.isfile(full):
+                continue
+            try:
+                st = os.stat(full)
+            except OSError:
+                continue
+            out.append({'name': name, 'mtime': st.st_mtime, 'size': st.st_size})
+        return out
+
+    processed_files = _scan(processed_dir)
+    output_files = _scan(output_dir)
+
+    # Index outputs by name so we can pop-match into them.
+    outputs_by_name: dict[str, dict] = {o['name']: o for o in output_files}
+    outputs_used: set[str] = set()
+
+    entries: list[dict] = []
+    for pf in processed_files:
+        pf_name = pf['name']
+        # Strip the "processed_YYYYMMDD_HHMMSS" collision suffix if present,
+        # so we can match on the original basename.
+        original = re.sub(r'\.processed_\d{8}_\d{6}$', '', pf_name)
+        stem, _ = os.path.splitext(original)
+
+        # 1. Exact-name match.
+        match = outputs_by_name.get(original)
+        # 2. Same stem + any extension (e.g. output CSV of a JSON input).
+        if match is None:
+            for oname, ometa in outputs_by_name.items():
+                if oname in outputs_used:
+                    continue
+                o_stem, _ = os.path.splitext(oname)
+                if o_stem == stem:
+                    match = ometa
+                    break
+        # 3. Output basename starts with input stem (foo → foo_predictions.csv).
+        if match is None and stem:
+            for oname, ometa in outputs_by_name.items():
+                if oname in outputs_used:
+                    continue
+                if oname.startswith(stem + '_') or oname.startswith(stem + '.'):
+                    match = ometa
+                    break
+
+        if match is not None:
+            outputs_used.add(match['name'])
+            entries.append({
+                'input_name': original,
+                'archive_name': pf_name,
+                'output_name': match['name'],
+                'processed_at': match['mtime'],
+                'output_size': match['size'],
+                'status': 'success',
+            })
+        else:
+            entries.append({
+                'input_name': original,
+                'archive_name': pf_name,
+                'output_name': None,
+                'processed_at': pf['mtime'],
+                'output_size': None,
+                'status': 'archived_no_output',
+            })
+
+    # Any outputs the matcher didn't consume — surfaced so operators can still
+    # see them in the timeline (e.g. output produced before we started
+    # archiving inputs, or after a manual re-run).
+    for oname, ometa in outputs_by_name.items():
+        if oname in outputs_used:
+            continue
+        entries.append({
+            'input_name': None,
+            'archive_name': None,
+            'output_name': oname,
+            'processed_at': ometa['mtime'],
+            'output_size': ometa['size'],
+            'status': 'output_only',
+        })
+
+    entries.sort(key=lambda e: e['processed_at'] or 0, reverse=True)
+    return entries[:_HISTORY_MAX_ENTRIES]
+
+
+@folder_watchers_bp.route('/<int:watcher_id>/history', methods=['GET'])
+@login_required
+def watcher_history(watcher_id):
+    """List processing history inferred from disk. Newest-first, capped at
+    _HISTORY_MAX_ENTRIES."""
+    watcher = _owned_or_404(watcher_id, request.current_user['id'])
+    if not watcher:
+        return jsonify({'error': 'Watcher not found'}), 404
+    entries = _infer_history(watcher)
+    return jsonify({'entries': entries, 'total': len(entries)})
 
 
 # ---------------------------------------------------------------------------

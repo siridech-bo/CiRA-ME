@@ -152,25 +152,61 @@ class _WatcherWorker(threading.Thread):
                 continue  # still being written, try next tick
             try:
                 self._process_file(path, output_dir, watcher)
+                # Instead of deleting the input file, move it to <input>/_processed/.
+                # This preserves the customer's mental model of "my file is still there"
+                # and gives us a history to correlate against output files.
                 try:
-                    os.remove(path)
+                    self._move_to_processed(path, input_dir)
                 except OSError as re_:
                     logger.warning(
-                        f"[FolderWatcher {self.watcher_id}] could not delete {path}: {re_}"
+                        f"[FolderWatcher {self.watcher_id}] could not archive {path}: {re_}"
                     )
             except Exception as e:
                 logger.exception(
                     f"[FolderWatcher {self.watcher_id}] file failed: {path}"
                 )
                 os.makedirs(error_dir, exist_ok=True)
+                base = os.path.basename(path)
                 try:
-                    os.rename(
-                        path, os.path.join(error_dir, os.path.basename(path))
-                    )
+                    os.rename(path, os.path.join(error_dir, base))
+                except OSError:
+                    pass
+                # Persist the failure reason as a sidecar `<name>.error` file
+                # so the UI's Errors tab can show WHY it failed instead of
+                # just "Failed at 15:23". Format: first line = one-liner
+                # exception summary; second block = full traceback.
+                try:
+                    import traceback as _tb
+                    summary = f"{type(e).__name__}: {e}"
+                    body = _tb.format_exc()
+                    sidecar = os.path.join(error_dir, f"{base}.error")
+                    with open(sidecar, 'w', encoding='utf-8') as ef:
+                        ef.write(summary + '\n\n' + body)
                 except OSError:
                     pass
         FolderWatcher.update(
             self.watcher_id, last_run_at=datetime.utcnow().isoformat()
+        )
+
+    def _move_to_processed(self, src_path: str, input_dir: str):
+        """Move a successfully-processed input file into <input>/_processed/.
+
+        Preserves the original filename so operators can correlate input →
+        output. On collision (same name arrived twice) suffix with a monotonic
+        timestamp so the archive stays lossless.
+        """
+        processed_dir = os.path.join(input_dir, '_processed')
+        os.makedirs(processed_dir, exist_ok=True)
+        base = os.path.basename(src_path)
+        dest = os.path.join(processed_dir, base)
+        if os.path.exists(dest):
+            stem, ext = os.path.splitext(base)
+            ts = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+            dest = os.path.join(processed_dir, f"{stem}{ext}.processed_{ts}")
+        # os.replace is atomic on both POSIX and Windows.
+        os.replace(src_path, dest)
+        logger.info(
+            f"[FolderWatcher {self.watcher_id}] archived input → {dest}"
         )
 
     def _process_file(self, path: str, output_dir: str, watcher: dict):
