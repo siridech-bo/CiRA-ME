@@ -99,6 +99,35 @@
       </v-alert>
     </v-card>
 
+    <!-- Unexpected-disconnect prompt (bug 3 fix). Fires when the WebSocket
+         drops mid-publish for any non-operator-initiated reason. Reconnect
+         resumes from the current row; Stop resets. -->
+    <v-dialog v-model="mqttDisconnectDialog" max-width="480" persistent>
+      <v-card>
+        <v-card-title class="d-flex align-center">
+          <v-icon start color="warning">mdi-connection</v-icon>
+          Publishing stopped
+        </v-card-title>
+        <v-card-text>
+          <p class="text-body-2 mb-3">{{ mqttDisconnectReason }}</p>
+          <p class="text-caption text-medium-emphasis mb-0">
+            Sent {{ mqttPublished }} / {{ mqttTotal }} rows before the drop.
+            Reconnect will resume from row {{ mqttRowIndex }}.
+          </p>
+        </v-card-text>
+        <v-card-actions class="pb-4 px-4">
+          <v-spacer />
+          <v-btn variant="text" @click="dismissDisconnectDialog">
+            Stop
+          </v-btn>
+          <v-btn color="primary" variant="flat" :loading="mqttReconnecting" @click="reconnectMqttPublish">
+            <v-icon start size="small">mdi-refresh</v-icon>
+            Reconnect
+          </v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
+
     <!-- CSV File Picker Dialog -->
     <v-dialog v-model="showCsvPicker" max-width="720" scrollable>
       <v-card>
@@ -321,6 +350,21 @@ let mqttSensorCols: string[] = []
 let mqttLabelCol: string | null = null
 let mqttLabelDecodeMap: Record<string, any> | null = null
 let mqttRowIndex = 0
+// Cache ws-info between Start and any subsequent Reconnect so a transient
+// drop doesn't force another /api/mqtt/ws-info round-trip.
+let mqttWsInfo: any = null
+// Distinguishes an operator-initiated stop from an unexpected drop. Set
+// true right before we tear down the client cleanly; the close-handler
+// checks it before deciding whether to prompt Reconnect/Stop.
+let mqttIntentionalStop = false
+
+// Reconnect-or-stop prompt state — bug 3 fix. When the WebSocket closes or
+// errors mid-publish (SPA navigation, background-tab throttling, broker
+// blip), we DON'T silently stop; we surface a dialog so the operator can
+// resume from the current row or dismiss.
+const mqttDisconnectDialog = ref(false)
+const mqttDisconnectReason = ref('')
+const mqttReconnecting = ref(false)
 
 async function fetchMqttDatasets() {
   loadingDatasets.value = true
@@ -365,7 +409,8 @@ async function startMqttPublish() {
   mqttStarting.value = true
   mqttError.value = ''
   try {
-    // 1. Fetch CSV rows + sensor/label metadata (single request, cached).
+    // 1. Fetch CSV rows + sensor/label metadata (single request, cached
+    // in module-scope so a subsequent reconnect can resume without re-fetching).
     const [csvResp, wsResp] = await Promise.all([
       api.get('/api/mqtt/csv-rows', { params: { path: mqttTestFile.value } }),
       api.get('/api/mqtt/ws-info'),
@@ -377,6 +422,9 @@ async function startMqttPublish() {
     mqttTotal.value = csvResp.data?.total_rows || mqttRows.length
     mqttPublished.value = 0
     mqttRowIndex = 0
+    // Cache the ws-info response on the module so reconnect doesn't need
+    // to re-fetch (avoids an extra round-trip on transient drops).
+    mqttWsInfo = wsResp.data || {}
 
     if (mqttRows.length === 0) {
       throw new Error('CSV returned no rows')
@@ -388,80 +436,150 @@ async function startMqttPublish() {
       mqttModule = mod.default || mod
     }
 
-    // 3. Connect over WebSocket.
-    const brokerUrl = buildBrokerWsUrl(wsResp.data?.host || '', wsResp.data?.ws_port || 9001)
-    mqttClient = mqttModule.connect(brokerUrl, {
-      clientId: `cira-testpub-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
-      clean: true,
-      keepalive: 30,
-      // Do NOT auto-reconnect. Workshop reliability policy: on drop, stop
-      // cleanly and let the operator hit Start again.
-      reconnectPeriod: 0,
-    })
-
-    const topic = mqttTestTopic.value
-    const rate = mqttTestRate.value > 0 ? mqttTestRate.value : 10
-    const interval = Math.max(1, Math.floor(1000 / rate))
-
-    mqttClient.on('connect', () => {
-      mqttPublishing.value = true
-      // 4. Start publishing loop.
-      mqttPublishInterval = setInterval(() => {
-        if (!mqttClient || !mqttPublishing.value) return
-        const row = mqttRows[mqttRowIndex]
-        // Payload shape MUST match server-side _publish_worker (lines 415-427):
-        //   { <sensor>: float, ..., _timestamp, _index, [label]: decoded }
-        const payload: Record<string, any> = {}
-        for (const col of mqttSensorCols) {
-          payload[col] = row[col]
-        }
-        payload._timestamp = Date.now() / 1000   // Python time.time() = seconds
-        payload._index = mqttRowIndex
-        if (mqttLabelCol && row[mqttLabelCol] !== undefined) {
-          const raw = row[mqttLabelCol]
-          if (mqttLabelDecodeMap && mqttLabelDecodeMap[String(raw)] !== undefined) {
-            payload[mqttLabelCol] = mqttLabelDecodeMap[String(raw)]
-          } else {
-            payload[mqttLabelCol] = raw
-          }
-        }
-        try {
-          mqttClient.publish(topic, JSON.stringify(payload), { qos: 0 })
-          mqttPublished.value++
-        } catch (err) {
-          console.warn('[MQTT test publisher] publish failed:', err)
-        }
-        mqttRowIndex++
-        if (mqttRowIndex >= mqttRows.length) {
-          if (mqttTestLoop.value) {
-            mqttRowIndex = 0
-          } else {
-            stopMqttPublish()
-          }
-        }
-      }, interval)
-    })
-
-    mqttClient.on('error', (err: any) => {
-      console.warn('[MQTT test publisher] connection error:', err?.message || err)
-      mqttError.value = err?.message || 'WebSocket connection failed'
-      stopMqttPublish()
-    })
-
-    mqttClient.on('close', () => {
-      // Drop mid-publish = stop gracefully. No auto-reconnect (workshop policy).
-      if (mqttPublishing.value) {
-        console.warn('[MQTT test publisher] WebSocket closed unexpectedly — stopping publisher.')
-        stopMqttPublish()
-      }
-    })
+    // 3. Delegate to the shared connect+publish loop (also called by
+    //    Reconnect from the disconnect dialog).
+    await _connectAndPublish()
   } catch (e: any) {
     mqttError.value = e?.response?.data?.error || e?.message || 'Failed to start publisher'
   }
   mqttStarting.value = false
 }
 
+// Connect the WebSocket and start the setInterval publish loop. Shared
+// between initial start (row 0) and reconnect (resumes from mqttRowIndex).
+// Assumes mqttRows / mqttSensorCols / mqttLabelCol / mqttWsInfo are already
+// populated by startMqttPublish.
+async function _connectAndPublish() {
+  const brokerUrl = buildBrokerWsUrl(mqttWsInfo?.host || '', mqttWsInfo?.ws_port || 9001)
+  mqttIntentionalStop = false
+  mqttClient = mqttModule.connect(brokerUrl, {
+    clientId: `cira-testpub-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+    clean: true,
+    keepalive: 30,
+    // Do NOT auto-reconnect at the mqtt.js layer. We surface a Reconnect
+    // dialog to the operator instead so they can decide (workshop policy).
+    reconnectPeriod: 0,
+  })
+
+  const topic = mqttTestTopic.value
+  const rate = mqttTestRate.value > 0 ? mqttTestRate.value : 10
+  const interval = Math.max(1, Math.floor(1000 / rate))
+
+  mqttClient.on('connect', () => {
+    mqttPublishing.value = true
+    // Publishing loop.
+    mqttPublishInterval = setInterval(() => {
+      if (!mqttClient || !mqttPublishing.value) return
+      const row = mqttRows[mqttRowIndex]
+      // Payload shape MUST match server-side _publish_worker (lines 415-427):
+      //   { <sensor>: float, ..., _timestamp, _index, [label]: decoded }
+      const payload: Record<string, any> = {}
+      for (const col of mqttSensorCols) {
+        payload[col] = row[col]
+      }
+      payload._timestamp = Date.now() / 1000   // Python time.time() = seconds
+      payload._index = mqttRowIndex
+      if (mqttLabelCol && row[mqttLabelCol] !== undefined) {
+        const raw = row[mqttLabelCol]
+        if (mqttLabelDecodeMap && mqttLabelDecodeMap[String(raw)] !== undefined) {
+          payload[mqttLabelCol] = mqttLabelDecodeMap[String(raw)]
+        } else {
+          payload[mqttLabelCol] = raw
+        }
+      }
+      try {
+        mqttClient.publish(topic, JSON.stringify(payload), { qos: 0 })
+        mqttPublished.value++
+      } catch (err) {
+        console.warn('[MQTT test publisher] publish failed:', err)
+      }
+      mqttRowIndex++
+      if (mqttRowIndex >= mqttRows.length) {
+        if (mqttTestLoop.value) {
+          mqttRowIndex = 0
+        } else {
+          stopMqttPublish()
+        }
+      }
+    }, interval)
+  })
+
+  mqttClient.on('error', (err: any) => {
+    console.warn('[MQTT test publisher] connection error:', err?.message || err)
+    _handleUnexpectedDrop(err?.message || 'WebSocket connection failed')
+  })
+
+  mqttClient.on('close', () => {
+    // Drop mid-publish → surface the Reconnect/Stop dialog rather than
+    // silently ending the run. Intentional stops set mqttIntentionalStop
+    // first so we skip the prompt in that case.
+    if (mqttIntentionalStop) return
+    if (mqttPublishing.value || mqttReconnecting.value) {
+      _handleUnexpectedDrop('WebSocket closed unexpectedly (broker drop, tab-throttling, or network blip).')
+    }
+  })
+}
+
+// Tear down the current client+interval WITHOUT resetting row cursor —
+// so a follow-up reconnect resumes from where we left off. Called from
+// both the error and close paths, and from the Reconnect dialog itself
+// before it re-invokes _connectAndPublish.
+function _tearDownForReconnect() {
+  mqttIntentionalStop = true   // suppress the dialog for our own close
+  if (mqttPublishInterval) {
+    clearInterval(mqttPublishInterval)
+    mqttPublishInterval = null
+  }
+  if (mqttClient) {
+    try { mqttClient.end(true) } catch { /* ignore */ }
+    mqttClient = null
+  }
+  mqttPublishing.value = false
+}
+
+// Called from the mqtt.js close/error handlers when the drop was not
+// operator-initiated. Preserves mqttRowIndex so Reconnect can resume.
+function _handleUnexpectedDrop(reason: string) {
+  if (mqttIntentionalStop) return
+  _tearDownForReconnect()
+  mqttReconnecting.value = false
+  mqttDisconnectReason.value = reason
+  mqttDisconnectDialog.value = true
+}
+
+// Reconnect handler for the dialog. Reuses the cached CSV rows + ws-info
+// so no fetch happens; just re-opens the WebSocket and resumes the
+// publishing loop from the current mqttRowIndex.
+async function reconnectMqttPublish() {
+  mqttReconnecting.value = true
+  mqttError.value = ''
+  mqttDisconnectDialog.value = false
+  try {
+    if (!mqttModule) {
+      const mod: any = await import('mqtt')
+      mqttModule = mod.default || mod
+    }
+    await _connectAndPublish()
+  } catch (e: any) {
+    mqttError.value = e?.message || 'Failed to reconnect'
+  }
+  mqttReconnecting.value = false
+}
+
+// Dismiss handler for the dialog — user chose Stop instead of Reconnect.
+function dismissDisconnectDialog() {
+  mqttDisconnectDialog.value = false
+  mqttDisconnectReason.value = ''
+  // Reset the cursor so a subsequent Start begins at row 0.
+  mqttRowIndex = 0
+  mqttPublished.value = 0
+}
+
 function stopMqttPublish() {
+  // Mark as intentional BEFORE ending the client so the close handler
+  // doesn't misinterpret this as a broker drop and pop the Reconnect
+  // dialog on top of the operator who just clicked Stop.
+  mqttIntentionalStop = true
   mqttPublishing.value = false
   if (mqttPublishInterval) {
     clearInterval(mqttPublishInterval)
@@ -471,6 +589,11 @@ function stopMqttPublish() {
     try { mqttClient.end(true) } catch { /* ignore */ }
     mqttClient = null
   }
+  // Reset cursor so a subsequent Start begins fresh.
+  mqttRowIndex = 0
+  mqttPublished.value = 0
+  // Any leftover disconnect dialog is now moot.
+  mqttDisconnectDialog.value = false
 }
 
 // Stop cleanly on tab close (beforeunload) and on component unmount so we

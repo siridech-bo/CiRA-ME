@@ -3342,7 +3342,25 @@ function parseSensorPayload(raw) {
     }
 
     // Pass 2 — positional fallback for unmatched channels from unused leaves.
-    const unusedKeys = flatKeys.filter(k => !usedKeys.has(k))
+    // BEFORE positional fill, drop obvious meta/time fields from the pool.
+    // Without this guard, a numeric `_timestamp` / `epoch` / `ts` column
+    // from the publisher takes the first fallback slot and offsets every
+    // real sensor channel by one — the bug where "MQTT only worked when
+    // the index column was named 'time'" (the publisher happened to strip
+    // that specific name; any other alias slipped through).
+    const META_FIELD_NAMES = new Set([
+      '_timestamp', '_index',
+      'timestamp', 'time', 'ts', 'datetime', 'date', 'epoch', 'unix_time',
+      'elapsed', 'sec', 'seconds', 'ms', 'milliseconds', 't',
+      'index', 'idx', 'i', 'row', 'row_id', 'sample_id',
+    ])
+    const isMetaField = (k) => {
+      // Handle dotted keys from flattenNumericLeaves (e.g. "meta._timestamp")
+      // by checking the leaf segment.
+      const leaf = k.split('.').pop() || k
+      return META_FIELD_NAMES.has(leaf.toLowerCase())
+    }
+    const unusedKeys = flatKeys.filter(k => !usedKeys.has(k) && !isMetaField(k))
     const fallbackConfigured = []
     const fallbackDetected = []
     for (let i = 0; i < unmatchedChannels.length && i < unusedKeys.length; i++) {

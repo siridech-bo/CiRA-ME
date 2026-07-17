@@ -92,8 +92,17 @@ def start_publish():
         df = pd.read_csv(full_path)
         numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
         # Exclude timestamp-like columns
-        non_sensor = ('timestamp', 'time', 'index', 'label', 'labels', 'class', 'class_name',
-                      'target', 'category', 'sample_id')
+        # Any column name that lowercases into this set is treated as
+        # metadata, not a sensor channel. Widened so publishers don't
+        # accidentally leak timestamps/indices as sensor values, which
+        # then bump downstream subscribers off-by-one during positional
+        # channel fallback. Cover common time-column aliases.
+        non_sensor = (
+            'timestamp', 'time', 'ts', 'datetime', 'date', 'epoch', 'unix_time',
+            'elapsed', 'sec', 'seconds', 'ms', 'milliseconds', 't',
+            'index', 'idx', 'i', 'row', 'row_id', 'sample_id',
+            'label', 'labels', 'class', 'class_name', 'target', 'category',
+        )
         sensor_cols = [c for c in numeric_cols if c.lower() not in non_sensor]
         if not sensor_cols:
             return jsonify({'error': 'CSV has no numeric sensor columns'}), 400
@@ -262,8 +271,17 @@ def csv_rows():
     try:
         df = pd.read_csv(full_path)
         numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-        non_sensor = ('timestamp', 'time', 'index', 'label', 'labels', 'class', 'class_name',
-                      'target', 'category', 'sample_id')
+        # Any column name that lowercases into this set is treated as
+        # metadata, not a sensor channel. Widened so publishers don't
+        # accidentally leak timestamps/indices as sensor values, which
+        # then bump downstream subscribers off-by-one during positional
+        # channel fallback. Cover common time-column aliases.
+        non_sensor = (
+            'timestamp', 'time', 'ts', 'datetime', 'date', 'epoch', 'unix_time',
+            'elapsed', 'sec', 'seconds', 'ms', 'milliseconds', 't',
+            'index', 'idx', 'i', 'row', 'row_id', 'sample_id',
+            'label', 'labels', 'class', 'class_name', 'target', 'category',
+        )
         sensor_cols = [c for c in numeric_cols if c.lower() not in non_sensor]
         if not sensor_cols:
             return jsonify({'error': 'CSV has no numeric sensor columns'}), 400
