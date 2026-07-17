@@ -203,21 +203,44 @@
             </div>
             <div class="mb-4" />
 
-            <!-- key_value mode: just list column names -->
-            <v-text-field
-              v-if="form.parse_mode === 'key_value'"
-              v-model="form.parse_columns"
-              label="Column names (comma-separated)"
-              placeholder="temperature, vibration, pressure"
-              variant="outlined"
-              density="comfortable"
-              class="mb-4"
-              hint="The watcher will look for temperature=X, vibration=X, pressure=X (or : X) on each line, ignoring surrounding text."
-              persistent-hint
-              :rules="[
-                v => form.parse_mode !== 'key_value' || (!!v && !!String(v).trim()) || 'List at least one column'
-              ]"
-            />
+            <!-- key_value mode: just list column names.
+                 The "Pick a sample file" button on the right is the primary
+                 way most users should populate this — Don't Make Me Think:
+                 they upload a log line, we tell them what the columns are.
+                 Typing them in by hand is the fallback. -->
+            <div v-if="form.parse_mode === 'key_value'" class="d-flex align-start gap-2 mb-4">
+              <v-text-field
+                v-model="form.parse_columns"
+                label="Column names (comma-separated)"
+                placeholder="temperature, vibration, pressure"
+                variant="outlined"
+                density="comfortable"
+                hint="Or use ➜ 'Pick sample file' to auto-fill. Watcher looks for these key=value or key:value pairs on each line."
+                persistent-hint
+                :rules="[
+                  v => form.parse_mode !== 'key_value' || (!!v && !!String(v).trim()) || 'List at least one column'
+                ]"
+                style="flex: 1;"
+              />
+              <input
+                ref="autoDetectFileInput"
+                type="file"
+                accept=".log,.txt,.csv,.jsonl"
+                style="display: none;"
+                @change="onAutoDetectFilePicked"
+              />
+              <v-btn
+                color="primary"
+                variant="tonal"
+                :loading="autoDetectFileLoading"
+                prepend-icon="mdi-file-search-outline"
+                title="Pick a sample log file — the watcher will read its first few lines, detect the columns, and fill this field for you."
+                style="height: 56px; white-space: nowrap;"
+                @click="pickAutoDetectFile"
+              >
+                Pick sample file
+              </v-btn>
+            </div>
 
             <!-- regex mode: template picker + textarea -->
             <template v-if="form.parse_mode === 'regex'">
@@ -1170,6 +1193,64 @@ async function detectColumnsFromSample() {
     notify.showError(e.response?.data?.error || 'Failed to detect columns from sample')
   } finally {
     detectLoading.value = false
+  }
+}
+
+// One-click column auto-detection from a real log file.
+// User clicks "Pick sample file" next to the columns field → OS file
+// picker → we read the first ~20 lines client-side (enough for the
+// detect-columns endpoint, no server upload of the whole file) → post
+// to /detect-columns → fill parse_columns. Also stashes the sample
+// into samplePreviewText so the "Try a sample" panel below carries it.
+const autoDetectFileInput = ref<HTMLInputElement | null>(null)
+const autoDetectFileLoading = ref(false)
+
+function pickAutoDetectFile() {
+  autoDetectFileInput.value?.click()
+}
+
+async function onAutoDetectFilePicked(event: Event) {
+  const target = event.target as HTMLInputElement
+  const file = target?.files?.[0]
+  if (!file) return
+  autoDetectFileLoading.value = true
+  try {
+    // Read a small head of the file. Log lines are short; 8 KB is plenty
+    // for the ~20 lines the detector needs and avoids loading a huge log.
+    const HEAD_BYTES = 8 * 1024
+    const blob = file.slice(0, HEAD_BYTES)
+    const text = await blob.text()
+    const lines = text.split(/\r?\n/).filter(l => l.trim()).slice(0, 20)
+    if (lines.length === 0) {
+      notify.showError(`${file.name} appears to be empty or unreadable as text.`)
+      return
+    }
+    const sample = lines.join('\n')
+    form.value.samplePreviewText = sample
+
+    const res = await api.post('/api/folder-watchers/detect-columns', {
+      sample_content: sample,
+    })
+    const cols: string[] = res.data?.columns || []
+    if (cols.length === 0) {
+      notify.showError(
+        `Couldn't find any key=value or key:value patterns in ${file.name}. ` +
+        `Peek at the file to confirm it looks like ` +
+        `"temperature=45.32 vibration=0.87" and re-try.`
+      )
+      return
+    }
+    form.value.parse_columns = cols.join(', ')
+    notify.showSuccess(
+      `Detected ${cols.length} column${cols.length === 1 ? '' : 's'} from ${file.name}: ${cols.join(', ')}. ` +
+      `Trim any non-sensor keys (pid, port, etc.).`
+    )
+  } catch (e: any) {
+    notify.showError(e.response?.data?.error || e?.message || 'Failed to read sample file')
+  } finally {
+    autoDetectFileLoading.value = false
+    // Clear the input so picking the SAME file again re-fires @change.
+    if (target) target.value = ''
   }
 }
 
