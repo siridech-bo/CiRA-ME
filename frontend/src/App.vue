@@ -39,6 +39,20 @@
 
       <v-spacer />
 
+      <!-- Theme toggle — prominent icon so users don't have to hunt through
+           the user menu. Same handler as the menu item below so both stay
+           in sync via the useThemePref composable (Phase 0). -->
+      <v-btn
+        icon
+        variant="text"
+        density="comfortable"
+        :aria-label="themePref.isDark.value ? 'Switch to light mode' : 'Switch to dark mode'"
+        :title="themePref.isDark.value ? 'Switch to light mode' : 'Switch to dark mode'"
+        @click="themePref.toggle()"
+      >
+        <v-icon>{{ themePref.isDark.value ? 'mdi-weather-sunny' : 'mdi-weather-night' }}</v-icon>
+      </v-btn>
+
       <!-- User Menu -->
       <v-menu>
         <template #activator="{ props }">
@@ -58,8 +72,11 @@
           <v-list-item prepend-icon="mdi-key" @click="showChangePassword = true">
             Change Password
           </v-list-item>
-          <v-list-item prepend-icon="mdi-theme-light-dark" @click="toggleTheme">
-            Toggle Theme
+          <v-list-item
+            :prepend-icon="themePref.isDark.value ? 'mdi-weather-sunny' : 'mdi-weather-night'"
+            @click="themePref.toggle()"
+          >
+            {{ themePref.isDark.value ? 'Switch to Light Mode' : 'Switch to Dark Mode' }}
           </v-list-item>
           <v-list-item prepend-icon="mdi-logout" @click="logout" class="text-error">
             Logout
@@ -332,7 +349,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { useTheme } from 'vuetify'
+import { useThemePref } from '@/composables/useThemePref'
 import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { usePipelineStore } from '@/stores/pipeline'
@@ -340,7 +357,10 @@ import { useNotificationStore } from '@/stores/notification'
 import LogoFull from '@/assets/LogoFull.vue'
 import api from '@/services/api'
 
-const theme = useTheme()
+// Persisted theme (dark/light) — Phase 0. Both the top-bar icon and
+// the user-menu item call themePref.toggle(); localStorage sync happens
+// inside the composable.
+const themePref = useThemePref()
 const router = useRouter()
 const authStore = useAuthStore()
 const pipelineStore = usePipelineStore()
@@ -369,10 +389,6 @@ const userInitials = computed(() => {
   const name = authStore.user?.display_name || authStore.user?.username || 'U'
   return name.split(' ').map((n: string) => n[0]).join('').toUpperCase().slice(0, 2)
 })
-
-const toggleTheme = () => {
-  theme.global.name.value = theme.global.current.value.dark ? 'light' : 'dark'
-}
 
 const logout = async () => {
   await authStore.logout()

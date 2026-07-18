@@ -20,12 +20,18 @@ import router from './router'
 // Custom styles
 import './styles/main.scss'
 
+// Seed the initial theme from localStorage so the very first paint matches
+// the user's saved choice — no light↔dark flash on reload. See
+// composables/useThemePref.ts for the storage contract.
+import { readSavedTheme } from './composables/useThemePref'
+const initialTheme = readSavedTheme()
+
 // Create Vuetify instance with custom theme
 const vuetify = createVuetify({
   components,
   directives,
   theme: {
-    defaultTheme: 'dark',
+    defaultTheme: initialTheme,
     themes: {
       dark: {
         dark: true,

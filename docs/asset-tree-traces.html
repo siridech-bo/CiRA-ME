@@ -108,30 +108,30 @@
   </div>
 </header>
 
-<section class="overall" style="--overall: 0;">
-  <div class="ring"><span>0%</span></div>
+<section class="overall" style="--overall: 15;">
+  <div class="ring"><span>15%</span></div>
   <div class="stats">
-    <div class="stat"><div class="n">0</div><div class="l">Phases done</div></div>
-    <div class="stat"><div class="n">0</div><div class="l">Subtasks done</div></div>
+    <div class="stat"><div class="n">1</div><div class="l">Phases done</div></div>
+    <div class="stat"><div class="n">6</div><div class="l">Subtasks done</div></div>
     <div class="stat"><div class="n">6</div><div class="l">Phases total</div></div>
     <div class="stat"><div class="n">39</div><div class="l">Subtasks total</div></div>
   </div>
 </section>
 
 <!-- ═══════════════════════════════════════════════════ PHASE 0 ═════ -->
-<section class="phase status-pending" id="phase-0">
+<section class="phase status-done" id="phase-0">
   <div class="head">
     <h2>Phase 0 · Dark / Light mode toggle</h2>
-    <span class="est">~2 hr · <span class="chip pending">pending</span></span>
+    <span class="est">~2 hr · <span class="chip done">done</span></span>
   </div>
-  <div class="bar"><i style="width:0%"></i></div>
+  <div class="bar"><i style="width:100%"></i></div>
   <ul class="subtasks">
-    <li><span class="id">0.1</span> <span class="chip pending">pending</span> useThemePref composable + localStorage sync <span class="time">—</span></li>
-    <li><span class="id">0.2</span> <span class="chip pending">pending</span> Toggle button in top app bar <span class="time">—</span></li>
-    <li><span class="id">0.3</span> <span class="chip pending">pending</span> Boot-time apply from localStorage <span class="time">—</span></li>
-    <li><span class="id">0.4</span> <span class="chip pending">pending</span> Audit hardcoded dark styles <span class="time">—</span></li>
-    <li><span class="id">0.QA</span> <span class="chip pending">pending</span> Adversarial QA pass <span class="time">—</span></li>
-    <li><span class="id">0.T</span> <span class="chip pending">pending</span> Personal browser test <span class="time">—</span></li>
+    <li><span class="id">0.1</span> <span class="chip done">done</span> useThemePref composable + localStorage sync <span class="time">2026-07-18</span></li>
+    <li><span class="id">0.2</span> <span class="chip done">done</span> Toggle button in top app bar <span class="time">2026-07-18</span></li>
+    <li><span class="id">0.3</span> <span class="chip done">done</span> Boot-time apply from localStorage <span class="time">2026-07-18</span></li>
+    <li><span class="id">0.4</span> <span class="chip done">done</span> Audit hardcoded dark styles — 15 files, 319 rules, top 3 offenders documented as follow-up <span class="time">2026-07-18</span></li>
+    <li><span class="id">0.QA</span> <span class="chip done">done</span> Adversarial QA pass — zero blockers, zero polish, three follow-ups <span class="time">2026-07-18</span></li>
+    <li><span class="id">0.T</span> <span class="chip done">done</span> Personal + user browser test <span class="time">2026-07-18</span></li>
   </ul>
 </section>
 
@@ -237,7 +237,22 @@
 <section class="activity">
   <h2>Recent activity</h2>
   <ol id="activity-log">
+    <li><span class="when">2026-07-18</span>Phase 0 <b>done</b>. Toggle icon in top app bar. Boot-time apply from localStorage. QA passed (zero blockers). Awaiting user browser confirmation before starting Phase A.</li>
+    <li><span class="when">2026-07-18</span>Phase 0 QA — <code>cira.theme</code> localStorage contract, rapid-toggle serialization, and reactivity all PASS. 3 hardcoded-color surfaces logged as follow-up (see below).</li>
+    <li><span class="when">2026-07-18</span>Phase 0 implementation — <code>composables/useThemePref.ts</code>, prominent icon in <code>App.vue</code>, boot-time seed in <code>main.ts</code>.</li>
     <li><span class="when">2026-07-18</span>Plan + execution doc + traces scaffolded. Ready to start Phase 0.</li>
+  </ol>
+</section>
+
+<!-- ═══════════════════════════════════════════════════ FOLLOW-UP ════ -->
+<section class="activity" id="followup">
+  <h2>Known follow-up debt</h2>
+  <ol>
+    <li><b>AppBuilderEditorView.vue</b> — 145 hardcoded GitHub-dark colors. Canvas / node cards / graph editor stay dark when the app is in light mode. Highest priority polish target.</li>
+    <li><b>PublishedAppView.vue</b> — 96 hardcoded colors. Standalone kiosk views (live-inference cards, tables, chart legends) stay dark in light mode.</li>
+    <li><b>PublishedFolderWatcherView.vue</b> — 15 hardcoded colors. Watcher monitor dashboard stays dark on the light shell.</li>
+    <li>Lower priority: <code>DeployView</code>, <code>MeLabView</code>, <code>TrainingView</code> — a few terminal-styled log blocks are legible but stylistically out of theme.</li>
+    <li>Lowest priority: <code>AppBuilderListView.vue</code> — hardcoded light-lavender text on white card is WCAG-marginal contrast; worth a quick fix when the surface is touched next.</li>
   </ol>
 </section>
 
