@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>CiRA ME — Asset Tree project traces</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --bg: #0b1120;
+    --panel: #111827;
+    --panel-2: #1f2937;
+    --border: #253046;
+    --text: #e5e7eb;
+    --muted: #94a3b8;
+    --accent: #a78bfa;
+    --success: #22c55e;
+    --info: #60a5fa;
+    --warn: #f59e0b;
+    --error: #ef4444;
+    --pending: #475569;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  a { color: var(--accent); }
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 24px 24px 80px; }
+  header.top {
+    display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 12px;
+    padding-bottom: 16px; border-bottom: 1px solid var(--border);
+  }
+  header.top h1 { margin: 0; font-size: 22px; letter-spacing: 0.2px; }
+  header.top .sub { color: var(--muted); font-size: 13px; }
+  .overall {
+    display: flex; align-items: center; gap: 16px; margin: 20px 0 28px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px 20px;
+  }
+  .overall .ring {
+    width: 68px; height: 68px; border-radius: 50%;
+    background: conic-gradient(var(--success) calc(var(--overall) * 1%), var(--pending) 0);
+    display: grid; place-items: center; position: relative;
+  }
+  .overall .ring::before {
+    content: ""; position: absolute; inset: 6px; border-radius: 50%; background: var(--panel);
+  }
+  .overall .ring span { position: relative; font-weight: 700; font-size: 15px; }
+  .overall .stats { display: grid; grid-template-columns: repeat(4, auto); gap: 22px; }
+  .overall .stat .n { font-size: 22px; font-weight: 700; }
+  .overall .stat .l { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; }
+  .phase {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    margin: 14px 0; overflow: hidden;
+  }
+  .phase .head {
+    display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; gap: 12px;
+    background: linear-gradient(90deg, rgba(167,139,250,0.05) 0%, rgba(167,139,250,0) 60%);
+    border-bottom: 1px solid var(--border);
+  }
+  .phase .head h2 { margin: 0; font-size: 17px; }
+  .phase .head .est { color: var(--muted); font-size: 12px; }
+  .phase .bar { position: relative; height: 4px; background: var(--pending); }
+  .phase .bar > i { display: block; height: 100%; background: var(--success); transition: width 200ms ease; }
+  .phase.status-pending .bar > i { background: var(--pending); }
+  .phase.status-in_progress .bar > i { background: var(--info); }
+  .phase.status-done .bar > i { background: var(--success); }
+  .phase.status-blocked .bar > i { background: var(--error); }
+  .phase ul.subtasks {
+    list-style: none; margin: 0; padding: 12px 18px 18px;
+  }
+  .phase ul.subtasks li {
+    display: grid; grid-template-columns: 30px 90px 1fr 120px; gap: 12px; align-items: center;
+    padding: 8px 0; border-bottom: 1px dashed rgba(148,163,184,0.15);
+    font-size: 14px;
+  }
+  .phase ul.subtasks li:last-child { border-bottom: 0; }
+  .chip { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+  .chip.pending { background: rgba(148,163,184,0.15); color: var(--muted); }
+  .chip.in_progress { background: rgba(96,165,250,0.15); color: var(--info); }
+  .chip.done { background: rgba(34,197,94,0.15); color: var(--success); }
+  .chip.blocked { background: rgba(239,68,68,0.18); color: var(--error); }
+  .chip.qa { background: rgba(245,158,11,0.15); color: var(--warn); }
+  .id { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  .time { color: var(--muted); font-size: 11px; text-align: right; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .activity {
+    margin-top: 32px; background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 18px 22px;
+  }
+  .activity h2 { margin: 0 0 12px; font-size: 16px; }
+  .activity ol { margin: 0; padding-left: 22px; }
+  .activity li { padding: 6px 0; font-size: 13.5px; color: var(--text); }
+  .activity li .when { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; margin-right: 8px; }
+  footer.foot { color: var(--muted); font-size: 12px; margin-top: 32px; text-align: center; }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+  .legend .chip { transform: scale(0.85); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div>
+    <h1>🌳 CiRA ME — Asset Tree project traces</h1>
+    <div class="sub">Design: <a href="PLAN_2026-07-18_asset-tree.md">PLAN_2026-07-18_asset-tree.md</a> · Execution: <a href="EXECUTION_asset-tree.md">EXECUTION_asset-tree.md</a></div>
+  </div>
+  <div class="legend">
+    <span class="chip pending">pending</span>
+    <span class="chip in_progress">in-progress</span>
+    <span class="chip done">done</span>
+    <span class="chip qa">qa</span>
+    <span class="chip blocked">blocked</span>
+  </div>
+</header>
+
+<section class="overall" style="--overall: 0;">
+  <div class="ring"><span>0%</span></div>
+  <div class="stats">
+    <div class="stat"><div class="n">0</div><div class="l">Phases done</div></div>
+    <div class="stat"><div class="n">0</div><div class="l">Subtasks done</div></div>
+    <div class="stat"><div class="n">6</div><div class="l">Phases total</div></div>
+    <div class="stat"><div class="n">39</div><div class="l">Subtasks total</div></div>
+  </div>
+</section>
+
+<!-- ═══════════════════════════════════════════════════ PHASE 0 ═════ -->
+<section class="phase status-pending" id="phase-0">
+  <div class="head">
+    <h2>Phase 0 · Dark / Light mode toggle</h2>
+    <span class="est">~2 hr · <span class="chip pending">pending</span></span>
+  </div>
+  <div class="bar"><i style="width:0%"></i></div>
+  <ul class="subtasks">
+    <li><span class="id">0.1</span> <span class="chip pending">pending</span> useThemePref composable + localStorage sync <span class="time">—</span></li>
+    <li><span class="id">0.2</span> <span class="chip pending">pending</span> Toggle button in top app bar <span class="time">—</span></li>
+    <li><span class="id">0.3</span> <span class="chip pending">pending</span> Boot-time apply from localStorage <span class="time">—</span></li>
+    <li><span class="id">0.4</span> <span class="chip pending">pending</span> Audit hardcoded dark styles <span class="time">—</span></li>
+    <li><span class="id">0.QA</span> <span class="chip pending">pending</span> Adversarial QA pass <span class="time">—</span></li>
+    <li><span class="id">0.T</span> <span class="chip pending">pending</span> Personal browser test <span class="time">—</span></li>
+  </ul>
+</section>
+
+<!-- ═══════════════════════════════════════════════════ PHASE A ═════ -->
+<section class="phase status-pending" id="phase-a">
+  <div class="head">
+    <h2>Phase A · Data model + first-run wizard + tree admin</h2>
+    <span class="est">~2 weeks · <span class="chip pending">pending</span></span>
+  </div>
+  <div class="bar"><i style="width:0%"></i></div>
+  <ul class="subtasks">
+    <li><span class="id">A.1</span> <span class="chip pending">pending</span> Backend schema + migrations <span class="time">—</span></li>
+    <li><span class="id">A.2</span> <span class="chip pending">pending</span> Backend endpoints — tree CRUD <span class="time">—</span></li>
+    <li><span class="id">A.3</span> <span class="chip pending">pending</span> Backend endpoints — groups + compatibility <span class="time">—</span></li>
+    <li><span class="id">A.4</span> <span class="chip pending">pending</span> Sensor metadata presets <span class="time">—</span></li>
+    <li><span class="id">A.5</span> <span class="chip pending">pending</span> First-run wizard shell + route guard <span class="time">—</span></li>
+    <li><span class="id">A.6</span> <span class="chip pending">pending</span> Wizard steps 1-5 <span class="time">—</span></li>
+    <li><span class="id">A.7</span> <span class="chip pending">pending</span> Ongoing admin view <span class="time">—</span></li>
+    <li><span class="id">A.8</span> <span class="chip pending">pending</span> Legacy compat chip <span class="time">—</span></li>
+    <li><span class="id">A.QA</span> <span class="chip pending">pending</span> Adversarial QA pass (6 subtests) <span class="time">—</span></li>
+    <li><span class="id">A.T</span> <span class="chip pending">pending</span> Personal browser test <span class="time">—</span></li>
+  </ul>
+</section>
+
+<!-- ═══════════════════════════════════════════════════ PHASE B ═════ -->
+<section class="phase status-pending" id="phase-b">
+  <div class="head">
+    <h2>Phase B · Sidebar restructure + machine workspace</h2>
+    <span class="est">~1 week · <span class="chip pending">pending</span></span>
+  </div>
+  <div class="bar"><i style="width:0%"></i></div>
+  <ul class="subtasks">
+    <li><span class="id">B.1</span> <span class="chip pending">pending</span> New sidebar layout (tree + search + collapse) <span class="time">—</span></li>
+    <li><span class="id">B.2</span> <span class="chip pending">pending</span> Machine workspace route + 6 tabs shell <span class="time">—</span></li>
+    <li><span class="id">B.3</span> <span class="chip pending">pending</span> Overview tab <span class="time">—</span></li>
+    <li><span class="id">B.4</span> <span class="chip pending">pending</span> Data tab (scoped File Manager) <span class="time">—</span></li>
+    <li><span class="id">B.5</span> <span class="chip pending">pending</span> Models tab <span class="time">—</span></li>
+    <li><span class="id">B.6</span> <span class="chip pending">pending</span> Deploy tab <span class="time">—</span></li>
+    <li><span class="id">B.7</span> <span class="chip pending">pending</span> Labels placeholder tab <span class="time">—</span></li>
+    <li><span class="id">B.8</span> <span class="chip pending">pending</span> History tab <span class="time">—</span></li>
+    <li><span class="id">B.9</span> <span class="chip pending">pending</span> Legacy /pipeline/* redirects <span class="time">—</span></li>
+    <li><span class="id">B.QA</span> <span class="chip pending">pending</span> Adversarial QA pass <span class="time">—</span></li>
+    <li><span class="id">B.T</span> <span class="chip pending">pending</span> Personal browser test <span class="time">—</span></li>
+  </ul>
+</section>
+
+<!-- ═══════════════════════════════════════════════════ PHASE C ═════ -->
+<section class="phase status-pending" id="phase-c">
+  <div class="head">
+    <h2>Phase C · Machine Groups + cross-machine training</h2>
+    <span class="est">~1 week · <span class="chip pending">pending</span></span>
+  </div>
+  <div class="bar"><i style="width:0%"></i></div>
+  <ul class="subtasks">
+    <li><span class="id">C.1</span> <span class="chip pending">pending</span> Settings → Machine Groups page <span class="time">—</span></li>
+    <li><span class="id">C.2</span> <span class="chip pending">pending</span> Training scope selector <span class="time">—</span></li>
+    <li><span class="id">C.3</span> <span class="chip pending">pending</span> Compatibility validation UI <span class="time">—</span></li>
+    <li><span class="id">C.4</span> <span class="chip pending">pending</span> Model artifact metadata (trained_on / group / deploy_targets) <span class="time">—</span></li>
+    <li><span class="id">C.5</span> <span class="chip pending">pending</span> Rebind machines dialog <span class="time">—</span></li>
+    <li><span class="id">C.QA</span> <span class="chip pending">pending</span> Adversarial QA pass <span class="time">—</span></li>
+    <li><span class="id">C.T</span> <span class="chip pending">pending</span> Personal browser test <span class="time">—</span></li>
+  </ul>
+</section>
+
+<!-- ═══════════════════════════════════════════════════ PHASE D ═════ -->
+<section class="phase status-pending" id="phase-d">
+  <div class="head">
+    <h2>Phase D · MQTT ingest router + workshop defenses</h2>
+    <span class="est">~1 week · <span class="chip pending">pending</span></span>
+  </div>
+  <div class="bar"><i style="width:0%"></i></div>
+  <ul class="subtasks">
+    <li><span class="id">D.1</span> <span class="chip pending">pending</span> mqtt_ingest_router.py service <span class="time">—</span></li>
+    <li><span class="id">D.2</span> <span class="chip pending">pending</span> Rolling daily CSV writer <span class="time">—</span></li>
+    <li><span class="id">D.3</span> <span class="chip pending">pending</span> Rejected-topic log + viewer <span class="time">—</span></li>
+    <li><span class="id">D.4</span> <span class="chip pending">pending</span> Settings → MQTT Rules UI <span class="time">—</span></li>
+    <li><span class="id">D.5</span> <span class="chip pending">pending</span> Retention janitor <span class="time">—</span></li>
+    <li><span class="id">D.6</span> <span class="chip pending">pending</span> Publisher rate-limit clamp + topic docs <span class="time">—</span></li>
+    <li><span class="id">D.QA</span> <span class="chip pending">pending</span> Adversarial QA pass <span class="time">—</span></li>
+    <li><span class="id">D.T</span> <span class="chip pending">pending</span> Personal browser test <span class="time">—</span></li>
+  </ul>
+</section>
+
+<!-- ═══════════════════════════════════════════════════ PHASE E ═════ -->
+<section class="phase status-pending" id="phase-e">
+  <div class="head">
+    <h2>Phase E · OculusT labels integration</h2>
+    <span class="est">~1-2 weeks · <span class="chip pending">pending</span></span>
+  </div>
+  <div class="bar"><i style="width:0%"></i></div>
+  <ul class="subtasks">
+    <li><span class="id">E.1</span> <span class="chip pending">pending</span> Docker Compose bridge to OculusT <span class="time">—</span></li>
+    <li><span class="id">E.2</span> <span class="chip pending">pending</span> Shared session / SSO handoff <span class="time">—</span></li>
+    <li><span class="id">E.3</span> <span class="chip pending">pending</span> Labels tab "Open labeling" button <span class="time">—</span></li>
+    <li><span class="id">E.4</span> <span class="chip pending">pending</span> Labeled CSVs written back to machine folder <span class="time">—</span></li>
+    <li><span class="id">E.5</span> <span class="chip pending">pending</span> Windowing auto-detects labeled version <span class="time">—</span></li>
+    <li><span class="id">E.QA</span> <span class="chip pending">pending</span> Adversarial QA pass <span class="time">—</span></li>
+    <li><span class="id">E.T</span> <span class="chip pending">pending</span> Personal browser test <span class="time">—</span></li>
+  </ul>
+</section>
+
+<!-- ═══════════════════════════════════════════════════ ACTIVITY ═════ -->
+<section class="activity">
+  <h2>Recent activity</h2>
+  <ol id="activity-log">
+    <li><span class="when">2026-07-18</span>Plan + execution doc + traces scaffolded. Ready to start Phase 0.</li>
+  </ol>
+</section>
+
+<footer class="foot">
+  Updated by hand on every subtask transition. Hand-off notes go into git commits.
+</footer>
+
+</div>
+</body>
+</html>
