@@ -154,7 +154,7 @@ def _retail_stores():
         'icon': 'mdi-storefront',
         'description': '3 stores, 3 checkouts each. Foot traffic, transaction counts, and queue times feed anomaly detection for staffing decisions.',
         'config': {
-            'level_names': ['company', 'region', 'store', 'checkout'],
+            'level_names': ['company', 'region', 'store', 'checkout', 'sensor'],
             'root_name': 'company',
             'topic_mode': 'strict',
             'meta_prefixes': DEFAULT_META,
@@ -182,7 +182,7 @@ def _restaurant_chain():
         'icon': 'mdi-silverware-fork-knife',
         'description': '3 locations, 2 kitchen equipment units each (fryer + oven, etc.). Temperature, usage count, and power draw for equipment health monitoring.',
         'config': {
-            'level_names': ['chain', 'region', 'location', 'equipment'],
+            'level_names': ['chain', 'region', 'location', 'equipment', 'sensor'],
             'root_name': 'chain',
             'topic_mode': 'strict',
             'meta_prefixes': DEFAULT_META,
@@ -210,7 +210,7 @@ def _pharmacy_coldchain():
         'icon': 'mdi-medical-bag',
         'description': '3 stores, 2 vaccine refrigerators each. Temperature, door-open counts, and compressor current — cold-chain compliance monitoring.',
         'config': {
-            'level_names': ['chain', 'region', 'store', 'refrigerator'],
+            'level_names': ['chain', 'region', 'store', 'refrigerator', 'sensor'],
             'root_name': 'chain',
             'topic_mode': 'strict',
             'meta_prefixes': DEFAULT_META,
@@ -242,7 +242,7 @@ def _data_center():
         'icon': 'mdi-server',
         'description': '2 rows, 3 racks each, 2 servers per rack. CPU temperature, power draw, and fan RPM — a great fit for thermal-anomaly / failure-prediction models.',
         'config': {
-            'level_names': ['datacenter', 'row', 'rack', 'server'],
+            'level_names': ['datacenter', 'row', 'rack', 'server', 'sensor'],
             'root_name': 'datacenter',
             'topic_mode': 'strict',
             'meta_prefixes': DEFAULT_META,
@@ -268,7 +268,7 @@ def _warehouse():
         'icon': 'mdi-warehouse',
         'description': '1 warehouse, 3 zones, 2 conveyors per zone. Belt speed, package count, and weight for throughput and jam-detection models.',
         'config': {
-            'level_names': ['company', 'warehouse', 'zone', 'conveyor'],
+            'level_names': ['company', 'warehouse', 'zone', 'conveyor', 'sensor'],
             'root_name': 'company',
             'topic_mode': 'strict',
             'meta_prefixes': DEFAULT_META,
@@ -298,7 +298,7 @@ def _office_hvac():
         'icon': 'mdi-office-building',
         'description': '3 floors, 2 zones per floor, 2 HVAC units per zone. Temperature, humidity, air quality — comfort optimization and equipment health.',
         'config': {
-            'level_names': ['building', 'floor', 'zone', 'hvac'],
+            'level_names': ['building', 'floor', 'zone', 'hvac', 'sensor'],
             'root_name': 'building',
             'topic_mode': 'strict',
             'meta_prefixes': DEFAULT_META,
@@ -329,7 +329,7 @@ def _solar_farm():
         'icon': 'mdi-solar-power',
         'description': '3 arrays, each with 1 inverter and 4 panels. Voltage, current, temperature, and irradiance for panel-fault detection and yield forecasting.',
         'config': {
-            'level_names': ['farm', 'array', 'inverter', 'panel'],
+            'level_names': ['farm', 'array', 'inverter', 'panel', 'sensor'],
             'root_name': 'farm',
             'topic_mode': 'strict',
             'meta_prefixes': DEFAULT_META,
@@ -354,7 +354,7 @@ def _water_treatment():
         'icon': 'mdi-water',
         'description': '1 plant, 3 tanks. pH, turbidity, flow rate, and temperature — compliance monitoring and process anomaly detection.',
         'config': {
-            'level_names': ['utility', 'plant', 'tank', 'probe'],
+            'level_names': ['utility', 'plant', 'tank', 'probe', 'sensor'],
             'root_name': 'utility',
             'topic_mode': 'strict',
             'meta_prefixes': DEFAULT_META,
