@@ -38,6 +38,19 @@
             @update:model-value="fetchTree"
           />
           <v-spacer />
+          <!-- Always-visible admin shortcut: retire everything and open the
+               template picker. Useful when a customer picked the wrong
+               template on install and wants to redo. -->
+          <v-btn
+            v-if="isAdmin && tree && tree.length > 0"
+            variant="tonal"
+            color="warning"
+            size="small"
+            prepend-icon="mdi-restart"
+            @click="showResetConfirm = true"
+          >
+            Reset &amp; apply new template
+          </v-btn>
           <v-btn
             variant="text"
             size="small"
@@ -415,6 +428,42 @@
       </v-card>
     </v-dialog>
 
+    <!-- Reset confirmation — user must actively acknowledge. -->
+    <v-dialog v-model="showResetConfirm" max-width="480">
+      <v-card>
+        <v-card-title class="d-flex align-center">
+          <v-icon start color="warning">mdi-alert-outline</v-icon>
+          Reset asset tree?
+        </v-card-title>
+        <v-card-text>
+          <p class="text-body-2 mb-3">
+            This retires every node in the current tree
+            <template v-if="activeNodeCount > 0">
+              (<strong>{{ activeNodeCount }}</strong> active nodes)
+            </template>
+            and opens the template picker. The audit log is preserved.
+          </p>
+          <p class="text-body-2 text-medium-emphasis mb-0">
+            Any Machine Groups or model bindings that reference the retired
+            nodes will keep pointing at their retired records — they don't
+            silently disappear.
+          </p>
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="text" @click="showResetConfirm = false">Cancel</v-btn>
+          <v-btn
+            color="warning"
+            variant="flat"
+            :loading="resetting"
+            @click="onResetAndOpenTemplates"
+          >
+            Retire &amp; open templates
+          </v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
+
     <!-- Tree template picker — empty-state shortcut for admins so they can
          drop a working tree in one click instead of building from scratch. -->
     <v-dialog v-model="showTemplateDialog" max-width="900" scrollable>
@@ -705,9 +754,25 @@ async function confirmRetire() {
   }
 }
 
-// ── Tree template shortcut (empty state) ─────────────────────────────────
+// ── Tree template shortcut (empty state + reset flow) ───────────────────
 
 const showTemplateDialog = ref(false)
+const showResetConfirm = ref(false)
+const resetting = ref(false)
+
+// Count of ACTIVE nodes across the current tree — for the reset confirm
+// dialog's copy. Recomputes automatically from the tree ref.
+const activeNodeCount = computed(() => {
+  let n = 0
+  const walk = (nodes: AssetNode[]) => {
+    for (const node of nodes) {
+      if (node.status !== 'retired') n++
+      if (node.children?.length) walk(node.children)
+    }
+  }
+  walk(tree.value || [])
+  return n
+})
 
 async function onTemplateApplied(payload: { template_id: string; count: number }) {
   notificationStore.showSuccess(
@@ -719,6 +784,34 @@ async function onTemplateApplied(payload: { template_id: string; count: number }
   assetTreeStore.reset()
   await assetTreeStore.ensureConfigChecked()
   await Promise.all([fetchTree(), refreshAudit()])
+}
+
+// Reset flow: retire the current active root(s), then open the template
+// picker. Backend physically purges retired records inside apply-template
+// so unique topic_paths are freed for the new template.
+async function onResetAndOpenTemplates() {
+  resetting.value = true
+  try {
+    // Retire every active root — cascade takes care of descendants.
+    const roots = (tree.value || []).filter(n => n.status !== 'retired')
+    for (const root of roots) {
+      try {
+        await api.post(`/api/asset-tree/nodes/${root.id}/retire`)
+      } catch (e: any) {
+        notificationStore.showError(
+          e.response?.data?.error || `Failed to retire ${root.name}`,
+        )
+      }
+    }
+    // Refetch so activeNodeCount reflects reality if anything went sideways
+    await fetchTree()
+    // Now open the template picker; the backend will purge retired rows
+    // atomically when it applies the chosen template.
+    showResetConfirm.value = false
+    showTemplateDialog.value = true
+  } finally {
+    resetting.value = false
+  }
 }
 
 // ── Move ─────────────────────────────────────────────────────────────────

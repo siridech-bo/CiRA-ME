@@ -660,17 +660,40 @@ def apply_tree_template(template_id):
     if tmpl is None:
         return jsonify({'error': f'Unknown template: {template_id}'}), 404
 
-    # Refuse if a tree already exists — we don't want to clobber real work
-    # by accident. Admin can retire everything manually first if they really
-    # want to start over. Empty tree = no root(s) yet.
-    existing_roots = AssetNode.get_children(None)
+    # Refuse if an ACTIVE tree already exists — we don't want to clobber
+    # real work by accident. Retired roots are OK; they're kept for audit
+    # but shouldn't block a fresh start. The admin "Reset & apply new
+    # template" button retires the active root first, then calls this
+    # endpoint. Any retired nodes we find get physically deleted here so
+    # the new template's topic_paths don't collide against the UNIQUE
+    # constraint — audit log entries in the separate audit table are
+    # preserved either way.
+    existing_roots = [r for r in AssetNode.get_children(None)
+                      if r.get('status') != 'retired']
     if existing_roots:
         return jsonify({
             'error': (
-                f'Tree already exists (root: {existing_roots[0]["name"]}). '
-                f'Retire the existing tree before applying a template.'
+                f'Active tree exists (root: {existing_roots[0]["name"]}). '
+                f'Retire it first, then re-apply.'
             )
         }), 409
+    # Physically delete any retired nodes to free up topic_paths.
+    with get_db() as conn:
+        cur = conn.cursor()
+        cur.execute('SELECT COUNT(*) AS n FROM asset_nodes')
+        purged = cur.fetchone()['n']
+        if purged:
+            cur.execute('DELETE FROM asset_sensor_meta')
+            cur.execute('DELETE FROM asset_nodes')
+            conn.commit()
+            AssetTreeAudit.log(
+                actor_user_id=request.current_user['id'],
+                event_type='tree_purge_retired',
+                target_type='node',
+                target_id=None,
+                payload={'purged_count': purged,
+                         'reason': 'apply_template requires clean slate'},
+            )
 
     # Upsert the config bundled with the template.
     cfg = tmpl['config']
