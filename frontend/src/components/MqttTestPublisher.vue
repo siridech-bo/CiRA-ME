@@ -44,8 +44,9 @@
           type="number"
           variant="outlined"
           density="compact"
-          hide-details
-          style="max-width: 120px;"
+          hint="Capped at 5 msg/s in browser publishers (workshop safety). IoT devices publishing directly are not affected."
+          persistent-hint
+          style="max-width: 160px;"
         />
         <v-checkbox
           v-model="mqttTestLoop"
@@ -462,7 +463,14 @@ async function _connectAndPublish() {
   })
 
   const topic = mqttTestTopic.value
-  const rate = mqttTestRate.value > 0 ? mqttTestRate.value : 10
+  // Phase D workshop-safety clamp: the input accepts any number so power
+  // users can see what they typed, but the actual publish loop is capped
+  // at 5 msg/s per browser. Real IoT devices publishing directly to
+  // Mosquitto are unaffected — this only applies to the in-browser test
+  // publisher, which is what tanks the broker at workshop scale.
+  const MQTT_BROWSER_RATE_CAP = 5
+  const desired = mqttTestRate.value > 0 ? mqttTestRate.value : 10
+  const rate = Math.min(desired, MQTT_BROWSER_RATE_CAP)
   const interval = Math.max(1, Math.floor(1000 / rate))
 
   mqttClient.on('connect', () => {

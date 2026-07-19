@@ -108,11 +108,11 @@
   </div>
 </header>
 
-<section class="overall" style="--overall: 87;">
-  <div class="ring"><span>87%</span></div>
+<section class="overall" style="--overall: 95;">
+  <div class="ring"><span>95%</span></div>
   <div class="stats">
-    <div class="stat"><div class="n">4</div><div class="l">Phases done</div></div>
-    <div class="stat"><div class="n">34</div><div class="l">Subtasks done</div></div>
+    <div class="stat"><div class="n">5</div><div class="l">Phases done</div></div>
+    <div class="stat"><div class="n">37</div><div class="l">Subtasks done</div></div>
     <div class="stat"><div class="n">6</div><div class="l">Phases total</div></div>
     <div class="stat"><div class="n">39</div><div class="l">Subtasks total</div></div>
   </div>
@@ -197,20 +197,20 @@
 </section>
 
 <!-- ═══════════════════════════════════════════════════ PHASE D ═════ -->
-<section class="phase status-pending" id="phase-d">
+<section class="phase status-done" id="phase-d">
   <div class="head">
     <h2>Phase D · MQTT ingest router + workshop defenses</h2>
-    <span class="est">~1 week · <span class="chip pending">pending</span></span>
+    <span class="est">~1 week · <span class="chip done">done</span></span>
   </div>
-  <div class="bar"><i style="width:0%"></i></div>
+  <div class="bar"><i style="width:100%"></i></div>
   <ul class="subtasks">
-    <li><span class="id">D.1</span> <span class="chip pending">pending</span> mqtt_ingest_router.py service <span class="time">—</span></li>
-    <li><span class="id">D.2</span> <span class="chip pending">pending</span> Rolling daily CSV writer <span class="time">—</span></li>
-    <li><span class="id">D.3</span> <span class="chip pending">pending</span> Rejected-topic log + viewer <span class="time">—</span></li>
-    <li><span class="id">D.4</span> <span class="chip pending">pending</span> Settings → MQTT Rules UI <span class="time">—</span></li>
-    <li><span class="id">D.5</span> <span class="chip pending">pending</span> Retention janitor <span class="time">—</span></li>
-    <li><span class="id">D.6</span> <span class="chip pending">pending</span> Publisher rate-limit clamp + topic docs <span class="time">—</span></li>
-    <li><span class="id">D.QA</span> <span class="chip pending">pending</span> Adversarial QA pass <span class="time">—</span></li>
+    <li><span class="id">D.1</span> <span class="chip done">done</span> mqtt_ingest_router.py service (3 daemon threads, in-memory tree cache, strict/learn routing) <span class="time">2026-07-19</span></li>
+    <li><span class="id">D.2</span> <span class="chip done">done</span> Rolling daily CSV writer (buffered flush, UTC midnight rotation, atomic header) <span class="time">2026-07-19</span></li>
+    <li><span class="id">D.3</span> <span class="chip done">done</span> Rejected-topic log + viewer (path-traversal guard, 3s auto-poll UI) <span class="time">2026-07-19</span></li>
+    <li><span class="id">D.4</span> <span class="chip done">done</span> Settings → MQTT Rules UI (Config / Rejected / Stats tabs, PATCH validation) <span class="time">2026-07-19</span></li>
+    <li><span class="id">D.5</span> <span class="chip done">done</span> Retention janitor (6h sweep, manual run-now, admin-gated) <span class="time">2026-07-19</span></li>
+    <li><span class="id">D.6</span> <span class="chip done">done</span> Publisher rate-limit clamp (5 msg/s browser cap, MqttTestPublisher) <span class="time">2026-07-19</span></li>
+    <li><span class="id">D.QA</span> <span class="chip done">done</span> Adversarial QA pass — 0 blockers, 5 polish. 3 fixed (null→'None' write, backoff never resets, hot-path import) <span class="time">2026-07-19</span></li>
     <li><span class="id">D.T</span> <span class="chip pending">pending</span> Personal browser test <span class="time">—</span></li>
   </ul>
 </section>
@@ -237,6 +237,7 @@
 <section class="activity">
   <h2>Recent activity</h2>
   <ol id="activity-log">
+    <li><span class="when">2026-07-19</span>Phase D <b>done</b>. Background MQTT ingest router (3 daemon threads: connect / writer / janitor), routes on-topic-path to daily CSVs under <code>datasets/&lt;topic_path&gt;/YYYY-MM-DD.csv</code>, buffered UTC-midnight rotation, strict/learn mode, meta-prefix short-circuit, rejection log with in-memory tail + on-disk TSV, 6h retention janitor, Settings → MQTT Rules UI (Config / Rejected / Stats), workshop-safety 5 msg/s browser rate clamp. QA found 0 blockers + 5 polish; 3 real ones fixed (<code>{"value": null}</code> was writing string 'None' to CSV, reconnect backoff never reset after a drop, <code>import re</code> in hot path).</li>
     <li><span class="when">2026-07-19</span>Phase C <b>done</b>. Machine Groups CRUD page, reusable tree picker + compat badge, training scope selector with 3 modes, model artifact bindings via new <code>ModelMachineBinding</code> class, rebind flow. QA found 0 blockers + 9 polish; 4 real polish items fixed (retired-in-group backend guard + edit hydrate + view filter + friendly duplicate error). Multi-machine data pooling deferred to Phase D per plan.</li>
     <li><span class="when">2026-07-19</span>Phase B <b>done</b>. Sidebar tree + <code>/machine/:id</code> workspace with 6 tabs + legacy /pipeline/* banners. QA found 2 blockers (currentMachineId stale on nav; sensor click no-op) + 14 polish; blockers + 4 polish fixed. 10 new frontend files, 1 new backend endpoint.</li>
     <li><span class="when">2026-07-19</span>Phase A follow-up: 13 tree templates (Industrial IoT / Business Ops / Facilities / Energy / Healthcare / Blank). One-click seed of config + tree. New endpoints <code>GET /tree-templates</code> and <code>POST /tree-templates/&lt;id&gt;/apply</code>. Reusable <code>TreeTemplatePicker.vue</code> wired into wizard Step 1 and admin empty-state.</li>

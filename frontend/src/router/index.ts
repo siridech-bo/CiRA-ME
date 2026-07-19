@@ -167,6 +167,15 @@ const router = createRouter({
       meta: { requiresAuth: true }
     },
     {
+      // Phase D — MQTT ingest router config + rejected-topics viewer +
+      // ingest stats. Reads are open; writes admin-only (enforced by the
+      // component; the API also enforces).
+      path: '/settings/mqtt-rules',
+      name: 'mqtt-rules',
+      component: () => import('@/views/MqttRulesView.vue'),
+      meta: { requiresAuth: true }
+    },
+    {
       path: '/apps/:slug',
       name: 'published-app',
       component: () => import('@/views/PublishedAppView.vue'),

@@ -30,6 +30,22 @@ from ..constants.sensor_presets import (
 logger = logging.getLogger(__name__)
 asset_tree_bp = Blueprint('asset_tree', __name__)
 
+
+def _reload_ingest_router():
+    """Phase D — notify the ingest router that the tree changed.
+
+    Every tree-mutation route calls this at end-of-request so newly-created
+    / renamed / retired paths hit the router's in-memory cache without a
+    poll. Fire-and-forget by design; failures are swallowed (router runs
+    a periodic safety-net refresh anyway) so a broken import can't 500
+    the underlying admin action.
+    """
+    try:
+        from ..services.mqtt_ingest_router import router as _ingest_router
+        _ingest_router.reload_tree()
+    except Exception:
+        logger.warning('[asset-tree] ingest router reload failed', exc_info=True)
+
 # ── Guards ────────────────────────────────────────────────────────────────
 NAME_REGEX = re.compile(r'^[A-Za-z0-9_-]+$')
 VALID_TOPIC_MODES = ('strict', 'learn')
@@ -121,6 +137,72 @@ def put_config():
         target_id=None,
         payload={'before': before, 'after': after},
     )
+    _reload_ingest_router()
+    return jsonify(after)
+
+
+# ── Phase D — partial config PATCH ─────────────────────────────────────────
+# Wizard uses PUT (full upsert); the Settings → MQTT Rules page uses PATCH
+# so it can toggle `ingest_enabled` / adjust retention without having to
+# resend level_names + root_name. Keeps the PUT contract stable for the
+# wizard while unblocking Phase D UI.
+
+@asset_tree_bp.route('/config', methods=['PATCH'])
+@login_required
+def patch_config():
+    guard = _admin_only()
+    if guard is not None:
+        return guard
+    data = request.get_json(silent=True) or {}
+    updates = {}
+    # Whitelist + basic type coercion. Silently drops unknown fields so a
+    # forward-compat frontend can send extras without a 400.
+    if 'topic_mode' in data:
+        if data['topic_mode'] not in VALID_TOPIC_MODES:
+            return jsonify({
+                'error': f'topic_mode must be one of {VALID_TOPIC_MODES}'
+            }), 400
+        updates['topic_mode'] = data['topic_mode']
+    if 'meta_prefixes' in data:
+        mp = data['meta_prefixes']
+        if not isinstance(mp, list) or not all(isinstance(x, str) for x in mp):
+            return jsonify({'error': 'meta_prefixes must be a list of strings'}), 400
+        # Trim + dedupe defensively. Users tend to paste trailing whitespace.
+        updates['meta_prefixes'] = sorted({x.strip() for x in mp if x.strip()})
+    if 'ingest_enabled' in data:
+        updates['ingest_enabled'] = bool(data['ingest_enabled'])
+    if 'ingest_retention_days' in data:
+        try:
+            rd = int(data['ingest_retention_days'])
+        except (TypeError, ValueError):
+            return jsonify({'error': 'ingest_retention_days must be an integer'}), 400
+        if rd < 1 or rd > 3650:  # 10 years max
+            return jsonify({'error': 'ingest_retention_days must be 1..3650'}), 400
+        updates['ingest_retention_days'] = rd
+    if 'level_names' in data or 'root_name' in data:
+        # Structural changes must go through PUT so the wizard's validation
+        # runs; blocking them here prevents surprise topic-path shifts.
+        return jsonify({
+            'error': 'level_names / root_name must be updated via PUT /config'
+        }), 400
+
+    if not updates:
+        return jsonify({'error': 'No supported fields in body'}), 400
+
+    before = AssetTreeConfig.get()
+    if not before:
+        return jsonify({
+            'error': 'Config not found — run the setup wizard first'
+        }), 404
+    after = AssetTreeConfig.patch(**updates)
+    AssetTreeAudit.log(
+        actor_user_id=request.current_user['id'],
+        event_type='config_patch',
+        target_type='config',
+        target_id=None,
+        payload={'before': before, 'after': after, 'updates': updates},
+    )
+    _reload_ingest_router()
     return jsonify(after)
 
 
@@ -238,6 +320,7 @@ def create_node():
         target_id=node_id,
         payload={'after': created, 'sensor_meta': sensor_meta},
     )
+    _reload_ingest_router()
     return jsonify(created), 201
 
 
@@ -326,6 +409,7 @@ def patch_node(node_id):
         target_id=node_id,
         payload={'before': before, 'after': after, 'sensor_meta': sensor_meta},
     )
+    _reload_ingest_router()
     return jsonify(after)
 
 
@@ -380,6 +464,7 @@ def retire_node(node_id):
         target_id=node_id,
         payload={'before': before, 'after': after, 'affected_ids': affected},
     )
+    _reload_ingest_router()
     return jsonify({'retired_ids': affected, 'node': after})
 
 
@@ -447,6 +532,7 @@ def move_node(node_id):
                  'from_parent_id': current_parent_id,
                  'to_parent_id': new_parent_id},
     )
+    _reload_ingest_router()
     return jsonify(after)
 
 
@@ -631,6 +717,7 @@ def import_tree():
         target_id=created_ids[0] if created_ids else None,
         payload={'created_ids': created_ids, 'spec': spec},
     )
+    _reload_ingest_router()
     return jsonify({'created_ids': created_ids, 'count': len(created_ids)}), 201
 
 
@@ -777,6 +864,7 @@ def apply_tree_template(template_id):
             'created_ids': created_ids,
         },
     )
+    _reload_ingest_router()
     return jsonify({
         'template_id': template_id,
         'created_ids': created_ids,
@@ -1390,3 +1478,76 @@ def scope_sample_count():
         'sample_count': None,
         'class_count': None,
     })
+
+
+# ── Phase D — MQTT ingest router endpoints ─────────────────────────────────
+# All admin-gated for writes; reads open to any logged-in user (matches the
+# rest of asset_tree). All are strictly additive — no existing endpoint's
+# contract changes. See services/mqtt_ingest_router.py for the machinery.
+
+@asset_tree_bp.route('/ingest-stats', methods=['GET'])
+@login_required
+def get_ingest_stats():
+    """Return the router's in-memory counters + thread liveness. Open to
+    any authenticated user because the Stats tab is a read-only debug view."""
+    try:
+        from ..services.mqtt_ingest_router import router as _ingest_router
+        return jsonify(_ingest_router.snapshot())
+    except Exception as e:
+        logger.warning('[asset-tree] ingest-stats failed: %s', e)
+        return jsonify({
+            'error': 'ingest router unavailable',
+            'enabled': False,
+            'connected': False,
+        }), 200
+
+
+@asset_tree_bp.route('/rejected-topics', methods=['GET'])
+@login_required
+def get_rejected_topics():
+    """List rejected topics for a given date (default: today UTC).
+
+    Query params:
+      date  — YYYY-MM-DD (defaults to today)
+      limit — max entries (default 200, capped at 5000)
+    """
+    date = request.args.get('date', '').strip() or None
+    try:
+        limit = int(request.args.get('limit', 200))
+    except (TypeError, ValueError):
+        limit = 200
+    try:
+        from ..services.mqtt_ingest_router import router as _ingest_router
+        entries = _ingest_router.list_rejected(date=date, limit=limit)
+        return jsonify({'date': date, 'entries': entries, 'count': len(entries)})
+    except Exception as e:
+        logger.warning('[asset-tree] rejected-topics failed: %s', e)
+        return jsonify({'date': date, 'entries': [], 'count': 0}), 200
+
+
+@asset_tree_bp.route('/ingest-janitor/run-now', methods=['POST'])
+@login_required
+def run_ingest_janitor():
+    """Force a synchronous retention sweep. Admin-only.
+
+    Intended for QA — surfacing this in the UI is optional. The background
+    janitor runs every 6 h regardless; this just gives operators a way to
+    trigger it manually without waiting.
+    """
+    guard = _admin_only()
+    if guard is not None:
+        return guard
+    try:
+        from ..services.mqtt_ingest_router import router as _ingest_router
+        summary = _ingest_router.run_janitor_once()
+        AssetTreeAudit.log(
+            actor_user_id=request.current_user['id'],
+            event_type='ingest_janitor_run',
+            target_type='config',
+            target_id=None,
+            payload=summary,
+        )
+        return jsonify(summary)
+    except Exception as e:
+        logger.exception('[asset-tree] janitor run-now failed')
+        return jsonify({'error': str(e)}), 500

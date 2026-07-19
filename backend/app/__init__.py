@@ -85,6 +85,24 @@ def create_app(config=None):
             pass
         return payload
 
+    # Phase D — start the MQTT ingest router (asset-tree ingest pipeline).
+    # Same reloader gating logic as folder-watcher rehydration below: only
+    # start once in the child under Flask's dev reloader; production
+    # gunicorn (--workers 1) hits the else-branch straight through.
+    # Wrapped so any failure here (paho import, DB read on cold DB, etc.)
+    # can't kill Flask startup.
+    _is_reloader_child = os.environ.get('WERKZEUG_RUN_MAIN') == 'true'
+    _reloader_active = os.environ.get('FLASK_DEBUG') in ('1', 'true')
+    if (not _reloader_active) or _is_reloader_child:
+        try:
+            from .services.mqtt_ingest_router import router as _ingest_router
+            _ingest_router.start(flask_app=app)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).exception(
+                f"MQTT ingest router failed to start: {e}"
+            )
+
     # Rehydrate any folder watchers whose persisted status is 'running'.
     # Skip in the Flask dev-reloader's *monitor* process (both parent and
     # child call create_app; only the child gets WERKZEUG_RUN_MAIN set),

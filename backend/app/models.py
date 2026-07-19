@@ -489,6 +489,24 @@ def init_db(db_path: str):
             )
         ''')
 
+        # ── Phase D (2026-07-19) — MQTT ingest router config ──────────────
+        # Two new columns on asset_tree_config:
+        #   ingest_enabled          BOOL — 1 = router routes to CSV, 0 = idle
+        #   ingest_retention_days   INT  — janitor deletes CSV/log files
+        #                                  older than this. Default 30.
+        # Idempotent ALTER TABLE — silently ignored if already applied so a
+        # second boot on the same DB doesn't fail. All Phase D features are
+        # strictly additive; older columns / endpoints stay untouched.
+        for _alter in (
+            "ALTER TABLE asset_tree_config ADD COLUMN ingest_enabled INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE asset_tree_config ADD COLUMN ingest_retention_days INTEGER NOT NULL DEFAULT 30",
+        ):
+            try:
+                cursor.execute(_alter)
+            except Exception:
+                # Column already exists — expected on second-and-later boots.
+                pass
+
         # Create default admin user if not exists
         cursor.execute('SELECT id FROM users WHERE username = ?', ('admin',))
         if not cursor.fetchone():
@@ -1738,6 +1756,56 @@ class AssetTreeConfig:
                     (json.dumps(level_names), root_name, topic_mode,
                      json.dumps(meta_prefixes), now, now)
                 )
+            conn.commit()
+        return AssetTreeConfig.get()
+
+    @staticmethod
+    def patch(**fields) -> dict:
+        """Partial update of the single config row (Phase D).
+
+        Accepts any subset of columns and updates them in place. Row must
+        already exist (config is created by wizard / template apply); if
+        it doesn't, returns None so callers can 404. Uses the same JSON
+        encoding rule as `upsert` for list-valued columns.
+
+        Ignores unknown fields silently — safe to feed a mixed dict.
+        """
+        import json
+        allowed = {
+            'level_names', 'root_name', 'topic_mode', 'meta_prefixes',
+            'ingest_enabled', 'ingest_retention_days',
+        }
+        json_cols = {'level_names', 'meta_prefixes'}
+        updates = {k: v for k, v in fields.items() if k in allowed}
+        if not updates:
+            return AssetTreeConfig.get()
+        now = datetime.utcnow().isoformat()
+        with get_db() as conn:
+            cursor = conn.cursor()
+            existing = cursor.execute(
+                'SELECT id FROM asset_tree_config WHERE id = 1'
+            ).fetchone()
+            if not existing:
+                return None
+            set_parts = []
+            values = []
+            for k, v in updates.items():
+                set_parts.append(f'{k} = ?')
+                if k in json_cols:
+                    values.append(json.dumps(v))
+                elif k == 'ingest_enabled':
+                    # Coerce truthy → 1, falsy → 0. Guards against JS 'true'/'false'
+                    # strings arriving from the frontend PATCH.
+                    values.append(1 if v and v != 'false' else 0)
+                else:
+                    values.append(v)
+            set_parts.append('updated_at = ?')
+            values.append(now)
+            values.append(1)
+            cursor.execute(
+                f"UPDATE asset_tree_config SET {', '.join(set_parts)} WHERE id = ?",
+                tuple(values),
+            )
             conn.commit()
         return AssetTreeConfig.get()
 

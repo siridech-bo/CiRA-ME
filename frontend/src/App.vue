@@ -280,6 +280,14 @@
           />
 
           <v-list-item
+            prepend-icon="mdi-router-network"
+            title="MQTT Rules"
+            value="mqtt-rules"
+            :to="{ name: 'mqtt-rules' }"
+            rounded="lg"
+          />
+
+          <v-list-item
             v-if="authStore.isAdmin"
             prepend-icon="mdi-shield-account"
             title="Admin"
