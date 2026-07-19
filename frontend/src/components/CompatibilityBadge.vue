@@ -39,6 +39,24 @@
       <span class="text-caption text-medium-emphasis ml-2">{{ error }}</span>
     </div>
 
+    <!-- Not-yet-validated hint for the manual (auto-run=false) mode. Without
+         this branch the badge renders nothing between "user picked 2+
+         machines" and "user clicked Validate", which QA flagged as
+         confusing (see the Machine Groups edit dialog). -->
+    <div
+      v-else-if="!autoRun && !result && machineIds.length >= 2"
+      class="d-flex align-center"
+    >
+      <v-chip
+        size="small"
+        variant="tonal"
+        color="grey"
+        prepend-icon="mdi-check-decagram-outline"
+      >
+        Click "Validate compatibility" to check {{ machineIds.length }} machines
+      </v-chip>
+    </div>
+
     <div v-else-if="result?.compatible" class="d-flex align-center">
       <v-chip
         size="small"
