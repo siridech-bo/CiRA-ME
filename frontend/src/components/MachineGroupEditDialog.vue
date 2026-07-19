@@ -83,28 +83,30 @@
 
         <v-divider class="my-3" />
 
-        <div class="d-flex align-center flex-wrap ga-2 mb-2">
+        <!-- Inline row: count + badge on one line so the result is visible
+             right next to the selection. Re-check button on the right. -->
+        <div class="d-flex align-center flex-wrap ga-3 mb-2">
           <span class="text-body-2">
             <strong>{{ selectedIds.length }}</strong>
             {{ selectedIds.length === 1 ? 'machine' : 'machines' }} selected
           </span>
+          <CompatibilityBadge
+            ref="compatBadgeRef"
+            :machine-ids="selectedIds"
+            :auto-run="true"
+            @update:compatible="onCompatibleChange"
+          />
+          <v-spacer />
           <v-btn
+            v-if="selectedIds.length >= 2"
             size="small"
-            variant="tonal"
-            prepend-icon="mdi-check-decagram-outline"
-            :disabled="selectedIds.length < 2"
+            variant="text"
+            prepend-icon="mdi-refresh"
             @click="runCompatibility"
           >
-            Validate compatibility
+            Re-check
           </v-btn>
         </div>
-
-        <CompatibilityBadge
-          ref="compatBadgeRef"
-          :machine-ids="selectedIds"
-          :auto-run="false"
-          @update:compatible="onCompatibleChange"
-        />
 
         <v-checkbox
           v-if="lastValidatedIncompatible"
