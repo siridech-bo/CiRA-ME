@@ -159,12 +159,11 @@ const router = createRouter({
       meta: { requiresAuth: true }
     },
     {
-      // Phase C placeholder — shown in the sidebar so users can find it,
-      // but the page is empty for now.
+      // Phase C — dedicated Machine Groups view (was a stub tab under
+      // AssetTreeAdminView until Phase C shipped).
       path: '/settings/machine-groups',
       name: 'machine-groups',
-      component: () => import('@/views/AssetTreeAdminView.vue'),
-      props: { defaultTab: 'groups' },
+      component: () => import('@/views/MachineGroupsView.vue'),
       meta: { requiresAuth: true }
     },
     {

@@ -108,11 +108,11 @@
   </div>
 </header>
 
-<section class="overall" style="--overall: 69;">
-  <div class="ring"><span>69%</span></div>
+<section class="overall" style="--overall: 87;">
+  <div class="ring"><span>87%</span></div>
   <div class="stats">
-    <div class="stat"><div class="n">3</div><div class="l">Phases done</div></div>
-    <div class="stat"><div class="n">27</div><div class="l">Subtasks done</div></div>
+    <div class="stat"><div class="n">4</div><div class="l">Phases done</div></div>
+    <div class="stat"><div class="n">34</div><div class="l">Subtasks done</div></div>
     <div class="stat"><div class="n">6</div><div class="l">Phases total</div></div>
     <div class="stat"><div class="n">39</div><div class="l">Subtasks total</div></div>
   </div>
@@ -179,20 +179,20 @@
 </section>
 
 <!-- ═══════════════════════════════════════════════════ PHASE C ═════ -->
-<section class="phase status-pending" id="phase-c">
+<section class="phase status-done" id="phase-c">
   <div class="head">
     <h2>Phase C · Machine Groups + cross-machine training</h2>
-    <span class="est">~1 week · <span class="chip pending">pending</span></span>
+    <span class="est">~1 week · <span class="chip done">done</span></span>
   </div>
-  <div class="bar"><i style="width:0%"></i></div>
+  <div class="bar"><i style="width:100%"></i></div>
   <ul class="subtasks">
-    <li><span class="id">C.1</span> <span class="chip pending">pending</span> Settings → Machine Groups page <span class="time">—</span></li>
-    <li><span class="id">C.2</span> <span class="chip pending">pending</span> Training scope selector <span class="time">—</span></li>
-    <li><span class="id">C.3</span> <span class="chip pending">pending</span> Compatibility validation UI <span class="time">—</span></li>
-    <li><span class="id">C.4</span> <span class="chip pending">pending</span> Model artifact metadata (trained_on / group / deploy_targets) <span class="time">—</span></li>
-    <li><span class="id">C.5</span> <span class="chip pending">pending</span> Rebind machines dialog <span class="time">—</span></li>
-    <li><span class="id">C.QA</span> <span class="chip pending">pending</span> Adversarial QA pass <span class="time">—</span></li>
-    <li><span class="id">C.T</span> <span class="chip pending">pending</span> Personal browser test <span class="time">—</span></li>
+    <li><span class="id">C.1</span> <span class="chip done">done</span> Settings → Machine Groups page + reusable tree picker <span class="time">2026-07-19</span></li>
+    <li><span class="id">C.2</span> <span class="chip done">done</span> Training scope selector — Just this / Group / Ad-hoc <span class="time">2026-07-19</span></li>
+    <li><span class="id">C.3</span> <span class="chip done">done</span> CompatibilityBadge — debounced /validate-compatibility <span class="time">2026-07-19</span></li>
+    <li><span class="id">C.4</span> <span class="chip done">done</span> Model artifact metadata via <code>ModelMachineBinding</code> <span class="time">2026-07-19</span></li>
+    <li><span class="id">C.5</span> <span class="chip done">done</span> RebindMachinesDialog + <code>PATCH /models/&lt;id&gt;/deploy-targets</code> <span class="time">2026-07-19</span></li>
+    <li><span class="id">C.QA</span> <span class="chip done">done</span> Adversarial QA — 0 blockers, 9 polish. Retired-machine cluster + friendly errors fixed <span class="time">2026-07-19</span></li>
+    <li><span class="id">C.T</span> <span class="chip done">done</span> Personal + user browser test <span class="time">2026-07-19</span></li>
   </ul>
 </section>
 
@@ -237,6 +237,7 @@
 <section class="activity">
   <h2>Recent activity</h2>
   <ol id="activity-log">
+    <li><span class="when">2026-07-19</span>Phase C <b>done</b>. Machine Groups CRUD page, reusable tree picker + compat badge, training scope selector with 3 modes, model artifact bindings via new <code>ModelMachineBinding</code> class, rebind flow. QA found 0 blockers + 9 polish; 4 real polish items fixed (retired-in-group backend guard + edit hydrate + view filter + friendly duplicate error). Multi-machine data pooling deferred to Phase D per plan.</li>
     <li><span class="when">2026-07-19</span>Phase B <b>done</b>. Sidebar tree + <code>/machine/:id</code> workspace with 6 tabs + legacy /pipeline/* banners. QA found 2 blockers (currentMachineId stale on nav; sensor click no-op) + 14 polish; blockers + 4 polish fixed. 10 new frontend files, 1 new backend endpoint.</li>
     <li><span class="when">2026-07-19</span>Phase A follow-up: 13 tree templates (Industrial IoT / Business Ops / Facilities / Energy / Healthcare / Blank). One-click seed of config + tree. New endpoints <code>GET /tree-templates</code> and <code>POST /tree-templates/&lt;id&gt;/apply</code>. Reusable <code>TreeTemplatePicker.vue</code> wired into wizard Step 1 and admin empty-state.</li>
     <li><span class="when">2026-07-19</span>Phase A follow-up: Structure panel now shows topic segment as primary label with display_name in muted parens. Fixes confusion between the two.</li>

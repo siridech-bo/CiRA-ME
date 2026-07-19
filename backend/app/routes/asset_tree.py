@@ -19,7 +19,7 @@ from flask import Blueprint, request, jsonify
 from ..auth import login_required
 from ..models import (
     AssetTreeConfig, AssetNode, AssetSensorMeta,
-    MachineGroup, AssetTreeAudit,
+    MachineGroup, AssetTreeAudit, ModelMachineBinding, SavedModel,
     get_db,
 )
 from ..constants.sensor_presets import (
@@ -814,6 +814,31 @@ def _is_machine_level(asset_id: int) -> bool:
     return int(node['level']) == max(0, md - 1)
 
 
+def _is_active_machine(asset_id: int) -> tuple[bool, str | None]:
+    """Return (True, None) if asset is an active machine; otherwise
+    (False, reason). Used by group and rebind endpoints to prevent
+    dead assets from creeping into scope lists. See Phase C QA #1/#6."""
+    node = AssetNode.get_by_id(asset_id)
+    if not node:
+        return False, f'Asset id {asset_id} not found'
+    md = _max_depth()
+    if int(node['level']) != max(0, md - 1):
+        return False, f'Asset id {asset_id} is not at machine level'
+    if node.get('status') == 'retired':
+        return False, f'Machine id {asset_id} ({node.get("name")}) is retired'
+    return True, None
+
+
+def _friendly_group_error(e: Exception, name: str) -> str:
+    """Turn opaque SQL errors into copy the frontend can render. The
+    UNIQUE-constraint case is the common one — we don't want the raw
+    SQLite text leaking into user-facing tooltips (Phase C QA #4)."""
+    msg = str(e)
+    if 'UNIQUE constraint failed' in msg and 'machine_groups.name' in msg:
+        return f"A group named '{name}' already exists."
+    return msg
+
+
 @asset_tree_bp.route('/groups', methods=['GET'])
 @login_required
 def list_groups():
@@ -836,12 +861,12 @@ def create_group():
     if not isinstance(machine_asset_ids, list):
         return jsonify({'error': 'machine_asset_ids must be a list'}), 400
 
-    # All ids must be at machine level
+    # All ids must be active machine-level nodes. Retired ones would
+    # produce silently-broken groups (Phase C QA #1).
     for aid in machine_asset_ids:
-        if not _is_machine_level(aid):
-            return jsonify({
-                'error': f'Asset id {aid} is not at machine level'
-            }), 400
+        ok, err = _is_active_machine(aid)
+        if not ok:
+            return jsonify({'error': err}), 400
 
     try:
         gid = MachineGroup.create(
@@ -850,8 +875,9 @@ def create_group():
             created_by=request.current_user['id'],
         )
     except Exception as e:
-        # Unique constraint on name would land here
-        return jsonify({'error': str(e)}), 400
+        # Unique constraint on name is the most common — surface a friendly
+        # message instead of the raw SQLite text (Phase C QA #4).
+        return jsonify({'error': _friendly_group_error(e, name)}), 400
     MachineGroup.set_members(gid, machine_asset_ids)
     group = MachineGroup.get_by_id(gid)
     AssetTreeAudit.log(
@@ -901,15 +927,18 @@ def patch_group(group_id):
         try:
             MachineGroup.update(group_id, **updates)
         except Exception as e:
-            return jsonify({'error': str(e)}), 400
+            return jsonify({
+                'error': _friendly_group_error(e, updates.get('name', ''))
+            }), 400
 
     new_members = data.get('machine_asset_ids')
     if isinstance(new_members, list):
+        # Reject retired machines here too — matches POST /groups semantics
+        # (Phase C QA #1).
         for aid in new_members:
-            if not _is_machine_level(aid):
-                return jsonify({
-                    'error': f'Asset id {aid} is not at machine level'
-                }), 400
+            ok, err = _is_active_machine(aid)
+            if not ok:
+                return jsonify({'error': err}), 400
         MachineGroup.set_members(group_id, new_members)
 
     after = MachineGroup.get_by_id(group_id)
@@ -1173,4 +1202,191 @@ def get_machine_models(node_id):
         'trained_on': trained_on,
         'deployed_to': deployed_to,
         'group_models': group_models,
+    })
+
+
+# ── Phase C: Model bindings (per-model view + rebind) ─────────────────────
+
+@asset_tree_bp.route('/models/<int:saved_model_id>/bindings', methods=['GET'])
+@login_required
+def get_model_bindings(saved_model_id):
+    """Return the machines this model was trained on and deployed to.
+
+    Phase C.4. Read from `model_machine_bindings` (the join table shared with
+    the machine-workspace Models tab, see /nodes/<id>/models above).
+
+    Response:
+      {
+        "saved_model_id": 42,
+        "trained_on":  [ { asset_id, name, topic_path, display_name,
+                           asset_status }, ... ],
+        "deployed_to": [ { asset_id, name, topic_path, display_name,
+                           asset_status }, ... ],
+        "trained_via_group": "All extruders" | null
+      }
+    """
+    model = SavedModel.get_by_id(saved_model_id)
+    if not model:
+        return jsonify({'error': 'Saved model not found'}), 404
+
+    rows = ModelMachineBinding.get_for_model(saved_model_id)
+
+    def _project(r):
+        return {
+            'asset_id': r['machine_asset_id'],
+            'name': r.get('asset_name'),
+            'display_name': r.get('display_name'),
+            'topic_path': r.get('topic_path'),
+            'asset_status': r.get('asset_status'),
+        }
+
+    trained_on = [_project(r) for r in rows if r['role'] == 'trained_on']
+    deployed_to = [_project(r) for r in rows if r['role'] == 'deployed_to']
+
+    # Group snapshot lives on the 'trained_on' rows (writer sets it there).
+    trained_via_group = None
+    for r in rows:
+        if r['role'] == 'trained_on' and r.get('trained_via_group'):
+            trained_via_group = r['trained_via_group']
+            break
+
+    return jsonify({
+        'saved_model_id': saved_model_id,
+        'trained_on': trained_on,
+        'deployed_to': deployed_to,
+        'trained_via_group': trained_via_group,
+    })
+
+
+@asset_tree_bp.route('/models/<int:saved_model_id>/deploy-targets',
+                     methods=['PATCH'])
+@login_required
+def patch_model_deploy_targets(saved_model_id):
+    """Rebind a model's deploy targets. Admin only.
+
+    Replaces every existing `role='deployed_to'` row for this model with the
+    supplied list of machine asset ids. Trained-on bindings are untouched.
+
+    Body: { "machine_asset_ids": [1, 5, 9] }
+    """
+    guard = _admin_only()
+    if guard is not None:
+        return guard
+
+    model = SavedModel.get_by_id(saved_model_id)
+    if not model:
+        return jsonify({'error': 'Saved model not found'}), 404
+
+    data = request.get_json(silent=True) or {}
+    machine_ids = data.get('machine_asset_ids')
+    if not isinstance(machine_ids, list):
+        return jsonify({'error': 'machine_asset_ids must be a list'}), 400
+
+    # Validate each id — must exist AND be at machine level. Retired machines
+    # are permitted because rebinding to a retired machine is meaningful
+    # (historical continuity). The training-scope path blocks retired.
+    for mid in machine_ids:
+        node = AssetNode.get_by_id(mid)
+        if not node:
+            return jsonify({'error': f'Asset id {mid} not found'}), 404
+        if not _is_machine_level(mid):
+            return jsonify({
+                'error': f'Asset id {mid} is not at machine level'
+            }), 400
+
+    # Snapshot the pre-state for audit.
+    before_rows = ModelMachineBinding.get_by_role(saved_model_id, 'deployed_to')
+
+    ModelMachineBinding.replace_role(
+        saved_model_id=saved_model_id,
+        role='deployed_to',
+        machine_asset_ids=machine_ids,
+        # deployed_to rows don't need a trained_via_group snapshot — the
+        # source of truth for group provenance is the trained_on rows.
+        trained_via_group=None,
+    )
+
+    after_rows = ModelMachineBinding.get_by_role(saved_model_id, 'deployed_to')
+
+    AssetTreeAudit.log(
+        actor_user_id=request.current_user['id'],
+        event_type='model_rebind',
+        target_type='saved_model',
+        target_id=saved_model_id,
+        payload={
+            'before_ids': [r['machine_asset_id'] for r in before_rows],
+            'after_ids': [r['machine_asset_id'] for r in after_rows],
+        },
+    )
+
+    return jsonify({
+        'saved_model_id': saved_model_id,
+        'deployed_to': [
+            {
+                'asset_id': r['machine_asset_id'],
+                'name': r.get('asset_name'),
+                'display_name': r.get('display_name'),
+                'topic_path': r.get('topic_path'),
+                'asset_status': r.get('asset_status'),
+            } for r in after_rows
+        ],
+    })
+
+
+# ── Phase C: Sample-count helper for scope selector ────────────────────────
+
+@asset_tree_bp.route('/scope/sample-count', methods=['GET'])
+@login_required
+def scope_sample_count():
+    """MVP helper for the Training-view scope selector.
+
+    Accepts `?machine_ids=1,5,9`. Returns a rough dataset breakdown so the
+    UI can render "N machines, M samples". Actual multi-machine pooling is
+    deferred to Phase D — see ml_trainer.py TODO. Until then, we return the
+    per-machine on-disk dataset count so the scope card can display SOMETHING
+    for group / ad-hoc modes instead of an em-dash.
+
+    Response:
+      {
+        "machine_ids": [1, 5, 9],
+        "machines": [
+          { "id": 1, "name": "server_1", "topic_path": "...",
+            "sensor_count": 4 }
+        ],
+        "sample_count": null,     ← MVP; wire to on-disk scan in Phase D
+        "class_count": null
+      }
+    """
+    ids_param = request.args.get('machine_ids', '')
+    try:
+        machine_ids = [
+            int(x) for x in ids_param.split(',') if x.strip()
+        ]
+    except ValueError:
+        return jsonify({'error': 'machine_ids must be a comma-separated list of integers'}), 400
+
+    machines = []
+    for mid in machine_ids:
+        node = AssetNode.get_by_id(mid)
+        if not node:
+            continue
+        if not _is_machine_level(mid):
+            continue
+        children = AssetNode.get_children(mid) or []
+        machines.append({
+            'id': mid,
+            'name': node.get('name'),
+            'display_name': node.get('display_name'),
+            'topic_path': node.get('topic_path'),
+            'status': node.get('status'),
+            'sensor_count': sum(1 for c in children if c.get('status') == 'active'),
+        })
+
+    return jsonify({
+        'machine_ids': machine_ids,
+        'machines': machines,
+        # Sample / class counts require the multi-machine pooling that
+        # Phase D ships. Frontend renders "—" when null.
+        'sample_count': None,
+        'class_count': None,
     })

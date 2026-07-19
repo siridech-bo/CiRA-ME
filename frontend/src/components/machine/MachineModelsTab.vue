@@ -45,6 +45,7 @@
             <th>Mode</th>
             <th>Endpoints</th>
             <th>Created</th>
+            <th style="width: 130px" class="text-right"></th>
           </tr>
         </thead>
         <tbody>
@@ -74,6 +75,17 @@
               </v-chip>
             </td>
             <td class="text-caption">{{ formatTime(m.created_at) }}</td>
+            <td class="text-right">
+              <v-btn
+                v-if="isAdmin"
+                size="x-small"
+                variant="text"
+                prepend-icon="mdi-link-variant"
+                @click="onRebind(m)"
+              >
+                Rebind
+              </v-btn>
+            </td>
           </tr>
         </tbody>
       </v-table>
@@ -100,6 +112,7 @@
             <th>Algorithm</th>
             <th>Endpoints</th>
             <th>Created</th>
+            <th style="width: 130px" class="text-right"></th>
           </tr>
         </thead>
         <tbody>
@@ -129,6 +142,17 @@
               </v-chip>
             </td>
             <td class="text-caption">{{ formatTime(m.created_at) }}</td>
+            <td class="text-right">
+              <v-btn
+                v-if="isAdmin"
+                size="x-small"
+                variant="text"
+                prepend-icon="mdi-link-variant"
+                @click="onRebind(m)"
+              >
+                Rebind
+              </v-btn>
+            </td>
           </tr>
         </tbody>
       </v-table>
@@ -139,6 +163,13 @@
         {{ loadError }}
       </v-alert>
     </div>
+
+    <RebindMachinesDialog
+      v-model="rebindDialogOpen"
+      :saved-model-id="rebindTargetId"
+      :model-name="rebindTargetName"
+      @saved="onRebindSaved"
+    />
   </div>
 </template>
 
@@ -151,8 +182,13 @@
 import { ref, computed, watch, onMounted } from 'vue'
 import api from '@/services/api'
 import type { AssetNode } from '@/stores/assetTree'
+import { useAuthStore } from '@/stores/auth'
+import RebindMachinesDialog from '@/components/RebindMachinesDialog.vue'
 
 const props = defineProps<{ machine: AssetNode }>()
+
+const authStore = useAuthStore()
+const isAdmin = computed(() => authStore.user?.role === 'admin')
 
 const trainedOn = ref<any[]>([])
 const deployedTo = ref<any[]>([])
@@ -184,6 +220,21 @@ async function load() {
 
 watch(() => props.machine?.id, () => load())
 onMounted(load)
+
+// ── Rebind dialog wiring (Phase C.5) ─────────────────────────────────────
+
+const rebindDialogOpen = ref(false)
+const rebindTargetId = ref<number | null>(null)
+const rebindTargetName = ref<string | null>(null)
+
+function onRebind(m: any) {
+  rebindTargetId.value = m.id
+  rebindTargetName.value = m.name || null
+  rebindDialogOpen.value = true
+}
+async function onRebindSaved() {
+  await load()
+}
 
 function modeColor(m: string) {
   if (m === 'anomaly') return 'orange'

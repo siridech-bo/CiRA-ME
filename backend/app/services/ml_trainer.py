@@ -30,6 +30,27 @@ _model_sessions: Dict[str, Dict] = {}
 class MLTrainer:
     """Service for training ML models."""
 
+    # TODO (Phase D, cross-machine training pooling)
+    # ----------------------------------------------
+    # Phase C ships the training-scope selector UI + metadata capture but the
+    # actual data POOLING across N machines is deferred. Today each trainer
+    # entry point (train_anomaly, train_classification, train_regression)
+    # consumes a single windowed_session pulled from `_data_sessions`.
+    # For Group / Ad-hoc scope, the frontend passes `training_scope.machine_asset_ids`
+    # to /save-benchmark and we persist bindings — but the training itself
+    # still ran on whatever the user pointed at through the pipeline for
+    # ONE machine. Multi-machine pooling means:
+    #   1. Add a `machine_asset_ids: list[int]` param to the trainer entry
+    #      points (or a preceding pipeline step),
+    #   2. For each id, resolve its on-disk sensor CSVs (asset_nodes.topic_path),
+    #   3. Concatenate along the row axis after enforcing sensor-set /
+    #      unit / sample-rate compatibility (already checked by
+    #      /validate-compatibility — reuse that logic here),
+    #   4. Feed the concatenated frame into windowing, then continue.
+    # Blocked on Phase D's MQTT ingest router landing the on-disk layout;
+    # until then, pooling would have to rely on manually-uploaded per-machine
+    # datasets and there's no clean way to bind those to asset ids.
+
     def __init__(self, models_path: str = './models'):
         self.models_path = models_path
         os.makedirs(models_path, exist_ok=True)

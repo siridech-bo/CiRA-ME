@@ -10,6 +10,123 @@
       Train a {{ pipelineStore.mode === 'anomaly' ? 'anomaly detection' : pipelineStore.mode === 'regression' ? 'regression' : 'classification' }} model
     </p>
 
+    <!-- ── Phase C.2 — Training scope selector ─────────────────────────
+         Determines which machine(s) the trained model will be associated
+         with in the artifact metadata (see save-benchmark → C.4). Actual
+         multi-machine data POOLING is deferred to Phase D — the training
+         itself still runs on whichever pipeline session was fed in. -->
+    <v-card class="pa-4 mb-6">
+      <div class="d-flex align-center mb-3">
+        <v-icon color="primary" class="mr-2">mdi-source-branch</v-icon>
+        <h3 class="text-subtitle-1 font-weight-bold">Training data source</h3>
+        <v-spacer />
+        <v-chip
+          size="x-small"
+          variant="tonal"
+          color="warning"
+          v-if="scopeMode !== 'machine'"
+        >
+          Metadata-only in MVP
+        </v-chip>
+      </div>
+
+      <v-radio-group
+        v-model="scopeMode"
+        density="compact"
+        hide-details
+        class="mt-0"
+      >
+        <v-radio value="machine">
+          <template #label>
+            <div class="d-flex align-center">
+              <span class="font-weight-medium mr-2">Just this machine</span>
+              <span class="text-caption text-medium-emphasis">
+                — {{ currentMachineName || 'no machine selected' }}
+              </span>
+            </div>
+          </template>
+        </v-radio>
+        <v-radio value="group">
+          <template #label>
+            <div class="d-flex align-center flex-wrap ga-2">
+              <span class="font-weight-medium">A group of machines</span>
+              <v-select
+                v-model="selectedGroupId"
+                :items="groupOptions"
+                item-title="label"
+                item-value="value"
+                :disabled="scopeMode !== 'group'"
+                density="compact"
+                hide-details
+                variant="outlined"
+                style="min-width: 220px; max-width: 320px;"
+                placeholder="Choose a group"
+              />
+              <span class="text-caption text-medium-emphasis">
+                {{ selectedGroup ? `${selectedGroup.member_count || 0} machines` : '' }}
+              </span>
+            </div>
+          </template>
+        </v-radio>
+        <v-radio value="adhoc">
+          <template #label>
+            <div class="d-flex align-center flex-wrap ga-2">
+              <span class="font-weight-medium">Ad-hoc selection</span>
+              <v-btn
+                variant="tonal"
+                size="small"
+                prepend-icon="mdi-file-tree"
+                :disabled="scopeMode !== 'adhoc'"
+                @click="adhocPickerOpen = true"
+              >
+                Pick machines from tree…
+              </v-btn>
+              <span class="text-caption text-medium-emphasis">
+                {{ adhocIds.length }} selected
+              </span>
+            </div>
+          </template>
+        </v-radio>
+      </v-radio-group>
+
+      <v-divider class="my-3" />
+
+      <div class="d-flex align-center flex-wrap ga-3">
+        <div class="text-body-2">
+          <strong>Selected:</strong>
+          {{ scopeMachineCount }}
+          {{ scopeMachineCount === 1 ? 'machine' : 'machines' }},
+          <span class="text-medium-emphasis">
+            {{ scopeSampleCountDisplay }} samples,
+            {{ scopeClassCountDisplay }} classes
+          </span>
+        </div>
+        <v-spacer />
+        <CompatibilityBadge
+          :machine-ids="scopeMachineIds"
+          @update:compatible="onScopeCompatible"
+        />
+      </div>
+
+      <v-alert
+        v-if="scopeMode === 'machine' && currentMachineId == null"
+        type="warning"
+        variant="tonal"
+        density="compact"
+        class="mt-3"
+      >
+        No machine selected — pick one from the tree on the left to enable
+        training.
+      </v-alert>
+    </v-card>
+
+    <MachineTreePickerDialog
+      v-model="adhocPickerOpen"
+      :selected="adhocIds"
+      title="Pick machines for ad-hoc training scope"
+      @update:selected="onAdhocSelected"
+    />
+
     <!-- Feature Status Warning -->
     <v-alert
       v-if="trainingApproach === 'ml' && pipelineStore.hasUnappliedSelection"
@@ -1941,17 +2058,27 @@
       </v-btn>
 
       <div>
-        <v-btn
-          color="secondary"
-          size="large"
-          class="mr-2"
-          :loading="training"
-          :disabled="!canTrain"
-          @click="trainModel"
+        <v-tooltip
+          location="top"
+          :disabled="!scopeBlocksTraining"
+          :text="scopeBlockReason"
         >
-          <v-icon start>mdi-play</v-icon>
-          Train Model
-        </v-btn>
+          <template #activator="{ props: tooltipProps }">
+            <span v-bind="tooltipProps">
+              <v-btn
+                color="secondary"
+                size="large"
+                class="mr-2"
+                :loading="training"
+                :disabled="!canTrain"
+                @click="trainModel"
+              >
+                <v-icon start>mdi-play</v-icon>
+                Train Model
+              </v-btn>
+            </span>
+          </template>
+        </v-tooltip>
 
         <v-btn
           color="primary"
@@ -1972,14 +2099,174 @@ import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { usePipelineStore } from '@/stores/pipeline'
 import { useNotificationStore } from '@/stores/notification'
+import { useAssetTreeStore } from '@/stores/assetTree'
 import PipelineStepper from '@/components/PipelineStepper.vue'
 import MachinePipelineBanner from '@/components/MachinePipelineBanner.vue'
 import CodeEditor from '@/components/CodeEditor.vue'
+import CompatibilityBadge from '@/components/CompatibilityBadge.vue'
+import MachineTreePickerDialog from '@/components/MachineTreePickerDialog.vue'
 import api from '@/services/api'
 
 const router = useRouter()
 const pipelineStore = usePipelineStore()
 const notificationStore = useNotificationStore()
+const assetTreeStore = useAssetTreeStore()
+
+// ── Phase C.2 — Training scope selector state ───────────────────────────
+// This block only participates in metadata capture (see save-benchmark
+// wiring below); the actual training pipeline still runs on whatever
+// sessions the user pushed through Data → Windowing → Features. Multi-
+// machine data pooling is deferred (see ml_trainer.py TODO).
+type ScopeMode = 'machine' | 'group' | 'adhoc'
+const scopeMode = ref<ScopeMode>('machine')
+const currentMachineId = computed(() => assetTreeStore.currentMachineId)
+const currentMachineName = computed(() => {
+  const n = assetTreeStore.currentMachineNode
+  return n?.display_name || n?.name || null
+})
+
+// Group scope state.
+const groups = ref<any[]>([])
+const selectedGroupId = ref<number | null>(null)
+const groupOptions = computed(() =>
+  groups.value.map((g: any) => ({
+    label: `${g.name} (${g.member_count || 0})`,
+    value: g.id,
+  })),
+)
+const selectedGroup = computed(() =>
+  groups.value.find((g: any) => g.id === selectedGroupId.value) || null,
+)
+const groupMemberIds = ref<number[]>([])
+
+// Ad-hoc scope state.
+const adhocPickerOpen = ref(false)
+const adhocIds = ref<number[]>([])
+function onAdhocSelected(ids: number[]) {
+  adhocIds.value = [...ids]
+}
+
+// Sample / class counts — call the helper endpoint when a non-machine
+// scope is picked. MVP returns null; UI shows an em-dash. Just-this-machine
+// falls back to whatever the current pipeline session tracks.
+const scopeSampleCount = ref<number | null>(null)
+const scopeClassCount = ref<number | null>(null)
+
+const scopeMachineIds = computed<number[]>(() => {
+  if (scopeMode.value === 'machine') {
+    return currentMachineId.value != null ? [currentMachineId.value] : []
+  }
+  if (scopeMode.value === 'group') {
+    return [...groupMemberIds.value]
+  }
+  return [...adhocIds.value]
+})
+const scopeMachineCount = computed(() => scopeMachineIds.value.length)
+
+const scopeSampleCountDisplay = computed(() => {
+  if (scopeMode.value === 'machine') {
+    // Reuse the current windowed session count if available; otherwise "—".
+    const total = pipelineStore.windowedSession?.metadata?.total_windows
+                ?? pipelineStore.dataSession?.metadata?.total_rows
+    return total ?? '—'
+  }
+  return scopeSampleCount.value ?? '—'
+})
+const scopeClassCountDisplay = computed(() => {
+  if (scopeMode.value === 'machine') {
+    const labels = pipelineStore.dataSession?.metadata?.labels
+    if (Array.isArray(labels)) return labels.length
+    return '—'
+  }
+  return scopeClassCount.value ?? '—'
+})
+
+// Compatibility gating: null (single machine / not-run) → treated as OK,
+// true → OK, false → blocks Start Training with tooltip.
+const scopeCompatible = ref<boolean | null>(null)
+function onScopeCompatible(v: boolean | null) {
+  scopeCompatible.value = v
+}
+const scopeBlocksTraining = computed(() => {
+  if (scopeMode.value === 'machine' && currentMachineId.value == null) return true
+  if (scopeMachineIds.value.length === 0) return true
+  if (scopeCompatible.value === false) return true
+  return false
+})
+const scopeBlockReason = computed(() => {
+  if (scopeMode.value === 'machine' && currentMachineId.value == null) {
+    return 'Pick a machine from the tree first.'
+  }
+  if (scopeMachineIds.value.length === 0) {
+    return 'No machines selected for this scope.'
+  }
+  if (scopeCompatible.value === false) {
+    return 'Selected machines have mismatched sensor sets — see the badge above.'
+  }
+  return ''
+})
+
+async function fetchScopeGroups() {
+  try {
+    const r = await api.get('/api/asset-tree/groups')
+    groups.value = r.data?.groups || []
+  } catch { /* silent */ }
+}
+
+// When a group is picked, hydrate its members (backend GET returns members).
+watch(selectedGroupId, async (gid) => {
+  if (gid == null) {
+    groupMemberIds.value = []
+    return
+  }
+  try {
+    const r = await api.get(`/api/asset-tree/groups/${gid}`)
+    const members = r.data?.members || []
+    groupMemberIds.value = members
+      .filter((m: any) => (m.status || 'active') === 'active')
+      .map((m: any) => m.id)
+      .filter((n: any) => Number.isFinite(n))
+  } catch {
+    groupMemberIds.value = []
+  }
+})
+
+// Refresh sample / class counts whenever the scope changes to a non-single mode.
+watch(scopeMachineIds, async (ids) => {
+  if (scopeMode.value === 'machine' || ids.length === 0) {
+    scopeSampleCount.value = null
+    scopeClassCount.value = null
+    return
+  }
+  try {
+    const r = await api.get('/api/asset-tree/scope/sample-count', {
+      params: { machine_ids: ids.join(',') },
+    })
+    scopeSampleCount.value = r.data?.sample_count ?? null
+    scopeClassCount.value = r.data?.class_count ?? null
+  } catch {
+    scopeSampleCount.value = null
+    scopeClassCount.value = null
+  }
+}, { deep: true })
+
+// Build the payload passed to /save-benchmark. Returns null when the scope
+// is "just this machine" without a currentMachineId — caller then omits the
+// key entirely so the legacy save path keeps working.
+function buildTrainingScopePayload() {
+  const ids = scopeMachineIds.value
+  if (ids.length === 0) return null
+  return {
+    mode: scopeMode.value,
+    machine_asset_ids: ids,
+    trained_via_group:
+      scopeMode.value === 'group' && selectedGroup.value
+        ? selectedGroup.value.name
+        : null,
+    group_id: scopeMode.value === 'group' ? selectedGroupId.value : null,
+  }
+}
+
 
 // Training approach synced with pipeline store
 const trainingApproach = computed({
@@ -2219,6 +2506,9 @@ const regressionAlgorithms = [
 ]
 
 const canTrain = computed(() => {
+  // Scope gate (Phase C.2) — block training if the scope is invalid or
+  // incompatible. Tooltip on the button surfaces the reason.
+  if (scopeBlocksTraining.value) return false
   if (trainingApproach.value === 'ml') {
     return selectedAlgorithms.value.length > 0 && !!pipelineStore.featureSession
   } else if (trainingApproach.value === 'custom') {
@@ -3272,6 +3562,9 @@ async function saveBenchmark() {
       training_session_id: sessionId,
       name: benchmarkName.value || undefined,
       project_id: pipelineStore.projectId || undefined,
+      // Phase C.4 — capture the training scope so the backend can write
+      // model_machine_bindings on save. Null-safe: if no ids, backend skips.
+      training_scope: buildTrainingScopePayload() || undefined,
       // For TI models: include metrics and algorithm since session is in TI container
       metrics: trainingResult.value?.metrics || undefined,
       algorithm: trainingResult.value?.algorithm || undefined,
@@ -3426,6 +3719,13 @@ onMounted(async () => {
 
   // Load saved models
   loadSavedModels()
+
+  // Phase C.2 — hydrate scope selector: fetch groups + ensure the tree is
+  // loaded so the ad-hoc picker doesn't render an empty list on first open.
+  fetchScopeGroups()
+  if (!assetTreeStore.treeLoaded && !assetTreeStore.loadingTree) {
+    assetTreeStore.fetchTree()
+  }
 })
 </script>
 

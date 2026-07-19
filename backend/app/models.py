@@ -2103,3 +2103,107 @@ class AssetTreeAudit:
             cursor = conn.cursor()
             cursor.execute('SELECT COUNT(*) FROM asset_tree_audit')
             return cursor.fetchone()[0]
+
+
+class ModelMachineBinding:
+    """Model ↔ machine binding join table.
+
+    Phase C (2026-07-19). One row per (saved_model_id, machine_asset_id, role)
+    tuple. Roles in current use:
+      - 'trained_on'   → the machine's data went into the training set.
+      - 'deployed_to'  → the model is authorised to serve this machine.
+
+    `trained_via_group` captures the group name at training time so we can
+    audit even after the group is renamed or a machine is retired.
+    """
+
+    @staticmethod
+    def bind(saved_model_id: int, machine_asset_id: int, role: str,
+             trained_via_group: str = None) -> None:
+        """Idempotent insert of a single binding row."""
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''INSERT OR REPLACE INTO model_machine_bindings
+                   (saved_model_id, machine_asset_id, role,
+                    trained_via_group, bound_at)
+                   VALUES (?, ?, ?, ?, ?)''',
+                (saved_model_id, machine_asset_id, role,
+                 trained_via_group, datetime.utcnow().isoformat())
+            )
+            conn.commit()
+
+    @staticmethod
+    def bind_bulk(saved_model_id: int, machine_asset_ids: list, role: str,
+                  trained_via_group: str = None) -> int:
+        """Insert many binding rows in a single transaction. Returns count."""
+        now = datetime.utcnow().isoformat()
+        count = 0
+        with get_db() as conn:
+            cursor = conn.cursor()
+            for aid in machine_asset_ids:
+                cursor.execute(
+                    '''INSERT OR REPLACE INTO model_machine_bindings
+                       (saved_model_id, machine_asset_id, role,
+                        trained_via_group, bound_at)
+                       VALUES (?, ?, ?, ?, ?)''',
+                    (saved_model_id, aid, role, trained_via_group, now)
+                )
+                count += 1
+            conn.commit()
+        return count
+
+    @staticmethod
+    def replace_role(saved_model_id: int, role: str,
+                     machine_asset_ids: list,
+                     trained_via_group: str = None) -> int:
+        """Delete all rows for (model, role) and re-insert. Atomic."""
+        now = datetime.utcnow().isoformat()
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''DELETE FROM model_machine_bindings
+                   WHERE saved_model_id = ? AND role = ?''',
+                (saved_model_id, role)
+            )
+            for aid in machine_asset_ids:
+                cursor.execute(
+                    '''INSERT INTO model_machine_bindings
+                       (saved_model_id, machine_asset_id, role,
+                        trained_via_group, bound_at)
+                       VALUES (?, ?, ?, ?, ?)''',
+                    (saved_model_id, aid, role, trained_via_group, now)
+                )
+            conn.commit()
+        return len(machine_asset_ids)
+
+    @staticmethod
+    def get_for_model(saved_model_id: int) -> list:
+        """Return every binding for a model, joined with the asset node."""
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''SELECT b.*, n.name AS asset_name, n.topic_path,
+                          n.status AS asset_status, n.display_name
+                   FROM model_machine_bindings b
+                   INNER JOIN asset_nodes n ON n.id = b.machine_asset_id
+                   WHERE b.saved_model_id = ?
+                   ORDER BY b.role, n.topic_path''',
+                (saved_model_id,)
+            )
+            return [dict(r) for r in cursor.fetchall()]
+
+    @staticmethod
+    def get_by_role(saved_model_id: int, role: str) -> list:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''SELECT b.*, n.name AS asset_name, n.topic_path,
+                          n.status AS asset_status, n.display_name
+                   FROM model_machine_bindings b
+                   INNER JOIN asset_nodes n ON n.id = b.machine_asset_id
+                   WHERE b.saved_model_id = ? AND b.role = ?
+                   ORDER BY n.topic_path''',
+                (saved_model_id, role)
+            )
+            return [dict(r) for r in cursor.fetchall()]

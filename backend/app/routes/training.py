@@ -16,7 +16,7 @@ from ..services.feature_extractor import FeatureExtractor
 from ..services.data_loader import _data_sessions
 from ..services.deployer import load_saved_model_session
 from ..config import ANOMALY_ALGORITHMS, CLASSIFICATION_ALGORITHMS, REGRESSION_ALGORITHMS
-from ..models import SavedModel
+from ..models import SavedModel, ModelMachineBinding, AssetNode
 
 logger = logging.getLogger(__name__)
 
@@ -853,6 +853,67 @@ def save_benchmark():
                 _Project.touch(pid, 'training')
         except Exception as _e:
             logger.warning(f"[F4] link saved_model to project failed: {_e}")
+
+    # Phase C.4 — model artifact metadata. If the training-view scope
+    # selector passed machine ids, persist a `trained_on` row per machine
+    # and mirror them as `deployed_to` (MVP: deploy targets default to the
+    # trained-on set; users rebind later via the RebindMachinesDialog).
+    # Silent no-op if no scope was passed (legacy pipeline / Just this
+    # machine on a machine without an asset id).
+    try:
+        scope = data.get('training_scope') or {}
+        raw_ids = scope.get('machine_asset_ids') or []
+        group_name = scope.get('trained_via_group')  # nullable
+        # Normalise + de-dupe while preserving order. Reject anything
+        # that isn't an active machine — a direct API caller could pollute
+        # `model_machine_bindings` with rows pointing at sensors, roots,
+        # or retired nodes (Phase C QA #6). The scope check here reuses
+        # the same guard the /groups POST/PATCH use so semantics stay in
+        # lockstep.
+        seen = set()
+        machine_ids = []
+        # Import lazily to avoid pulling asset_tree route module during
+        # training bootstrap.
+        from .asset_tree import _is_active_machine
+        for x in raw_ids:
+            try:
+                v = int(x)
+            except (TypeError, ValueError):
+                continue
+            if v in seen:
+                continue
+            ok, _reason = _is_active_machine(v)
+            if not ok:
+                # Silently drop non-machine / retired / missing ids rather
+                # than 400 — training itself already succeeded and we don't
+                # want to lose the model over a bindings metadata glitch.
+                continue
+            seen.add(v)
+            machine_ids.append(v)
+
+        if machine_ids:
+            ModelMachineBinding.bind_bulk(
+                saved_model_id=model_id,
+                machine_asset_ids=machine_ids,
+                role='trained_on',
+                trained_via_group=group_name,
+            )
+            # Deploy targets default to the trained-on set. Users rebind
+            # via PATCH /api/asset-tree/models/<id>/deploy-targets.
+            ModelMachineBinding.bind_bulk(
+                saved_model_id=model_id,
+                machine_asset_ids=machine_ids,
+                role='deployed_to',
+                trained_via_group=None,
+            )
+            logger.info(
+                f"[Phase C] bound saved_model {model_id} to machines "
+                f"{machine_ids} (group={group_name!r})"
+            )
+    except Exception as _e:
+        # Don't fail the save on a binding hiccup — the model is saved,
+        # the user can rebind manually. But surface the error in logs.
+        logger.warning(f"[Phase C] model-machine binding failed: {_e}")
 
     return jsonify({'id': model_id, 'name': name, 'message': 'Model saved as benchmark'})
 

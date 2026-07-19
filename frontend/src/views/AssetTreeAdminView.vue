@@ -22,7 +22,6 @@
 
     <v-tabs v-model="activeTab" density="compact" class="mb-4">
       <v-tab value="tree" prepend-icon="mdi-file-tree">Tree</v-tab>
-      <v-tab value="groups" prepend-icon="mdi-account-group">Machine Groups</v-tab>
       <v-tab value="audit" prepend-icon="mdi-clipboard-text-clock">Audit Log</v-tab>
     </v-tabs>
 
@@ -233,20 +232,6 @@
             </div>
           </div>
         </div>
-      </v-window-item>
-
-      <!-- ── Groups tab (Phase C placeholder) ────────────────────────── -->
-      <v-window-item value="groups">
-        <v-card class="pa-6" variant="tonal">
-          <div class="d-flex flex-column align-center text-center">
-            <v-icon size="48" color="secondary" class="mb-2">mdi-account-group</v-icon>
-            <h3 class="text-h6">Machine Groups</h3>
-            <p class="text-body-2 text-medium-emphasis mt-2">
-              Cross-machine training groups land in Phase C. The backend
-              endpoints already exist — the UI ships next.
-            </p>
-          </div>
-        </v-card>
       </v-window-item>
 
       <!-- ── Audit tab ────────────────────────────────────────────────── -->
@@ -522,7 +507,7 @@ import TreeTemplatePicker from '@/components/TreeTemplatePicker.vue'
 const NAME_REGEX = /^[A-Za-z0-9_-]+$/
 
 const props = defineProps<{
-  defaultTab?: 'tree' | 'groups' | 'audit'
+  defaultTab?: 'tree' | 'audit'
 }>()
 
 const route = useRoute()
