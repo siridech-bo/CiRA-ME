@@ -163,7 +163,15 @@
           rounded="lg"
         />
 
-        <v-list-subheader v-if="!rail">PIPELINE</v-list-subheader>
+        <!--
+          Phase B — Asset tree is the primary navigation. Sits above the
+          legacy pipeline items so users land on it first. Auto-collapse
+          rules and search live inside AssetTreeSidebar.
+        -->
+        <v-list-subheader v-if="!rail">ASSET TREE</v-list-subheader>
+        <AssetTreeSidebar :rail="rail" />
+
+        <v-list-subheader v-if="!rail">GLOBAL TOOLS</v-list-subheader>
 
         <v-list-item
           prepend-icon="mdi-database"
@@ -427,6 +435,7 @@ import { usePipelineStore } from '@/stores/pipeline'
 import { useNotificationStore } from '@/stores/notification'
 import { useAssetTreeStore } from '@/stores/assetTree'
 import LogoFull from '@/assets/LogoFull.vue'
+import AssetTreeSidebar from '@/components/AssetTreeSidebar.vue'
 import api from '@/services/api'
 
 // Persisted theme (dark/light) — Phase 0. Both the top-bar icon and

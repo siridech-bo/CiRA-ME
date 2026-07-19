@@ -5,6 +5,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useAssetTreeStore } from '@/stores/assetTree'
+import { useNotificationStore } from '@/stores/notification'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -125,6 +126,16 @@ const router = createRouter({
       component: () => import('@/views/AdminView.vue'),
       meta: { requiresAuth: true, requiresAdmin: true }
     },
+    // ── Machine Workspace (Phase B) ──────────────────────────────────────
+    {
+      // Per-machine dashboard: Overview / Data / Models / Deploy / Labels /
+      // History tabs. Route guard (below) rejects non-machine ids so users
+      // hitting a stale bookmark get redirected instead of a blank shell.
+      path: '/machine/:id',
+      name: 'machine-workspace',
+      component: () => import('@/views/MachineWorkspaceView.vue'),
+      meta: { requiresAuth: true, requiresMachineNode: true },
+    },
     // ── Asset Tree (Phase A) ─────────────────────────────────────────────
     {
       // First-run wizard — fullscreen, no sidebar. Bypasses the
@@ -233,6 +244,41 @@ router.beforeEach(async (to, from, next) => {
     const configured = await assetTreeStore.ensureConfigChecked()
     if (configured) {
       return next({ name: 'dashboard' })
+    }
+  }
+
+  // Phase B — machine-workspace guard. Rejects stale ids that aren't at
+  // machine level (or are retired). Redirect to the tree admin so the
+  // user can pick a real one. Skip the guard on unauthenticated flows
+  // — the earlier auth guard already handled those.
+  if (isAuthenticated && to.meta.requiresMachineNode) {
+    const notify = useNotificationStore()
+    const idRaw = Number(to.params.id)
+    if (!Number.isFinite(idRaw)) {
+      notify.showError('Invalid machine id.')
+      return next({ name: 'asset-tree-admin' })
+    }
+    try {
+      const assetTreeStore = useAssetTreeStore()
+      if (!assetTreeStore.treeLoaded) {
+        await assetTreeStore.fetchTree()
+      }
+      const node = assetTreeStore.findNode(idRaw)
+      if (!node) {
+        notify.showError(`Machine ${idRaw} not found.`)
+        return next({ name: 'asset-tree-admin' })
+      }
+      if (node.status === 'retired') {
+        notify.showError(`Machine "${node.name}" is retired.`)
+        return next({ name: 'asset-tree-admin' })
+      }
+      if (!assetTreeStore.isMachineNode(node)) {
+        notify.showError(`"${node.name}" is not at the machine level.`)
+        return next({ name: 'asset-tree-admin' })
+      }
+    } catch {
+      notify.showError('Failed to verify machine.')
+      return next({ name: 'asset-tree-admin' })
     }
   }
 

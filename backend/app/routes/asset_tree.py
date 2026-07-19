@@ -34,7 +34,9 @@ asset_tree_bp = Blueprint('asset_tree', __name__)
 NAME_REGEX = re.compile(r'^[A-Za-z0-9_-]+$')
 VALID_TOPIC_MODES = ('strict', 'learn')
 VALID_DATA_TYPES = ('float', 'int', 'string')
-MACHINE_LEVEL = 2  # 0=root, 1=plant, 2=machine, 3=sensor (per default preset)
+# NOTE: no static MACHINE_LEVEL constant — see `_is_machine_level` which
+# computes it from the live config so 5-level trees (e.g. datacenter →
+# server) work identically to 4-level (factory → machine).
 
 
 def _admin_only():
@@ -1060,4 +1062,115 @@ def validate_compatibility():
         'per_machine_diff': per_machine_diff,
         'unit_mismatches': unit_mismatches,
         'sample_rate_mismatches': sample_rate_mismatches,
+    })
+
+
+# ── Model bindings (Phase B: Models + Deploy tabs) ─────────────────────────
+
+@asset_tree_bp.route('/nodes/<int:node_id>/models', methods=['GET'])
+@login_required
+def get_machine_models(node_id):
+    """Return the saved_models bound to this machine.
+
+    Phase B — Models + Deploy tabs. Reads `model_machine_bindings`
+    (Phase A migration) and joins to `saved_models` / `melab_endpoints`
+    for display fields. Also returns "group models" — models the machine
+    participates in via a machine_group.
+
+    Response:
+      {
+        "trained_on":   [ { model, endpoints: [...] }, ... ],
+        "deployed_to":  [ { model, endpoints: [...] }, ... ],
+        "group_models": [ { model, endpoints: [...], group_id, group_name }, ... ]
+      }
+
+    A model may appear in both `trained_on` and `deployed_to` — same row,
+    two roles. Empty lists on missing bindings; no 404 unless the node
+    itself is absent.
+    """
+    node = AssetNode.get_by_id(node_id)
+    if not node:
+        return jsonify({'error': 'Node not found'}), 404
+    if not _is_machine_level(node_id):
+        return jsonify({
+            'error': 'Node is not at machine level',
+            'trained_on': [],
+            'deployed_to': [],
+            'group_models': [],
+        }), 400
+
+    def _model_row_with_endpoints(cursor, model_row):
+        m = dict(model_row)
+        cursor.execute(
+            '''SELECT id, name, status, mode, algorithm, created_at
+               FROM melab_endpoints WHERE saved_model_id = ?
+               ORDER BY created_at DESC''',
+            (m['id'],)
+        )
+        m['endpoints'] = [dict(r) for r in cursor.fetchall()]
+        return m
+
+    trained_on = []
+    deployed_to = []
+    group_models = []
+    with get_db() as conn:
+        cursor = conn.cursor()
+
+        # Direct bindings
+        cursor.execute(
+            '''SELECT sm.*, mmb.role, mmb.trained_via_group, mmb.bound_at
+               FROM model_machine_bindings mmb
+               INNER JOIN saved_models sm ON sm.id = mmb.saved_model_id
+               WHERE mmb.machine_asset_id = ?
+               ORDER BY mmb.bound_at DESC''',
+            (node_id,)
+        )
+        rows = cursor.fetchall()
+        for r in rows:
+            enriched = _model_row_with_endpoints(cursor, r)
+            role = enriched.get('role')
+            if role == 'deployed_to':
+                deployed_to.append(enriched)
+            else:
+                # Treat any non-deployed role as "trained_on" — the current
+                # writer only produces 'trained_on' / 'deployed_to'.
+                trained_on.append(enriched)
+
+        # Group models: any model bound to any machine in a group this
+        # machine also participates in — excluding models already surfaced
+        # under trained_on to avoid dupes.
+        seen_ids = {m['id'] for m in trained_on} | {m['id'] for m in deployed_to}
+        cursor.execute(
+            '''SELECT DISTINCT g.id AS group_id, g.name AS group_name,
+                              sm.id AS model_id
+               FROM machine_group_members me_in
+               INNER JOIN machine_groups g ON g.id = me_in.group_id
+               INNER JOIN machine_group_members other ON other.group_id = g.id
+               INNER JOIN model_machine_bindings mmb
+                       ON mmb.machine_asset_id = other.machine_asset_id
+               INNER JOIN saved_models sm ON sm.id = mmb.saved_model_id
+               WHERE me_in.machine_asset_id = ?
+                 AND other.machine_asset_id != ?''',
+            (node_id, node_id)
+        )
+        rows = cursor.fetchall()
+        for gr in rows:
+            model_id = gr['model_id']
+            if model_id in seen_ids:
+                continue
+            cursor.execute('SELECT * FROM saved_models WHERE id = ?', (model_id,))
+            mrow = cursor.fetchone()
+            if not mrow:
+                continue
+            enriched = _model_row_with_endpoints(cursor, mrow)
+            enriched['group_id'] = gr['group_id']
+            enriched['group_name'] = gr['group_name']
+            group_models.append(enriched)
+            seen_ids.add(model_id)
+
+    return jsonify({
+        'machine_id': node_id,
+        'trained_on': trained_on,
+        'deployed_to': deployed_to,
+        'group_models': group_models,
     })

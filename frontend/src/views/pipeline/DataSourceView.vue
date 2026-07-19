@@ -1,5 +1,8 @@
 <template>
   <v-container fluid class="pa-6">
+    <!-- Phase B — machine context banner. Non-blocking; hidden by the
+         component itself when auth/tree isn't ready. -->
+    <MachinePipelineBanner />
     <!-- Header with Stepper -->
     <PipelineStepper current-step="data" class="mb-6" />
 
@@ -1697,6 +1700,7 @@ import { usePipelineStore } from '@/stores/pipeline'
 import { useNotificationStore } from '@/stores/notification'
 import { useAuthStore } from '@/stores/auth'
 import PipelineStepper from '@/components/PipelineStepper.vue'
+import MachinePipelineBanner from '@/components/MachinePipelineBanner.vue'
 import FileManagerDialog from '@/components/FileManagerDialog.vue'
 import { Line } from 'vue-chartjs'
 import {

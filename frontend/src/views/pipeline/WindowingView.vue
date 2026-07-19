@@ -1,5 +1,7 @@
 <template>
   <v-container fluid class="pa-6">
+    <!-- Phase B — machine context banner (see MachinePipelineBanner.vue). -->
+    <MachinePipelineBanner />
     <!-- Header with Stepper -->
     <PipelineStepper current-step="windowing" class="mb-6" />
 
@@ -769,6 +771,7 @@ import { useRouter, useRoute } from 'vue-router'
 import { usePipelineStore } from '@/stores/pipeline'
 import { useNotificationStore } from '@/stores/notification'
 import PipelineStepper from '@/components/PipelineStepper.vue'
+import MachinePipelineBanner from '@/components/MachinePipelineBanner.vue'
 import { Line } from 'vue-chartjs'
 import {
   Chart as ChartJS,

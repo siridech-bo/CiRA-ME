@@ -108,11 +108,11 @@
   </div>
 </header>
 
-<section class="overall" style="--overall: 41;">
-  <div class="ring"><span>41%</span></div>
+<section class="overall" style="--overall: 69;">
+  <div class="ring"><span>69%</span></div>
   <div class="stats">
-    <div class="stat"><div class="n">2</div><div class="l">Phases done</div></div>
-    <div class="stat"><div class="n">16</div><div class="l">Subtasks done</div></div>
+    <div class="stat"><div class="n">3</div><div class="l">Phases done</div></div>
+    <div class="stat"><div class="n">27</div><div class="l">Subtasks done</div></div>
     <div class="stat"><div class="n">6</div><div class="l">Phases total</div></div>
     <div class="stat"><div class="n">39</div><div class="l">Subtasks total</div></div>
   </div>
@@ -157,24 +157,24 @@
 </section>
 
 <!-- ═══════════════════════════════════════════════════ PHASE B ═════ -->
-<section class="phase status-pending" id="phase-b">
+<section class="phase status-done" id="phase-b">
   <div class="head">
     <h2>Phase B · Sidebar restructure + machine workspace</h2>
-    <span class="est">~1 week · <span class="chip pending">pending</span></span>
+    <span class="est">~1 week · <span class="chip done">done</span></span>
   </div>
-  <div class="bar"><i style="width:0%"></i></div>
+  <div class="bar"><i style="width:100%"></i></div>
   <ul class="subtasks">
-    <li><span class="id">B.1</span> <span class="chip pending">pending</span> New sidebar layout (tree + search + collapse) <span class="time">—</span></li>
-    <li><span class="id">B.2</span> <span class="chip pending">pending</span> Machine workspace route + 6 tabs shell <span class="time">—</span></li>
-    <li><span class="id">B.3</span> <span class="chip pending">pending</span> Overview tab <span class="time">—</span></li>
-    <li><span class="id">B.4</span> <span class="chip pending">pending</span> Data tab (scoped File Manager) <span class="time">—</span></li>
-    <li><span class="id">B.5</span> <span class="chip pending">pending</span> Models tab <span class="time">—</span></li>
-    <li><span class="id">B.6</span> <span class="chip pending">pending</span> Deploy tab <span class="time">—</span></li>
-    <li><span class="id">B.7</span> <span class="chip pending">pending</span> Labels placeholder tab <span class="time">—</span></li>
-    <li><span class="id">B.8</span> <span class="chip pending">pending</span> History tab <span class="time">—</span></li>
-    <li><span class="id">B.9</span> <span class="chip pending">pending</span> Legacy /pipeline/* redirects <span class="time">—</span></li>
-    <li><span class="id">B.QA</span> <span class="chip pending">pending</span> Adversarial QA pass <span class="time">—</span></li>
-    <li><span class="id">B.T</span> <span class="chip pending">pending</span> Personal browser test <span class="time">—</span></li>
+    <li><span class="id">B.1</span> <span class="chip done">done</span> New sidebar layout — AssetTreeSidebar + node component <span class="time">2026-07-19</span></li>
+    <li><span class="id">B.2</span> <span class="chip done">done</span> Machine workspace route <code>/machine/:id</code> + guard <span class="time">2026-07-19</span></li>
+    <li><span class="id">B.3</span> <span class="chip done">done</span> Overview tab (MQTT tiles + audit feed) <span class="time">2026-07-19</span></li>
+    <li><span class="id">B.4</span> <span class="chip done">done</span> Data tab — inline browser scoped to machine folder <span class="time">2026-07-19</span></li>
+    <li><span class="id">B.5</span> <span class="chip done">done</span> Models tab + new <code>/nodes/&lt;id&gt;/models</code> endpoint <span class="time">2026-07-19</span></li>
+    <li><span class="id">B.6</span> <span class="chip done">done</span> Deploy tab (filters apps by machine binding) <span class="time">2026-07-19</span></li>
+    <li><span class="id">B.7</span> <span class="chip done">done</span> Labels placeholder + OculusT link <span class="time">2026-07-19</span></li>
+    <li><span class="id">B.8</span> <span class="chip done">done</span> History tab — Chart.js line plot, sensor+file dropdowns <span class="time">2026-07-19</span></li>
+    <li><span class="id">B.9</span> <span class="chip done">done</span> Legacy /pipeline/* banners <span class="time">2026-07-19</span></li>
+    <li><span class="id">B.QA</span> <span class="chip done">done</span> Adversarial QA — 2 blockers + 14 polish; blockers + 4 polish fixed <span class="time">2026-07-19</span></li>
+    <li><span class="id">B.T</span> <span class="chip done">done</span> Personal + user browser test <span class="time">2026-07-19</span></li>
   </ul>
 </section>
 
@@ -237,6 +237,7 @@
 <section class="activity">
   <h2>Recent activity</h2>
   <ol id="activity-log">
+    <li><span class="when">2026-07-19</span>Phase B <b>done</b>. Sidebar tree + <code>/machine/:id</code> workspace with 6 tabs + legacy /pipeline/* banners. QA found 2 blockers (currentMachineId stale on nav; sensor click no-op) + 14 polish; blockers + 4 polish fixed. 10 new frontend files, 1 new backend endpoint.</li>
     <li><span class="when">2026-07-19</span>Phase A follow-up: 13 tree templates (Industrial IoT / Business Ops / Facilities / Energy / Healthcare / Blank). One-click seed of config + tree. New endpoints <code>GET /tree-templates</code> and <code>POST /tree-templates/&lt;id&gt;/apply</code>. Reusable <code>TreeTemplatePicker.vue</code> wired into wizard Step 1 and admin empty-state.</li>
     <li><span class="when">2026-07-19</span>Phase A follow-up: Structure panel now shows topic segment as primary label with display_name in muted parens. Fixes confusion between the two.</li>
     <li><span class="when">2026-07-19</span>Phase A <b>done</b>. Wizard, admin, legacy chip live. QA found 2 blockers + 3 polish (SensorMetaEditor custom mode, import root check, topic router root+meta ordering, retired PATCH gate) — all fixed and reverified.</li>
