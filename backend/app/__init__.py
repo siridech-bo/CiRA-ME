@@ -53,6 +53,7 @@ def create_app(config=None):
     from .routes.folder_watchers import folder_watchers_bp
     from .routes.wizard import wizard_bp
     from .routes.projects import projects_bp
+    from .routes.asset_tree import asset_tree_bp
 
     app.register_blueprint(auth_bp, url_prefix='/api/auth')
     app.register_blueprint(admin_bp, url_prefix='/api/admin')
@@ -68,6 +69,7 @@ def create_app(config=None):
     app.register_blueprint(folder_watchers_bp, url_prefix='/api/folder-watchers')
     app.register_blueprint(wizard_bp, url_prefix='/api/wizard')
     app.register_blueprint(projects_bp, url_prefix='/api/projects')
+    app.register_blueprint(asset_tree_bp, url_prefix='/api/asset-tree')
 
     # Health check endpoint
     @app.route('/api/health')

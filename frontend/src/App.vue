@@ -1,8 +1,8 @@
 <template>
   <v-app>
-    <!-- App Bar (hidden on standalone pages) -->
+    <!-- App Bar (hidden on standalone pages and the fullscreen setup wizard) -->
     <v-app-bar
-      v-if="authStore.isAuthenticated && !isStandalone"
+      v-if="authStore.isAuthenticated && !isStandalone && !isFullscreen"
       elevation="0"
       color="surface"
       border="b"
@@ -38,6 +38,59 @@
       </v-btn-toggle>
 
       <v-spacer />
+
+      <!-- Legacy projects chip — surfaces pre-tree projects so they're
+           findable. Non-blocking, migration wizard lands in Phase B. -->
+      <v-menu v-if="legacyCount > 0" location="bottom end" :close-on-content-click="false">
+        <template #activator="{ props }">
+          <v-btn
+            v-bind="props"
+            size="small"
+            variant="tonal"
+            color="warning"
+            class="mr-2 legacy-chip"
+            prepend-icon="mdi-archive-outline"
+          >
+            {{ legacyCount }} legacy project{{ legacyCount === 1 ? '' : 's' }}
+          </v-btn>
+        </template>
+        <v-card min-width="320" max-width="380">
+          <v-card-title class="d-flex align-center">
+            <v-icon color="warning" class="mr-2">mdi-archive-outline</v-icon>
+            Legacy projects
+          </v-card-title>
+          <v-card-text>
+            <p class="text-body-2 mb-2">
+              These predate the asset tree. Open them via the classic Projects
+              view (deprecated). A migration wizard will land in Phase B.
+            </p>
+            <v-list density="compact" nav>
+              <v-list-item
+                v-for="p in assetTreeStore.legacyProjects.slice(0, 10)"
+                :key="p.id"
+                :to="{ name: 'projects-detail', params: { id: p.id } }"
+                prepend-icon="mdi-folder-outline"
+              >
+                {{ p.name }}
+              </v-list-item>
+              <v-list-item
+                v-if="assetTreeStore.legacyProjects.length > 10"
+                prepend-icon="mdi-dots-horizontal"
+                :subtitle="`${assetTreeStore.legacyProjects.length - 10} more`"
+                :to="{ name: 'projects-list' }"
+              >
+                See all
+              </v-list-item>
+            </v-list>
+          </v-card-text>
+          <v-card-actions>
+            <v-spacer />
+            <v-btn variant="text" :to="{ name: 'projects-list' }" size="small">
+              Open Projects
+            </v-btn>
+          </v-card-actions>
+        </v-card>
+      </v-menu>
 
       <!-- Theme toggle — prominent icon so users don't have to hunt through
            the user menu. Same handler as the menu item below so both stay
@@ -87,7 +140,7 @@
 
     <!-- Navigation Drawer -->
     <v-navigation-drawer
-      v-if="authStore.isAuthenticated && !isStandalone"
+      v-if="authStore.isAuthenticated && !isStandalone && !isFullscreen"
       v-model="drawer"
       :rail="rail"
       permanent
@@ -200,6 +253,24 @@
         <v-list density="compact" nav>
           <v-divider class="mb-2" />
 
+          <v-list-subheader v-if="!rail">SETTINGS</v-list-subheader>
+
+          <v-list-item
+            prepend-icon="mdi-file-tree"
+            title="Asset Tree"
+            value="asset-tree"
+            :to="{ name: 'asset-tree-admin' }"
+            rounded="lg"
+          />
+
+          <v-list-item
+            prepend-icon="mdi-account-group"
+            title="Machine Groups"
+            value="machine-groups"
+            :to="{ name: 'machine-groups' }"
+            rounded="lg"
+          />
+
           <v-list-item
             v-if="authStore.isAdmin"
             prepend-icon="mdi-shield-account"
@@ -230,7 +301,7 @@
 
     <!-- Footer -->
     <v-footer
-      v-if="authStore.isAuthenticated"
+      v-if="authStore.isAuthenticated && !isFullscreen"
       app
       height="32"
       color="surface"
@@ -348,12 +419,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch } from 'vue'
 import { useThemePref } from '@/composables/useThemePref'
 import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { usePipelineStore } from '@/stores/pipeline'
 import { useNotificationStore } from '@/stores/notification'
+import { useAssetTreeStore } from '@/stores/assetTree'
 import LogoFull from '@/assets/LogoFull.vue'
 import api from '@/services/api'
 
@@ -365,9 +437,13 @@ const router = useRouter()
 const authStore = useAuthStore()
 const pipelineStore = usePipelineStore()
 const notificationStore = useNotificationStore()
+const assetTreeStore = useAssetTreeStore()
 
 const route = useRoute()
 const isStandalone = computed(() => route.meta?.standalone === true)
+// Fullscreen routes (e.g. asset-tree setup wizard) hide the sidebar + app bar.
+const isFullscreen = computed(() => route.meta?.fullscreen === true)
+const legacyCount = computed(() => assetTreeStore.legacyProjects.length)
 
 const drawer = ref(true)
 const rail = ref(false)
@@ -459,4 +535,19 @@ onMounted(() => {
   checkBackendHealth()
   setInterval(checkBackendHealth, 30000)
 })
+
+// When the user is authenticated (either on boot or after login), fetch
+// the legacy-projects list once so the top-bar chip can render. The store
+// caches the result; re-triggers on logout+login by re-watching auth state.
+watch(
+  () => authStore.isAuthenticated,
+  (isAuth) => {
+    if (isAuth) {
+      assetTreeStore.ensureLegacyChecked()
+    } else {
+      assetTreeStore.reset()
+    }
+  },
+  { immediate: true },
+)
 </script>

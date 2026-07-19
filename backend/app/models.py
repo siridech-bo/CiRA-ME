@@ -409,6 +409,86 @@ def init_db(db_path: str):
             import logging
             logging.getLogger(__name__).exception('F4 Legacy adoption migration failed')
 
+        # ── Asset Tree tables (Phase A, 2026-07-18) ───────────────────────────
+        # Physical asset hierarchy replacing "Project" abstraction. Strictly
+        # additive — does NOT alter or touch any existing table's schema or
+        # existing endpoint contracts. See docs/PLAN_2026-07-18_asset-tree.md.
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS asset_tree_config (
+                id INTEGER PRIMARY KEY,
+                level_names TEXT NOT NULL,
+                root_name TEXT NOT NULL,
+                topic_mode TEXT NOT NULL,
+                meta_prefixes TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS asset_nodes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                parent_id INTEGER REFERENCES asset_nodes(id) ON DELETE CASCADE,
+                level INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                display_name TEXT,
+                description TEXT,
+                location_tag TEXT,
+                topic_path TEXT NOT NULL UNIQUE,
+                status TEXT NOT NULL DEFAULT 'active',
+                retired_at TEXT,
+                created_at TEXT NOT NULL,
+                UNIQUE(parent_id, name)
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS asset_sensor_meta (
+                asset_id INTEGER PRIMARY KEY REFERENCES asset_nodes(id) ON DELETE CASCADE,
+                unit TEXT,
+                sample_rate_hz REAL,
+                expected_min REAL,
+                expected_max REAL,
+                data_type TEXT
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS machine_groups (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                description TEXT,
+                created_by INTEGER NOT NULL REFERENCES users(id),
+                created_at TEXT NOT NULL
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS machine_group_members (
+                group_id INTEGER NOT NULL REFERENCES machine_groups(id) ON DELETE CASCADE,
+                machine_asset_id INTEGER NOT NULL REFERENCES asset_nodes(id) ON DELETE CASCADE,
+                added_at TEXT NOT NULL,
+                PRIMARY KEY(group_id, machine_asset_id)
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS model_machine_bindings (
+                saved_model_id INTEGER NOT NULL REFERENCES saved_models(id) ON DELETE CASCADE,
+                machine_asset_id INTEGER NOT NULL REFERENCES asset_nodes(id) ON DELETE CASCADE,
+                role TEXT NOT NULL,
+                trained_via_group TEXT,
+                bound_at TEXT NOT NULL,
+                PRIMARY KEY(saved_model_id, machine_asset_id, role)
+            )
+        ''')
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS asset_tree_audit (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                actor_user_id INTEGER NOT NULL REFERENCES users(id),
+                event_type TEXT NOT NULL,
+                target_type TEXT NOT NULL,
+                target_id INTEGER,
+                payload TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        ''')
+
         # Create default admin user if not exists
         cursor.execute('SELECT id FROM users WHERE username = ?', ('admin',))
         if not cursor.fetchone():
@@ -1603,3 +1683,423 @@ class FolderWatcher:
                 (int(files_delta), int(rows_delta), watcher_id)
             )
             conn.commit()
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# Asset Tree models (Phase A, 2026-07-18)
+# ────────────────────────────────────────────────────────────────────────────
+
+class AssetTreeConfig:
+    """Single-row config. Enforced at app layer (id=1 always)."""
+
+    @staticmethod
+    def get() -> dict:
+        import json
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM asset_tree_config WHERE id = 1')
+            row = cursor.fetchone()
+            if not row:
+                return None
+            d = dict(row)
+            for k in ('level_names', 'meta_prefixes'):
+                if d.get(k):
+                    try:
+                        d[k] = json.loads(d[k])
+                    except Exception:
+                        d[k] = []
+            return d
+
+    @staticmethod
+    def upsert(level_names: list, root_name: str, topic_mode: str,
+               meta_prefixes: list) -> dict:
+        import json
+        now = datetime.utcnow().isoformat()
+        with get_db() as conn:
+            cursor = conn.cursor()
+            existing = cursor.execute(
+                'SELECT id, created_at FROM asset_tree_config WHERE id = 1'
+            ).fetchone()
+            if existing:
+                cursor.execute(
+                    '''UPDATE asset_tree_config
+                       SET level_names = ?, root_name = ?, topic_mode = ?,
+                           meta_prefixes = ?, updated_at = ?
+                       WHERE id = 1''',
+                    (json.dumps(level_names), root_name, topic_mode,
+                     json.dumps(meta_prefixes), now)
+                )
+            else:
+                cursor.execute(
+                    '''INSERT INTO asset_tree_config
+                       (id, level_names, root_name, topic_mode,
+                        meta_prefixes, created_at, updated_at)
+                       VALUES (1, ?, ?, ?, ?, ?, ?)''',
+                    (json.dumps(level_names), root_name, topic_mode,
+                     json.dumps(meta_prefixes), now, now)
+                )
+            conn.commit()
+        return AssetTreeConfig.get()
+
+
+class AssetNode:
+    """Nodes in the asset hierarchy tree."""
+
+    @staticmethod
+    def get_by_id(node_id: int) -> dict:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM asset_nodes WHERE id = ?', (node_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    @staticmethod
+    def get_by_topic_path(topic_path: str) -> dict:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT * FROM asset_nodes WHERE topic_path = ?',
+                (topic_path,)
+            )
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    @staticmethod
+    def get_children(parent_id) -> list:
+        """Children of a given parent. parent_id=None returns root(s)."""
+        with get_db() as conn:
+            cursor = conn.cursor()
+            if parent_id is None:
+                cursor.execute(
+                    'SELECT * FROM asset_nodes WHERE parent_id IS NULL ORDER BY name'
+                )
+            else:
+                cursor.execute(
+                    'SELECT * FROM asset_nodes WHERE parent_id = ? ORDER BY name',
+                    (parent_id,)
+                )
+            return [dict(r) for r in cursor.fetchall()]
+
+    @staticmethod
+    def get_sibling_by_name(parent_id, name: str) -> dict:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            if parent_id is None:
+                cursor.execute(
+                    'SELECT * FROM asset_nodes WHERE parent_id IS NULL AND name = ?',
+                    (name,)
+                )
+            else:
+                cursor.execute(
+                    'SELECT * FROM asset_nodes WHERE parent_id = ? AND name = ?',
+                    (parent_id, name)
+                )
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    @staticmethod
+    def create(parent_id, level: int, name: str, topic_path: str,
+               display_name: str = None, description: str = None,
+               location_tag: str = None, status: str = 'active') -> int:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''INSERT INTO asset_nodes
+                   (parent_id, level, name, display_name, description,
+                    location_tag, topic_path, status, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                (parent_id, level, name, display_name, description,
+                 location_tag, topic_path, status,
+                 datetime.utcnow().isoformat())
+            )
+            conn.commit()
+            return cursor.lastrowid
+
+    @staticmethod
+    def update(node_id: int, **kwargs):
+        allowed = ('name', 'display_name', 'description', 'location_tag',
+                   'topic_path', 'parent_id', 'status', 'retired_at')
+        updates = {k: v for k, v in kwargs.items() if k in allowed}
+        if not updates:
+            return
+        with get_db() as conn:
+            cursor = conn.cursor()
+            set_clause = ', '.join(f'{k} = ?' for k in updates.keys())
+            cursor.execute(
+                f'UPDATE asset_nodes SET {set_clause} WHERE id = ?',
+                (*updates.values(), node_id)
+            )
+            conn.commit()
+
+    @staticmethod
+    def get_descendants(node_id: int) -> list:
+        """Recursive descendants (breadth-first)."""
+        result = []
+        with get_db() as conn:
+            cursor = conn.cursor()
+            queue = [node_id]
+            while queue:
+                current = queue.pop(0)
+                cursor.execute(
+                    'SELECT * FROM asset_nodes WHERE parent_id = ?',
+                    (current,)
+                )
+                for row in cursor.fetchall():
+                    d = dict(row)
+                    result.append(d)
+                    queue.append(d['id'])
+        return result
+
+    @staticmethod
+    def retire_cascade(node_id: int) -> list:
+        """Set node + all descendants to status='retired'. Returns list of affected ids."""
+        now = datetime.utcnow().isoformat()
+        affected = [node_id]
+        for d in AssetNode.get_descendants(node_id):
+            affected.append(d['id'])
+        with get_db() as conn:
+            cursor = conn.cursor()
+            for nid in affected:
+                cursor.execute(
+                    '''UPDATE asset_nodes
+                       SET status = 'retired', retired_at = ?
+                       WHERE id = ?''',
+                    (now, nid)
+                )
+            conn.commit()
+        return affected
+
+    @staticmethod
+    def tree_as_nested_json(include_retired: bool = False) -> list:
+        """Build the full tree as a list of root dicts with nested children.
+
+        Sensor-level nodes (leaves at max depth) get their sensor_meta
+        merged in. Retired nodes are excluded by default.
+        """
+        import json
+        with get_db() as conn:
+            cursor = conn.cursor()
+            if include_retired:
+                cursor.execute('SELECT * FROM asset_nodes ORDER BY level, name')
+            else:
+                cursor.execute(
+                    "SELECT * FROM asset_nodes WHERE status = 'active' ORDER BY level, name"
+                )
+            all_nodes = [dict(r) for r in cursor.fetchall()]
+
+            # Attach sensor_meta to any node that has one (usually leaves)
+            cursor.execute('SELECT * FROM asset_sensor_meta')
+            meta_by_id = {r['asset_id']: dict(r) for r in cursor.fetchall()}
+
+        by_id = {n['id']: n for n in all_nodes}
+        for n in all_nodes:
+            n['children'] = []
+            if n['id'] in meta_by_id:
+                meta = meta_by_id[n['id']]
+                # asset_id is the FK; expose as sensor_meta dict without the FK
+                sensor_meta = {k: v for k, v in meta.items() if k != 'asset_id'}
+                n['sensor_meta'] = sensor_meta
+
+        roots = []
+        for n in all_nodes:
+            pid = n.get('parent_id')
+            if pid is None:
+                roots.append(n)
+            elif pid in by_id:
+                by_id[pid]['children'].append(n)
+            else:
+                # Parent was retired and we're not including retireds; treat as root
+                if include_retired:
+                    roots.append(n)
+        return roots
+
+
+class AssetSensorMeta:
+    """Sensor metadata (unit, sample rate, etc.) for leaf asset nodes."""
+
+    @staticmethod
+    def get(asset_id: int) -> dict:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'SELECT * FROM asset_sensor_meta WHERE asset_id = ?',
+                (asset_id,)
+            )
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    @staticmethod
+    def upsert(asset_id: int, unit: str = None, sample_rate_hz: float = None,
+               expected_min: float = None, expected_max: float = None,
+               data_type: str = None):
+        with get_db() as conn:
+            cursor = conn.cursor()
+            existing = cursor.execute(
+                'SELECT asset_id FROM asset_sensor_meta WHERE asset_id = ?',
+                (asset_id,)
+            ).fetchone()
+            if existing:
+                cursor.execute(
+                    '''UPDATE asset_sensor_meta
+                       SET unit = ?, sample_rate_hz = ?, expected_min = ?,
+                           expected_max = ?, data_type = ?
+                       WHERE asset_id = ?''',
+                    (unit, sample_rate_hz, expected_min, expected_max,
+                     data_type, asset_id)
+                )
+            else:
+                cursor.execute(
+                    '''INSERT INTO asset_sensor_meta
+                       (asset_id, unit, sample_rate_hz, expected_min,
+                        expected_max, data_type)
+                       VALUES (?, ?, ?, ?, ?, ?)''',
+                    (asset_id, unit, sample_rate_hz, expected_min,
+                     expected_max, data_type)
+                )
+            conn.commit()
+
+
+class MachineGroup:
+    """Groups of machine-level asset nodes."""
+
+    @staticmethod
+    def create(name: str, description: str, created_by: int) -> int:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''INSERT INTO machine_groups
+                   (name, description, created_by, created_at)
+                   VALUES (?, ?, ?, ?)''',
+                (name, description, created_by, datetime.utcnow().isoformat())
+            )
+            conn.commit()
+            return cursor.lastrowid
+
+    @staticmethod
+    def get_by_id(group_id: int) -> dict:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT * FROM machine_groups WHERE id = ?', (group_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    @staticmethod
+    def get_all_with_counts() -> list:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''SELECT g.*, COUNT(m.machine_asset_id) AS member_count
+                   FROM machine_groups g
+                   LEFT JOIN machine_group_members m ON g.id = m.group_id
+                   GROUP BY g.id
+                   ORDER BY g.name'''
+            )
+            return [dict(r) for r in cursor.fetchall()]
+
+    @staticmethod
+    def update(group_id: int, **kwargs):
+        allowed = ('name', 'description')
+        updates = {k: v for k, v in kwargs.items() if k in allowed}
+        if not updates:
+            return
+        with get_db() as conn:
+            cursor = conn.cursor()
+            set_clause = ', '.join(f'{k} = ?' for k in updates.keys())
+            cursor.execute(
+                f'UPDATE machine_groups SET {set_clause} WHERE id = ?',
+                (*updates.values(), group_id)
+            )
+            conn.commit()
+
+    @staticmethod
+    def delete(group_id: int):
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM machine_group_members WHERE group_id = ?', (group_id,))
+            cursor.execute('DELETE FROM machine_groups WHERE id = ?', (group_id,))
+            conn.commit()
+
+    @staticmethod
+    def get_members(group_id: int) -> list:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''SELECT n.* FROM asset_nodes n
+                   INNER JOIN machine_group_members m ON n.id = m.machine_asset_id
+                   WHERE m.group_id = ?
+                   ORDER BY n.topic_path''',
+                (group_id,)
+            )
+            return [dict(r) for r in cursor.fetchall()]
+
+    @staticmethod
+    def set_members(group_id: int, machine_asset_ids: list):
+        """Replace all group members with the given ids."""
+        now = datetime.utcnow().isoformat()
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                'DELETE FROM machine_group_members WHERE group_id = ?',
+                (group_id,)
+            )
+            for aid in machine_asset_ids:
+                cursor.execute(
+                    '''INSERT INTO machine_group_members
+                       (group_id, machine_asset_id, added_at)
+                       VALUES (?, ?, ?)''',
+                    (group_id, aid, now)
+                )
+            conn.commit()
+
+
+class AssetTreeAudit:
+    """Audit log for asset-tree state changes."""
+
+    @staticmethod
+    def log(actor_user_id: int, event_type: str, target_type: str,
+            target_id, payload: dict):
+        import json
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''INSERT INTO asset_tree_audit
+                   (actor_user_id, event_type, target_type, target_id,
+                    payload, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)''',
+                (actor_user_id, event_type, target_type, target_id,
+                 json.dumps(payload, default=str),
+                 datetime.utcnow().isoformat())
+            )
+            conn.commit()
+            return cursor.lastrowid
+
+    @staticmethod
+    def list(limit: int = 100, offset: int = 0) -> list:
+        import json
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''SELECT a.*, u.username AS actor_username
+                   FROM asset_tree_audit a
+                   LEFT JOIN users u ON a.actor_user_id = u.id
+                   ORDER BY a.id DESC
+                   LIMIT ? OFFSET ?''',
+                (limit, offset)
+            )
+            rows = []
+            for r in cursor.fetchall():
+                d = dict(r)
+                if d.get('payload'):
+                    try:
+                        d['payload'] = json.loads(d['payload'])
+                    except Exception:
+                        pass
+                rows.append(d)
+            return rows
+
+    @staticmethod
+    def count() -> int:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT COUNT(*) FROM asset_tree_audit')
+            return cursor.fetchone()[0]

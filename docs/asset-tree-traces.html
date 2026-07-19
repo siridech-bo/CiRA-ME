@@ -108,11 +108,11 @@
   </div>
 </header>
 
-<section class="overall" style="--overall: 15;">
-  <div class="ring"><span>15%</span></div>
+<section class="overall" style="--overall: 41;">
+  <div class="ring"><span>41%</span></div>
   <div class="stats">
-    <div class="stat"><div class="n">1</div><div class="l">Phases done</div></div>
-    <div class="stat"><div class="n">6</div><div class="l">Subtasks done</div></div>
+    <div class="stat"><div class="n">2</div><div class="l">Phases done</div></div>
+    <div class="stat"><div class="n">16</div><div class="l">Subtasks done</div></div>
     <div class="stat"><div class="n">6</div><div class="l">Phases total</div></div>
     <div class="stat"><div class="n">39</div><div class="l">Subtasks total</div></div>
   </div>
@@ -136,23 +136,23 @@
 </section>
 
 <!-- ═══════════════════════════════════════════════════ PHASE A ═════ -->
-<section class="phase status-pending" id="phase-a">
+<section class="phase status-done" id="phase-a">
   <div class="head">
     <h2>Phase A · Data model + first-run wizard + tree admin</h2>
-    <span class="est">~2 weeks · <span class="chip pending">pending</span></span>
+    <span class="est">~2 weeks · <span class="chip done">done</span></span>
   </div>
-  <div class="bar"><i style="width:0%"></i></div>
+  <div class="bar"><i style="width:100%"></i></div>
   <ul class="subtasks">
-    <li><span class="id">A.1</span> <span class="chip pending">pending</span> Backend schema + migrations <span class="time">—</span></li>
-    <li><span class="id">A.2</span> <span class="chip pending">pending</span> Backend endpoints — tree CRUD <span class="time">—</span></li>
-    <li><span class="id">A.3</span> <span class="chip pending">pending</span> Backend endpoints — groups + compatibility <span class="time">—</span></li>
-    <li><span class="id">A.4</span> <span class="chip pending">pending</span> Sensor metadata presets <span class="time">—</span></li>
-    <li><span class="id">A.5</span> <span class="chip pending">pending</span> First-run wizard shell + route guard <span class="time">—</span></li>
-    <li><span class="id">A.6</span> <span class="chip pending">pending</span> Wizard steps 1-5 <span class="time">—</span></li>
-    <li><span class="id">A.7</span> <span class="chip pending">pending</span> Ongoing admin view <span class="time">—</span></li>
-    <li><span class="id">A.8</span> <span class="chip pending">pending</span> Legacy compat chip <span class="time">—</span></li>
-    <li><span class="id">A.QA</span> <span class="chip pending">pending</span> Adversarial QA pass (6 subtests) <span class="time">—</span></li>
-    <li><span class="id">A.T</span> <span class="chip pending">pending</span> Personal browser test <span class="time">—</span></li>
+    <li><span class="id">A.1</span> <span class="chip done">done</span> Backend schema + migrations — 7 tables + audit log <span class="time">2026-07-19</span></li>
+    <li><span class="id">A.2</span> <span class="chip done">done</span> Backend endpoints — tree CRUD (11 routes) <span class="time">2026-07-19</span></li>
+    <li><span class="id">A.3</span> <span class="chip done">done</span> Backend endpoints — groups + compatibility (6 routes) <span class="time">2026-07-19</span></li>
+    <li><span class="id">A.4</span> <span class="chip done">done</span> Sensor metadata presets — 5 hierarchy / 4 sensor templates / 15 units / 7 rates <span class="time">2026-07-19</span></li>
+    <li><span class="id">A.5</span> <span class="chip done">done</span> First-run wizard shell + route guard (Pinia-cached) <span class="time">2026-07-19</span></li>
+    <li><span class="id">A.6</span> <span class="chip done">done</span> Wizard steps 1-5 — preset / levels / tree / MQTT rules / confirm <span class="time">2026-07-19</span></li>
+    <li><span class="id">A.7</span> <span class="chip done">done</span> Ongoing admin view — Tree / Groups placeholder / Audit tabs <span class="time">2026-07-19</span></li>
+    <li><span class="id">A.8</span> <span class="chip done">done</span> Legacy compat chip in top bar (menu with N projects) <span class="time">2026-07-19</span></li>
+    <li><span class="id">A.QA</span> <span class="chip done">done</span> Adversarial QA (6 subtests + extras) — 2 blockers + 3 polish found, all fixed <span class="time">2026-07-19</span></li>
+    <li><span class="id">A.T</span> <span class="chip done">done</span> Personal + user browser test <span class="time">2026-07-19</span></li>
   </ul>
 </section>
 
@@ -237,6 +237,9 @@
 <section class="activity">
   <h2>Recent activity</h2>
   <ol id="activity-log">
+    <li><span class="when">2026-07-19</span>Phase A <b>done</b>. Wizard, admin, legacy chip live. QA found 2 blockers + 3 polish (SensorMetaEditor custom mode, import root check, topic router root+meta ordering, retired PATCH gate) — all fixed and reverified.</li>
+    <li><span class="when">2026-07-19</span>Phase A frontend coder returned. 5 new files (wizard, admin, tree node editor, sensor meta editor, Pinia store), 2 modified (router guard, App.vue legacy chip + fullscreen bypass).</li>
+    <li><span class="when">2026-07-19</span>Phase A backend coder returned. 17 endpoints on <code>/api/asset-tree/*</code>, 7 tables, audit log. 16/16 backend smoke tests pass.</li>
     <li><span class="when">2026-07-18</span>Phase 0 <b>done</b>. Toggle icon in top app bar. Boot-time apply from localStorage. QA passed (zero blockers). Awaiting user browser confirmation before starting Phase A.</li>
     <li><span class="when">2026-07-18</span>Phase 0 QA — <code>cira.theme</code> localStorage contract, rapid-toggle serialization, and reactivity all PASS. 3 hardcoded-color surfaces logged as follow-up (see below).</li>
     <li><span class="when">2026-07-18</span>Phase 0 implementation — <code>composables/useThemePref.ts</code>, prominent icon in <code>App.vue</code>, boot-time seed in <code>main.ts</code>.</li>

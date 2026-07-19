@@ -4,6 +4,7 @@
 
 import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { useAssetTreeStore } from '@/stores/assetTree'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -124,6 +125,37 @@ const router = createRouter({
       component: () => import('@/views/AdminView.vue'),
       meta: { requiresAuth: true, requiresAdmin: true }
     },
+    // ── Asset Tree (Phase A) ─────────────────────────────────────────────
+    {
+      // First-run wizard — fullscreen, no sidebar. Bypasses the
+      // "config missing → redirect to wizard" guard for obvious reasons.
+      path: '/setup/asset-tree',
+      name: 'asset-tree-setup',
+      component: () => import('@/views/AssetTreeSetupView.vue'),
+      meta: { requiresAuth: true, fullscreen: true, skipAssetTreeGuard: true }
+    },
+    {
+      path: '/settings/asset-tree',
+      name: 'asset-tree-admin',
+      component: () => import('@/views/AssetTreeAdminView.vue'),
+      meta: { requiresAuth: true }
+    },
+    {
+      path: '/settings/asset-tree/audit',
+      name: 'asset-tree-audit',
+      component: () => import('@/views/AssetTreeAdminView.vue'),
+      props: { defaultTab: 'audit' },
+      meta: { requiresAuth: true }
+    },
+    {
+      // Phase C placeholder — shown in the sidebar so users can find it,
+      // but the page is empty for now.
+      path: '/settings/machine-groups',
+      name: 'machine-groups',
+      component: () => import('@/views/AssetTreeAdminView.vue'),
+      props: { defaultTab: 'groups' },
+      meta: { requiresAuth: true }
+    },
     {
       path: '/apps/:slug',
       name: 'published-app',
@@ -176,6 +208,32 @@ router.beforeEach(async (to, from, next) => {
   // Admin-only routes
   if (to.meta.requiresAdmin && !isAdmin) {
     return next({ name: 'dashboard' })
+  }
+
+  // Asset-tree config guard — Phase A.5.
+  // If authenticated + config missing → force wizard.
+  // If wizard is done + user is on the wizard route → send home.
+  // We skip this entire block for public/standalone routes and the login
+  // page so guests aren't hit with a config fetch on their way in.
+  if (
+    isAuthenticated &&
+    to.meta.requiresAuth &&
+    !to.meta.skipAssetTreeGuard
+  ) {
+    const assetTreeStore = useAssetTreeStore()
+    const configured = await assetTreeStore.ensureConfigChecked()
+    if (!configured) {
+      return next({ name: 'asset-tree-setup' })
+    }
+  }
+  if (to.name === 'asset-tree-setup' && isAuthenticated) {
+    const assetTreeStore = useAssetTreeStore()
+    // Also verify at the destination: if config exists, don't let users
+    // stay on the wizard route.
+    const configured = await assetTreeStore.ensureConfigChecked()
+    if (configured) {
+      return next({ name: 'dashboard' })
+    }
   }
 
   next()
