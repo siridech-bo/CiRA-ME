@@ -108,11 +108,11 @@
   </div>
 </header>
 
-<section class="overall" style="--overall: 94;">
-  <div class="ring"><span>94%</span></div>
+<section class="overall" style="--overall: 96;">
+  <div class="ring"><span>96%</span></div>
   <div class="stats">
     <div class="stat"><div class="n">6</div><div class="l">Phases done</div></div>
-    <div class="stat"><div class="n">44</div><div class="l">Subtasks done</div></div>
+    <div class="stat"><div class="n">45</div><div class="l">Subtasks done</div></div>
     <div class="stat"><div class="n">7</div><div class="l">Phases total</div></div>
     <div class="stat"><div class="n">47</div><div class="l">Subtasks total</div></div>
   </div>
@@ -230,7 +230,7 @@
     <li><span class="id">F.5</span> <span class="chip done">done</span> SimulatorsView + SimulatorCard + SimulatorNewDialog <span class="time">2026-07-19</span></li>
     <li><span class="id">F.6</span> <span class="chip done">done</span> Sparklines + raw-publish widget + chaos event visualisation <span class="time">2026-07-19</span></li>
     <li><span class="id">F.QA</span> <span class="chip done">done</span> Adversarial QA pass — 0 blockers, 7 polish. 5 fixed (autoprovision level check, root_name None guard, chaos hardcoded /temperature, unit metadata, empty raw payload) <span class="time">2026-07-19</span></li>
-    <li><span class="id">F.T</span> <span class="chip pending">pending</span> Personal browser test <span class="time">—</span></li>
+    <li><span class="id">F.T</span> <span class="chip done">done</span> Personal browser test — user confirmed core features working after frontend container rebuild <span class="time">2026-07-19</span></li>
   </ul>
 </section>
 
@@ -256,6 +256,7 @@
 <section class="activity">
   <h2>Recent activity</h2>
   <ol id="activity-log">
+    <li><span class="when">2026-07-19</span>Phase F <b>confirmed working</b> in browser after frontend container rebuild. Two hand-off failures called out: told user port 5175 (it's 3030) and told user to hard-refresh without rebuilding the frontend container (frontend is baked into image, no HMR). Both saved as feedback + reference memory entries. Session summary: <code>docs/SESSION-2026-07-19_phase-D-and-F-shipped.md</code>. Overall: 6 of 7 phases done, only Phase E (OculusT — deferred, not urgent) remains.</li>
     <li><span class="when">2026-07-19</span>Phase F <b>done</b>. Machine Simulator ships 6 built-in profiles (Compressor / Boiler / Pump / Conveyor / CNC / Chiller) with state-driven signal generators + chaos state. Server-side threads publish to <code>cirame-mosquitto</code>; ingest router routes to CSV. Sidebar reorg: dropped redundant "ASSET TREE" section header, renamed Settings menu <code>Asset Tree</code> → dynamic <code>&lt;Root&gt; Setup</code>, collapsed Dashboard + Projects into "Legacy tools" group with localStorage persist. QA found 0 blockers + 7 polish; 5 fixed (autoprovision now validates topic_base is at exactly machine-level — no more silent mis-mounts or unroutable-forever paths; root_name None hardening; chaos state rotates through profile.sensors instead of hardcoded /temperature; UNIT_PRESETS extended for L/min + kN + count; raw-publish rejects empty payload up-front).</li>
     <li><span class="when">2026-07-19</span>Phase F <b>dispatched</b>. Machine Simulator: 6 built-in profiles (Compressor / Boiler / Pump / Conveyor / CNC / Chiller) with state-driven signal generators + chaos state that injects null / garbage / wrong-root for testing Phase D reject paths. In-memory instances (like <code>_publishers</code>), admin-gated CRUD, shared paho client. Sidebar reorg: drop redundant "ASSET TREE" section header, rename Settings menu <code>Asset Tree</code> → dynamic <code>&lt;Root&gt; Setup</code> (Factory / Site / Store based on root_name), collapse Dashboard + Projects into "Legacy tools" group with localStorage persist, add Machine Simulators to Global Tools. Plan: <code>docs/PLAN_2026-07-19_machine-simulator.md</code>.</li>
     <li><span class="when">2026-07-19</span>Phase D <b>done</b>. Background MQTT ingest router (3 daemon threads: connect / writer / janitor), routes on-topic-path to daily CSVs under <code>datasets/&lt;topic_path&gt;/YYYY-MM-DD.csv</code>, buffered UTC-midnight rotation, strict/learn mode, meta-prefix short-circuit, rejection log with in-memory tail + on-disk TSV, 6h retention janitor, Settings → MQTT Rules UI (Config / Rejected / Stats), workshop-safety 5 msg/s browser rate clamp. QA found 0 blockers + 5 polish; 3 real ones fixed (<code>{"value": null}</code> was writing string 'None' to CSV, reconnect backoff never reset after a drop, <code>import re</code> in hot path).</li>
