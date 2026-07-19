@@ -176,6 +176,15 @@ const router = createRouter({
       meta: { requiresAuth: true }
     },
     {
+      // Phase F — Machine simulators. Server-side signal generators that
+      // publish to Mosquitto so demos exercise the ingest pipeline without
+      // real hardware. Reads open; writes admin-only (enforced by API + UI).
+      path: '/global/simulators',
+      name: 'simulators',
+      component: () => import('@/views/SimulatorsView.vue'),
+      meta: { requiresAuth: true }
+    },
+    {
       path: '/apps/:slug',
       name: 'published-app',
       component: () => import('@/views/PublishedAppView.vue'),

@@ -54,6 +54,7 @@ def create_app(config=None):
     from .routes.wizard import wizard_bp
     from .routes.projects import projects_bp
     from .routes.asset_tree import asset_tree_bp
+    from .routes.simulators import simulators_bp
 
     app.register_blueprint(auth_bp, url_prefix='/api/auth')
     app.register_blueprint(admin_bp, url_prefix='/api/admin')
@@ -70,6 +71,7 @@ def create_app(config=None):
     app.register_blueprint(wizard_bp, url_prefix='/api/wizard')
     app.register_blueprint(projects_bp, url_prefix='/api/projects')
     app.register_blueprint(asset_tree_bp, url_prefix='/api/asset-tree')
+    app.register_blueprint(simulators_bp, url_prefix='/api/simulators')
 
     # Health check endpoint
     @app.route('/api/health')
@@ -101,6 +103,20 @@ def create_app(config=None):
             import logging
             logging.getLogger(__name__).exception(
                 f"MQTT ingest router failed to start: {e}"
+            )
+
+    # Phase F — start the Machine Simulator service (server-side signal
+    # generator that publishes to Mosquitto so demos exercise the full
+    # ingest pipeline without real hardware). Same reloader gating as
+    # the ingest router. Wrapped so failure here can never kill Flask.
+    if (not _reloader_active) or _is_reloader_child:
+        try:
+            from .services.machine_simulator import machine_simulator
+            machine_simulator.start(flask_app=app)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).exception(
+                f"Machine Simulator failed to start: {e}"
             )
 
     # Rehydrate any folder watchers whose persisted status is 'running'.

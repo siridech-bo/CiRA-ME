@@ -2,7 +2,7 @@
   <v-container fluid class="pa-6">
     <div class="d-flex align-center mb-4">
       <div>
-        <h1 class="text-h4 font-weight-bold">Asset Tree</h1>
+        <h1 class="text-h4 font-weight-bold">{{ rootSetupLabel }}</h1>
         <p class="text-body-2 text-medium-emphasis">
           Edit your physical-asset hierarchy. All write operations are
           audited.
@@ -516,6 +516,15 @@ const notificationStore = useNotificationStore()
 const assetTreeStore = useAssetTreeStore()
 
 const isAdmin = computed(() => authStore.user?.role === 'admin')
+
+// Phase F — dynamic H1 label based on the tree's root name. Matches the
+// sidebar menu item (see App.vue) so both stay in sync when the wizard
+// creates a non-"factory" tree.
+const rootSetupLabel = computed(() => {
+  const root = assetTreeStore.config?.root_name
+  if (!root) return 'Structure Setup'
+  return `${root.charAt(0).toUpperCase() + root.slice(1)} Setup`
+})
 
 const activeTab = ref(props.defaultTab || 'tree')
 watch(

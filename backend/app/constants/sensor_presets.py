@@ -19,6 +19,10 @@ UNIT_PRESETS = [
     {'value': 'v', 'label': 'V'},
     {'value': 'a', 'label': 'A'},
     {'value': 'w', 'label': 'W'},
+    {'value': 'lpm', 'label': 'L/min (flow)'},
+    {'value': 'kn', 'label': 'kN (force / tension)'},
+    {'value': 'count', 'label': 'count'},
+    {'value': 'boolean', 'label': 'on/off (0-1)'},
     {'value': 'custom', 'label': 'Custom…'},
 ]
 

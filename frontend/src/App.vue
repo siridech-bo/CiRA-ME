@@ -147,30 +147,14 @@
       @click="rail = false"
     >
       <v-list density="compact" nav>
-        <v-list-item
-          prepend-icon="mdi-view-dashboard"
-          title="Dashboard"
-          value="dashboard"
-          :to="{ name: 'dashboard' }"
-          rounded="lg"
-        />
-
-        <v-list-item
-          prepend-icon="mdi-folder-multiple-outline"
-          title="Projects"
-          value="projects"
-          :to="{ name: 'projects-list' }"
-          rounded="lg"
-        />
-
         <!--
-          Phase B — Asset tree is the primary navigation. Sits above the
-          legacy pipeline items so users land on it first. Auto-collapse
-          rules and search live inside AssetTreeSidebar.
+          Phase B — Asset tree is the primary navigation. Header dropped
+          in Phase F because the tree itself is self-labelling and the
+          section header was visual noise.
         -->
-        <v-list-subheader v-if="!rail">ASSET TREE</v-list-subheader>
         <AssetTreeSidebar :rail="rail" />
 
+        <v-divider v-if="!rail" class="my-1" />
         <v-list-subheader v-if="!rail">GLOBAL TOOLS</v-list-subheader>
 
         <v-list-item
@@ -180,6 +164,14 @@
           :active="route.name === 'pipeline-data'"
           rounded="lg"
           @click="requestNavigateToDataSource"
+        />
+
+        <v-list-item
+          prepend-icon="mdi-gauge"
+          title="Machine Simulators"
+          value="simulators"
+          :to="{ name: 'simulators' }"
+          rounded="lg"
         />
 
         <v-list-item
@@ -214,6 +206,7 @@
           rounded="lg"
         />
 
+        <v-divider v-if="!rail" class="my-1" />
         <v-list-subheader v-if="!rail">SERVICES</v-list-subheader>
 
         <v-list-item
@@ -265,7 +258,7 @@
 
           <v-list-item
             prepend-icon="mdi-file-tree"
-            title="Asset Tree"
+            :title="rootSetupLabel"
             value="asset-tree"
             :to="{ name: 'asset-tree-admin' }"
             rounded="lg"
@@ -295,6 +288,12 @@
             :to="{ name: 'admin' }"
             rounded="lg"
           />
+
+          <!-- Phase F — Legacy tools group. Collapsed by default. Persists
+               state in localStorage (key: cira.sidebar.legacyExpanded). -->
+          <SidebarLegacyGroup :rail="rail" />
+
+          <v-divider v-if="!rail" class="my-1" />
 
           <v-list-item
             prepend-icon="mdi-chevron-left"
@@ -444,6 +443,7 @@ import { useNotificationStore } from '@/stores/notification'
 import { useAssetTreeStore } from '@/stores/assetTree'
 import LogoFull from '@/assets/LogoFull.vue'
 import AssetTreeSidebar from '@/components/AssetTreeSidebar.vue'
+import SidebarLegacyGroup from '@/components/SidebarLegacyGroup.vue'
 import api from '@/services/api'
 
 // Persisted theme (dark/light) — Phase 0. Both the top-bar icon and
@@ -461,6 +461,15 @@ const isStandalone = computed(() => route.meta?.standalone === true)
 // Fullscreen routes (e.g. asset-tree setup wizard) hide the sidebar + app bar.
 const isFullscreen = computed(() => route.meta?.fullscreen === true)
 const legacyCount = computed(() => assetTreeStore.legacyProjects.length)
+
+// Phase F — dynamic Settings menu label that follows the tree's root_name.
+// Examples: 'factory' → 'Factory Setup', 'stores' → 'Stores Setup'.
+// Falls back to 'Structure Setup' if no config is loaded yet.
+const rootSetupLabel = computed(() => {
+  const root = assetTreeStore.config?.root_name
+  if (!root) return 'Structure Setup'
+  return `${root.charAt(0).toUpperCase() + root.slice(1)} Setup`
+})
 
 const drawer = ref(true)
 const rail = ref(false)
