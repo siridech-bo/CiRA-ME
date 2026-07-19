@@ -31,9 +31,20 @@
         {{ levelIcon }}
       </v-icon>
 
-      <span class="node-name" :title="node.topic_path">
-        {{ node.display_name || node.name }}
-        <span v-if="isRetired" class="text-caption text-medium-emphasis">
+      <!-- Always render the topic segment (node.name) as the primary label,
+           because that's what MQTT publishers actually target. If the admin
+           also set a display_name that differs, show it in muted text after
+           the segment so both stay visible at a glance:  "factory  (Root Site)"
+           When display_name == name or is unset, we only show the segment. -->
+      <span class="node-name" :title="`Topic: ${node.topic_path}`">
+        <span class="topic-segment">{{ node.name }}</span>
+        <span
+          v-if="node.display_name && node.display_name !== node.name"
+          class="display-name text-caption text-medium-emphasis ml-2"
+        >
+          ({{ node.display_name }})
+        </span>
+        <span v-if="isRetired" class="text-caption text-medium-emphasis ml-2">
           (retired)
         </span>
       </span>
@@ -238,6 +249,23 @@ function onDrop(evt: DragEvent) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  display: inline-flex;
+  align-items: baseline;
+  min-width: 0;
+}
+
+/* The topic segment is the primary label; monospace makes it obvious that
+   this is what devices send as their MQTT topic. */
+.topic-segment {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.92em;
+}
+
+.display-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 
 .children {
