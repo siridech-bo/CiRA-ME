@@ -133,6 +133,23 @@
                 Next
               </v-btn>
             </div>
+
+            <!-- Or skip the manual build and jump ahead with a full template. -->
+            <v-divider class="my-6">
+              <span class="text-caption text-medium-emphasis px-3">
+                OR START FROM A FULL TEMPLATE
+              </span>
+            </v-divider>
+
+            <div class="text-body-2 text-medium-emphasis mb-3">
+              These come with level names, MQTT rules, and a pre-built tree
+              (~10-40 nodes). Selecting one skips Steps 2 and 3 and lands you
+              at MQTT rules with everything wired.
+            </div>
+
+            <TreeTemplatePicker
+              @applied="onTemplateApplied"
+            />
           </v-card>
         </template>
 
@@ -672,6 +689,7 @@ import {
 import api from '@/services/api'
 import AssetTreeNodeEditor from '@/components/AssetTreeNodeEditor.vue'
 import SensorMetaEditor from '@/components/SensorMetaEditor.vue'
+import TreeTemplatePicker from '@/components/TreeTemplatePicker.vue'
 
 const NAME_REGEX = /^[A-Za-z0-9_-]+$/
 
@@ -1107,6 +1125,34 @@ function goStep(n: number) {
 
 function skipToConfirm() {
   step.value = 5
+}
+
+// Template picker in Step 1 emits 'applied' when the backend has atomically
+// created the config + tree. Jump to Step 4 (MQTT rules) so the user can
+// still confirm strict/learn mode + meta prefixes — the template picked
+// defaults, but they may want to tweak. Store cache is reset so downstream
+// screens re-fetch and see the freshly-populated tree.
+async function onTemplateApplied(payload: { template_id: string; count: number }) {
+  notificationStore.showSuccess(
+    `Template applied — ${payload.count} node${payload.count === 1 ? '' : 's'} created`,
+  )
+  // Reload config + tree from server so Step 4 shows the template's meta
+  // prefixes and Step 5's summary card is accurate.
+  assetTreeStore.reset()
+  await assetTreeStore.ensureConfigChecked()
+  await loadPresets()
+  // Refetch config + tree
+  try {
+    const cfgRes = await api.get('/api/asset-tree/config')
+    const cfg = cfgRes.data
+    if (cfg && cfg.level_names) {
+      levelNames.value = [...cfg.level_names]
+      rootName.value = cfg.root_name || cfg.level_names[0] || 'root'
+      topicMode.value = cfg.topic_mode || 'strict'
+      metaPrefixesText.value = (cfg.meta_prefixes || []).join(',')
+    }
+  } catch { /* fall through — Step 4 will refetch */ }
+  step.value = 4
 }
 
 // ── Confirm / save ───────────────────────────────────────────────────────

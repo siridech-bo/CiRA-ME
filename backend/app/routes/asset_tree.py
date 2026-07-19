@@ -632,6 +632,133 @@ def import_tree():
     return jsonify({'created_ids': created_ids, 'count': len(created_ids)}), 201
 
 
+# ── Tree templates ─────────────────────────────────────────────────────────
+# Pre-built starter trees so users don't have to design a hierarchy from
+# scratch. See constants/tree_templates.py for the catalog. Applying a
+# template atomically sets config + imports the tree — used from the
+# wizard Step 1 and from the admin empty-state.
+
+@asset_tree_bp.route('/tree-templates', methods=['GET'])
+@login_required
+def list_tree_templates():
+    """Return the full catalog of starter tree templates."""
+    from ..constants.tree_templates import get_all
+    return jsonify({'templates': get_all()})
+
+
+@asset_tree_bp.route('/tree-templates/<template_id>/apply', methods=['POST'])
+@login_required
+def apply_tree_template(template_id):
+    """Atomically seed config + tree from a starter template. Refuses if
+    the tree is not empty — templates are for fresh installs only."""
+    guard = _admin_only()
+    if guard is not None:
+        return guard
+    from ..constants.tree_templates import get_by_id
+
+    tmpl = get_by_id(template_id)
+    if tmpl is None:
+        return jsonify({'error': f'Unknown template: {template_id}'}), 404
+
+    # Refuse if a tree already exists — we don't want to clobber real work
+    # by accident. Admin can retire everything manually first if they really
+    # want to start over. Empty tree = no root(s) yet.
+    existing_roots = AssetNode.get_children(None)
+    if existing_roots:
+        return jsonify({
+            'error': (
+                f'Tree already exists (root: {existing_roots[0]["name"]}). '
+                f'Retire the existing tree before applying a template.'
+            )
+        }), 409
+
+    # Upsert the config bundled with the template.
+    cfg = tmpl['config']
+    AssetTreeConfig.upsert(
+        level_names=cfg['level_names'],
+        root_name=cfg['root_name'],
+        topic_mode=cfg['topic_mode'],
+        meta_prefixes=cfg['meta_prefixes'],
+    )
+    AssetTreeAudit.log(
+        actor_user_id=request.current_user['id'],
+        event_type='config_upsert',
+        target_type='config',
+        target_id=None,
+        payload={'source': 'template', 'template_id': template_id, 'config': cfg},
+    )
+
+    # Import the template's tree — re-use the import walker for consistency.
+    max_depth = _max_depth()
+    created_ids = []
+
+    def _walk(node_spec, parent_id, level, path_prefix):
+        name = node_spec.get('name')
+        ok, err = _sanitize_name(name)
+        if not ok:
+            raise ValueError(f'Bad template name at level {level}: {err}')
+        if level > max_depth:
+            raise ValueError(f'Template exceeds configured max_depth={max_depth}')
+        topic_path = name if parent_id is None else f"{path_prefix}/{name}"
+        if AssetNode.get_by_topic_path(topic_path):
+            raise ValueError(f"Node '{topic_path}' already exists (template collision)")
+        node_id = AssetNode.create(
+            parent_id=parent_id,
+            level=level,
+            name=name,
+            topic_path=topic_path,
+            display_name=node_spec.get('display_name'),
+            description=node_spec.get('description'),
+            location_tag=node_spec.get('location_tag'),
+            status='active',
+        )
+        created_ids.append(node_id)
+        sm = node_spec.get('sensor_meta')
+        if isinstance(sm, dict):
+            AssetSensorMeta.upsert(
+                asset_id=node_id,
+                unit=sm.get('unit'),
+                sample_rate_hz=sm.get('sample_rate_hz'),
+                expected_min=sm.get('expected_min'),
+                expected_max=sm.get('expected_max'),
+                data_type=sm.get('data_type'),
+            )
+        for child in node_spec.get('children') or []:
+            _walk(child, node_id, level + 1, topic_path)
+
+    try:
+        _walk(tmpl['tree'], None, 0, '')
+    except ValueError as e:
+        # Best-effort rollback so the operator can retry cleanly.
+        with get_db() as conn:
+            cur = conn.cursor()
+            for cid in reversed(created_ids):
+                try:
+                    cur.execute('DELETE FROM asset_sensor_meta WHERE asset_id = ?', (cid,))
+                    cur.execute('DELETE FROM asset_nodes WHERE id = ?', (cid,))
+                except Exception:
+                    pass
+            conn.commit()
+        return jsonify({'error': str(e)}), 400
+
+    AssetTreeAudit.log(
+        actor_user_id=request.current_user['id'],
+        event_type='template_apply',
+        target_type='node',
+        target_id=created_ids[0] if created_ids else None,
+        payload={
+            'template_id': template_id,
+            'template_name': tmpl['name'],
+            'created_ids': created_ids,
+        },
+    )
+    return jsonify({
+        'template_id': template_id,
+        'created_ids': created_ids,
+        'count': len(created_ids),
+    }), 201
+
+
 # ── Audit ──────────────────────────────────────────────────────────────────
 
 @asset_tree_bp.route('/audit', methods=['GET'])

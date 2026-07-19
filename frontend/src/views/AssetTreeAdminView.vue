@@ -70,8 +70,21 @@
             <div v-if="loadingTree" class="text-caption text-medium-emphasis pa-4 text-center">
               Loading…
             </div>
-            <div v-else-if="!tree || tree.length === 0" class="empty-tree text-caption text-medium-emphasis">
-              No nodes yet.
+            <div v-else-if="!tree || tree.length === 0" class="empty-tree-block">
+              <p class="text-body-2 text-medium-emphasis mb-3">
+                No nodes yet. Add a root manually, or pick a template to
+                get started in one click.
+              </p>
+              <v-btn
+                v-if="isAdmin"
+                variant="tonal"
+                color="primary"
+                prepend-icon="mdi-file-tree-outline"
+                size="small"
+                @click="showTemplateDialog = true"
+              >
+                Browse templates
+              </v-btn>
             </div>
             <div v-else>
               <AssetTreeNodeEditor
@@ -402,6 +415,28 @@
       </v-card>
     </v-dialog>
 
+    <!-- Tree template picker — empty-state shortcut for admins so they can
+         drop a working tree in one click instead of building from scratch. -->
+    <v-dialog v-model="showTemplateDialog" max-width="900" scrollable>
+      <v-card>
+        <v-card-title class="d-flex align-center">
+          <v-icon start>mdi-file-tree-outline</v-icon>
+          Start from a template
+          <v-spacer />
+          <v-btn icon size="small" variant="text" @click="showTemplateDialog = false">
+            <v-icon>mdi-close</v-icon>
+          </v-btn>
+        </v-card-title>
+        <v-card-text>
+          <TreeTemplatePicker
+            allow-cancel
+            @applied="onTemplateApplied"
+            @cancel="showTemplateDialog = false"
+          />
+        </v-card-text>
+      </v-card>
+    </v-dialog>
+
     <!-- Audit payload viewer -->
     <v-dialog v-model="showPayloadDialog" max-width="720">
       <v-card>
@@ -433,6 +468,7 @@ import { useAssetTreeStore, type AssetNode, type SensorMeta } from '@/stores/ass
 import api from '@/services/api'
 import AssetTreeNodeEditor from '@/components/AssetTreeNodeEditor.vue'
 import SensorMetaEditor from '@/components/SensorMetaEditor.vue'
+import TreeTemplatePicker from '@/components/TreeTemplatePicker.vue'
 
 const NAME_REGEX = /^[A-Za-z0-9_-]+$/
 
@@ -667,6 +703,22 @@ async function confirmRetire() {
   } finally {
     retiring.value = false
   }
+}
+
+// ── Tree template shortcut (empty state) ─────────────────────────────────
+
+const showTemplateDialog = ref(false)
+
+async function onTemplateApplied(payload: { template_id: string; count: number }) {
+  notificationStore.showSuccess(
+    `Template applied — ${payload.count} node${payload.count === 1 ? '' : 's'} created`,
+  )
+  showTemplateDialog.value = false
+  // Store is stale — force a re-fetch of config + tree so the whole page
+  // rebuilds against the freshly-populated tree.
+  assetTreeStore.reset()
+  await assetTreeStore.ensureConfigChecked()
+  await Promise.all([fetchTree(), refreshAudit()])
 }
 
 // ── Move ─────────────────────────────────────────────────────────────────

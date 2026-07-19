@@ -237,6 +237,8 @@
 <section class="activity">
   <h2>Recent activity</h2>
   <ol id="activity-log">
+    <li><span class="when">2026-07-19</span>Phase A follow-up: 13 tree templates (Industrial IoT / Business Ops / Facilities / Energy / Healthcare / Blank). One-click seed of config + tree. New endpoints <code>GET /tree-templates</code> and <code>POST /tree-templates/&lt;id&gt;/apply</code>. Reusable <code>TreeTemplatePicker.vue</code> wired into wizard Step 1 and admin empty-state.</li>
+    <li><span class="when">2026-07-19</span>Phase A follow-up: Structure panel now shows topic segment as primary label with display_name in muted parens. Fixes confusion between the two.</li>
     <li><span class="when">2026-07-19</span>Phase A <b>done</b>. Wizard, admin, legacy chip live. QA found 2 blockers + 3 polish (SensorMetaEditor custom mode, import root check, topic router root+meta ordering, retired PATCH gate) — all fixed and reverified.</li>
     <li><span class="when">2026-07-19</span>Phase A frontend coder returned. 5 new files (wizard, admin, tree node editor, sensor meta editor, Pinia store), 2 modified (router guard, App.vue legacy chip + fullscreen bypass).</li>
     <li><span class="when">2026-07-19</span>Phase A backend coder returned. 17 endpoints on <code>/api/asset-tree/*</code>, 7 tables, audit log. 16/16 backend smoke tests pass.</li>
