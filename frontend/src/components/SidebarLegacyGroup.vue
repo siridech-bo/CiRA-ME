@@ -4,7 +4,6 @@
     title="Legacy tools"
     storage-key="cira.sidebar.legacyExpanded"
     icon="mdi-history"
-    :active-routes="['projects-list', 'dashboard']"
     :rail="rail"
   >
     <v-list-item

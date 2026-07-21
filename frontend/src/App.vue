@@ -317,9 +317,10 @@
             />
           </SidebarCollapsibleGroup>
 
-          <!-- Legacy tools group — same collapsible pattern, defaults
-               collapsed and stays collapsed even on projects/dashboard
-               routes because those are deprecated. -->
+          <!-- Legacy tools group — always defaults to collapsed. No
+               auto-open on projects/dashboard routes: those are
+               deprecated, we don't want to surface them unnecessarily.
+               Only the user's manual click can expand this section. -->
           <SidebarLegacyGroup ref="legacyGroup" :rail="rail" />
 
           <v-divider v-if="!rail" class="my-1" />
