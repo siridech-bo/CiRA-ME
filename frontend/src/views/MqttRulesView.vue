@@ -22,14 +22,39 @@
     </div>
 
     <v-tabs v-model="activeTab" density="compact" class="mb-4">
+      <v-tab value="setup" prepend-icon="mdi-rocket-launch-outline">Setup</v-tab>
       <v-tab value="config" prepend-icon="mdi-cog">Config</v-tab>
       <v-tab value="rejected" prepend-icon="mdi-cancel">Rejected</v-tab>
       <v-tab value="stats" prepend-icon="mdi-chart-line">Stats</v-tab>
     </v-tabs>
 
     <v-window v-model="activeTab">
+      <!-- ── Setup tab (landing) ────────────────────────────────────── -->
+      <v-window-item value="setup">
+        <MqttSetupTab
+          :config="config"
+          @go-to-rejected="activeTab = 'rejected'"
+        />
+      </v-window-item>
+
       <!-- ── Config tab ─────────────────────────────────────────────── -->
       <v-window-item value="config">
+        <v-alert
+          type="info"
+          variant="tonal"
+          density="compact"
+          class="mb-4"
+          icon="mdi-shield-alert-outline"
+        >
+          <strong>Advanced settings</strong> — most users don't need to
+          change these. If you're new to CiRA ME, start with the
+          <a
+            href="#"
+            class="text-decoration-underline"
+            @click.prevent="activeTab = 'setup'"
+          >Setup tab</a>
+          instead.
+        </v-alert>
         <v-card>
           <v-card-text>
             <div v-if="configLoading" class="pa-6 text-center text-caption">
@@ -461,6 +486,8 @@
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { useNotificationStore } from '@/stores/notification'
+import { useAssetTreeStore } from '@/stores/assetTree'
+import MqttSetupTab from '@/components/MqttSetupTab.vue'
 import api from '@/services/api'
 
 interface Config {
@@ -510,7 +537,7 @@ const notify = useNotificationStore()
 
 const isAdmin = computed(() => authStore.user?.role === 'admin')
 
-const activeTab = ref<'config' | 'rejected' | 'stats'>('config')
+const activeTab = ref<'setup' | 'config' | 'rejected' | 'stats'>('setup')
 
 // ── Config tab ────────────────────────────────────────────────────────
 const config = ref<Config | null>(null)
@@ -694,6 +721,11 @@ watch(activeTab, (t) => {
 
 onMounted(async () => {
   await fetchConfig()
+  // Setup tab needs the tree to build the "example machine" snippet.
+  const treeStore = useAssetTreeStore()
+  if (!treeStore.treeLoaded && !treeStore.loadingTree) {
+    treeStore.fetchTree()
+  }
 })
 
 onUnmounted(() => {
