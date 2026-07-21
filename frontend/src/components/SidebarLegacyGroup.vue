@@ -2,7 +2,7 @@
   <SidebarCollapsibleGroup
     ref="innerGroup"
     title="Legacy tools"
-    storage-key="cira.sidebar.legacyExpanded"
+    storage-key="cira.sidebar.legacyExpanded.v2"
     icon="mdi-history"
     :rail="rail"
   >
