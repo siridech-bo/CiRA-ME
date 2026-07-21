@@ -157,6 +157,24 @@
 
         <v-expansion-panel>
           <v-expansion-panel-title>
+            <v-icon start size="18">mdi-memory</v-icon>
+            Arduino UNO Q (Python side)
+          </v-expansion-panel-title>
+          <v-expansion-panel-text>
+            <CopyBlock :text="unoQPythonSnippet" multiline />
+            <p class="text-caption text-medium-emphasis mt-2">
+              The UNO Q's Linux side ships with Python 3 —
+              <code>pip install paho-mqtt</code>. Use the App Lab
+              <code>brick</code> / <code>msg</code> bridge to pull
+              readings from the MCU side (sensors on Modulino / I²C /
+              analog), then publish to CiRA ME from Python. A
+              <code>systemd</code> unit keeps it running after reboot.
+            </p>
+          </v-expansion-panel-text>
+        </v-expansion-panel>
+
+        <v-expansion-panel>
+          <v-expansion-panel-title>
             <v-icon start size="18">mdi-nodejs</v-icon>
             Node.js (mqtt package)
           </v-expansion-panel-title>
@@ -346,6 +364,36 @@ void loop() {
   client.publish("${exampleTopic.value}", payload);
   delay(1000);  // 1 Hz
 }`,
+)
+
+const unoQPythonSnippet = computed(() =>
+  `# On the Arduino UNO Q Linux side. paho-mqtt handles the network;
+# the App Lab bridge pulls sensor readings from the MCU (Modulino
+# breakout, I2C, or analog pins connected to the classic Arduino side).
+
+import time, json
+import paho.mqtt.publish as pub
+from arduino.app_bricks.modulino import Pressure   # example brick
+
+BROKER  = "<broker-host>"
+TOPIC   = "${exampleTopic.value}"
+SAMPLE_HZ = 1.0
+
+sensor = Pressure()   # reads over I2C via the UNO Q bridge
+
+while True:
+    reading = sensor.read()          # e.g. 5.2 bar
+    pub.single(
+        topic=TOPIC,
+        payload=json.dumps({"value": reading}),
+        hostname=BROKER,
+        port=1883,
+    )
+    time.sleep(1.0 / SAMPLE_HZ)
+
+# Deploy as a service so it starts on boot:
+#   sudo cp cira_publisher.service /etc/systemd/system/
+#   sudo systemctl enable --now cira_publisher`,
 )
 
 const nodeSnippet = computed(() =>
