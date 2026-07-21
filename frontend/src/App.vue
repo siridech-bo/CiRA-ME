@@ -154,157 +154,208 @@
         -->
         <AssetTreeSidebar :rail="rail" />
 
-        <v-divider v-if="!rail" class="my-1" />
-        <v-list-subheader v-if="!rail">GLOBAL TOOLS</v-list-subheader>
+        <!--
+          Collapsible sidebar groups (added 2026-07-21). Each defaults to
+          collapsed unless the current route lives inside the group — in
+          which case it auto-opens. First manual click sticks per group
+          in localStorage. See SidebarCollapsibleGroup.vue.
+        -->
+        <SidebarCollapsibleGroup
+          ref="globalToolsGroup"
+          title="GLOBAL TOOLS"
+          storage-key="cira.sidebar.globalToolsExpanded"
+          :active-routes="[
+            'pipeline-data',
+            'simulators',
+            'pipeline-windowing',
+            'pipeline-features',
+            'pipeline-training',
+            'pipeline-deploy',
+          ]"
+          :rail="rail"
+        >
+          <v-list-item
+            prepend-icon="mdi-database"
+            title="Data Source"
+            value="data"
+            :active="route.name === 'pipeline-data'"
+            rounded="lg"
+            @click="requestNavigateToDataSource"
+          />
+          <v-list-item
+            prepend-icon="mdi-gauge"
+            title="Machine Simulators"
+            value="simulators"
+            :to="{ name: 'simulators' }"
+            rounded="lg"
+          />
+          <v-list-item
+            prepend-icon="mdi-tune-vertical"
+            title="Windowing"
+            value="windowing"
+            :to="{ name: 'pipeline-windowing' }"
+            rounded="lg"
+          />
+          <v-list-item
+            prepend-icon="mdi-auto-fix"
+            title="Features"
+            value="features"
+            :to="{ name: 'pipeline-features' }"
+            rounded="lg"
+          />
+          <v-list-item
+            prepend-icon="mdi-brain"
+            title="Training"
+            value="training"
+            :to="{ name: 'pipeline-training' }"
+            rounded="lg"
+          />
+          <v-list-item
+            prepend-icon="mdi-rocket-launch"
+            title="Deploy"
+            value="deploy"
+            :to="{ name: 'pipeline-deploy' }"
+            rounded="lg"
+          />
+        </SidebarCollapsibleGroup>
 
-        <v-list-item
-          prepend-icon="mdi-database"
-          title="Data Source"
-          value="data"
-          :active="route.name === 'pipeline-data'"
-          rounded="lg"
-          @click="requestNavigateToDataSource"
-        />
-
-        <v-list-item
-          prepend-icon="mdi-gauge"
-          title="Machine Simulators"
-          value="simulators"
-          :to="{ name: 'simulators' }"
-          rounded="lg"
-        />
-
-        <v-list-item
-          prepend-icon="mdi-tune-vertical"
-          title="Windowing"
-          value="windowing"
-          :to="{ name: 'pipeline-windowing' }"
-          rounded="lg"
-        />
-
-        <v-list-item
-          prepend-icon="mdi-auto-fix"
-          title="Features"
-          value="features"
-          :to="{ name: 'pipeline-features' }"
-          rounded="lg"
-        />
-
-        <v-list-item
-          prepend-icon="mdi-brain"
-          title="Training"
-          value="training"
-          :to="{ name: 'pipeline-training' }"
-          rounded="lg"
-        />
-
-        <v-list-item
-          prepend-icon="mdi-rocket-launch"
-          title="Deploy"
-          value="deploy"
-          :to="{ name: 'pipeline-deploy' }"
-          rounded="lg"
-        />
-
-        <v-divider v-if="!rail" class="my-1" />
-        <v-list-subheader v-if="!rail">SERVICES</v-list-subheader>
-
-        <v-list-item
-          prepend-icon="mdi-api"
-          title="ME-LAB"
-          value="melab"
-          :to="{ name: 'melab' }"
-          rounded="lg"
-        />
-
-        <v-list-item
-          prepend-icon="mdi-lan"
-          title="MQTT Broker"
-          value="mqtt-management"
-          :to="{ name: 'mqtt-management' }"
-          rounded="lg"
-        />
-
-        <v-list-item
-          prepend-icon="mdi-view-dashboard-variant"
-          title="App Builder"
-          value="app-builder"
-          :to="{ name: 'app-builder' }"
-          rounded="lg"
-        />
-
-        <v-list-item
-          prepend-icon="mdi-folder-eye"
-          title="Folder Watcher"
-          value="folder-watcher"
-          :to="{ name: 'folder-watcher-list' }"
-          rounded="lg"
-        />
-
-        <v-list-item
-          prepend-icon="mdi-table-search"
-          title="Multi-Dataset Wizard"
-          value="wizard"
-          :to="{ name: 'wizard' }"
-          rounded="lg"
-        />
+        <SidebarCollapsibleGroup
+          ref="servicesGroup"
+          title="SERVICES"
+          storage-key="cira.sidebar.servicesExpanded"
+          :active-routes="[
+            'melab',
+            'mqtt-management',
+            'app-builder',
+            'folder-watcher-list',
+            'wizard',
+          ]"
+          :rail="rail"
+        >
+          <v-list-item
+            prepend-icon="mdi-api"
+            title="ME-LAB"
+            value="melab"
+            :to="{ name: 'melab' }"
+            rounded="lg"
+          />
+          <v-list-item
+            prepend-icon="mdi-lan"
+            title="MQTT Broker"
+            value="mqtt-management"
+            :to="{ name: 'mqtt-management' }"
+            rounded="lg"
+          />
+          <v-list-item
+            prepend-icon="mdi-view-dashboard-variant"
+            title="App Builder"
+            value="app-builder"
+            :to="{ name: 'app-builder' }"
+            rounded="lg"
+          />
+          <v-list-item
+            prepend-icon="mdi-folder-eye"
+            title="Folder Watcher"
+            value="folder-watcher"
+            :to="{ name: 'folder-watcher-list' }"
+            rounded="lg"
+          />
+          <v-list-item
+            prepend-icon="mdi-table-search"
+            title="Multi-Dataset Wizard"
+            value="wizard"
+            :to="{ name: 'wizard' }"
+            rounded="lg"
+          />
+        </SidebarCollapsibleGroup>
       </v-list>
 
       <template #append>
         <v-list density="compact" nav>
           <v-divider class="mb-2" />
 
-          <v-list-subheader v-if="!rail">SETTINGS</v-list-subheader>
+          <SidebarCollapsibleGroup
+            ref="settingsGroup"
+            title="SETTINGS"
+            storage-key="cira.sidebar.settingsExpanded"
+            :active-routes="[
+              'asset-tree-admin',
+              'machine-groups',
+              'mqtt-rules',
+              'admin',
+            ]"
+            :rail="rail"
+          >
+            <v-list-item
+              prepend-icon="mdi-file-tree"
+              :title="rootSetupLabel"
+              value="asset-tree"
+              :to="{ name: 'asset-tree-admin' }"
+              rounded="lg"
+            />
+            <v-list-item
+              prepend-icon="mdi-account-group"
+              title="Machine Groups"
+              value="machine-groups"
+              :to="{ name: 'machine-groups' }"
+              rounded="lg"
+            />
+            <v-list-item
+              prepend-icon="mdi-router-network"
+              title="MQTT Rules"
+              value="mqtt-rules"
+              :to="{ name: 'mqtt-rules' }"
+              rounded="lg"
+            />
+            <v-list-item
+              v-if="authStore.isAdmin"
+              prepend-icon="mdi-shield-account"
+              title="Admin"
+              value="admin"
+              :to="{ name: 'admin' }"
+              rounded="lg"
+            />
+          </SidebarCollapsibleGroup>
 
-          <v-list-item
-            prepend-icon="mdi-file-tree"
-            :title="rootSetupLabel"
-            value="asset-tree"
-            :to="{ name: 'asset-tree-admin' }"
-            rounded="lg"
-          />
-
-          <v-list-item
-            prepend-icon="mdi-account-group"
-            title="Machine Groups"
-            value="machine-groups"
-            :to="{ name: 'machine-groups' }"
-            rounded="lg"
-          />
-
-          <v-list-item
-            prepend-icon="mdi-router-network"
-            title="MQTT Rules"
-            value="mqtt-rules"
-            :to="{ name: 'mqtt-rules' }"
-            rounded="lg"
-          />
-
-          <v-list-item
-            v-if="authStore.isAdmin"
-            prepend-icon="mdi-shield-account"
-            title="Admin"
-            value="admin"
-            :to="{ name: 'admin' }"
-            rounded="lg"
-          />
-
-          <!-- Phase F — Legacy tools group. Collapsed by default. Persists
-               state in localStorage (key: cira.sidebar.legacyExpanded). -->
-          <SidebarLegacyGroup :rail="rail" />
+          <!-- Legacy tools group — same collapsible pattern, defaults
+               collapsed and stays collapsed even on projects/dashboard
+               routes because those are deprecated. -->
+          <SidebarLegacyGroup ref="legacyGroup" :rail="rail" />
 
           <v-divider v-if="!rail" class="my-1" />
 
-          <v-list-item
-            prepend-icon="mdi-chevron-left"
-            :title="rail ? '' : 'Collapse'"
-            @click.stop="rail = !rail"
-            rounded="lg"
-          >
-            <template #prepend>
-              <v-icon>{{ rail ? 'mdi-chevron-right' : 'mdi-chevron-left' }}</v-icon>
-            </template>
-          </v-list-item>
+          <!-- Sidebar footer row: collapse-all-groups + rail toggle -->
+          <div class="d-flex align-center">
+            <v-tooltip
+              v-if="!rail"
+              location="top"
+              text="Collapse all sections"
+            >
+              <template #activator="{ props: tipProps }">
+                <v-btn
+                  v-bind="tipProps"
+                  icon="mdi-collapse-all"
+                  size="small"
+                  variant="text"
+                  density="comfortable"
+                  class="ml-2"
+                  @click.stop="collapseAllGroups"
+                />
+              </template>
+            </v-tooltip>
+
+            <v-list-item
+              prepend-icon="mdi-chevron-left"
+              :title="rail ? '' : 'Collapse'"
+              class="flex-grow-1"
+              @click.stop="rail = !rail"
+              rounded="lg"
+            >
+              <template #prepend>
+                <v-icon>{{ rail ? 'mdi-chevron-right' : 'mdi-chevron-left' }}</v-icon>
+              </template>
+            </v-list-item>
+          </div>
         </v-list>
       </template>
     </v-navigation-drawer>
@@ -443,6 +494,7 @@ import { useNotificationStore } from '@/stores/notification'
 import { useAssetTreeStore } from '@/stores/assetTree'
 import LogoFull from '@/assets/LogoFull.vue'
 import AssetTreeSidebar from '@/components/AssetTreeSidebar.vue'
+import SidebarCollapsibleGroup from '@/components/SidebarCollapsibleGroup.vue'
 import SidebarLegacyGroup from '@/components/SidebarLegacyGroup.vue'
 import api from '@/services/api'
 
@@ -473,6 +525,21 @@ const rootSetupLabel = computed(() => {
 
 const drawer = ref(true)
 const rail = ref(false)
+
+// Refs into the four collapsible sidebar groups so the sidebar-wide
+// "collapse all" button can call each one's exposed collapse() method.
+const globalToolsGroup = ref<InstanceType<typeof SidebarCollapsibleGroup> | null>(null)
+const servicesGroup = ref<InstanceType<typeof SidebarCollapsibleGroup> | null>(null)
+const settingsGroup = ref<InstanceType<typeof SidebarCollapsibleGroup> | null>(null)
+const legacyGroup = ref<any>(null)
+
+function collapseAllGroups() {
+  globalToolsGroup.value?.collapse?.()
+  servicesGroup.value?.collapse?.()
+  settingsGroup.value?.collapse?.()
+  legacyGroup.value?.collapse?.()
+  notificationStore.showSuccess('Sidebar sections collapsed', 1500)
+}
 const backendStatus = ref('loading')
 
 // Change password state
