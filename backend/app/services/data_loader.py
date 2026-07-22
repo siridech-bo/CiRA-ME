@@ -2157,7 +2157,24 @@ class DataLoader:
         return result
 
     def _get_window_label(self, window_labels: np.ndarray, label_method: str) -> str:
-        """Determine a single label for a window from its constituent labels."""
+        """Determine a single label for a window from its constituent labels.
+
+        Sidecar labels (Phase G) legitimately produce None for rows outside
+        any labelled range. Left as-is, that mixes str and None in the
+        object array, and `np.unique` sorts internally → TypeError
+        `'<' not supported between instances of 'str' and 'NoneType'`.
+        Coerce None → 'unlabeled' first so the aggregator is None-safe;
+        downstream code (train/test split, stratification) treats
+        'unlabeled' as its own class.
+        """
+        # Fast path — coerce object-dtype None → 'unlabeled' so np.unique
+        # doesn't have to sort mixed types.
+        if window_labels.dtype == object:
+            window_labels = np.array(
+                ['unlabeled' if v is None else str(v) for v in window_labels],
+                dtype=object,
+            )
+
         if label_method == 'majority':
             unique, counts = np.unique(window_labels, return_counts=True)
             return unique[np.argmax(counts)]
