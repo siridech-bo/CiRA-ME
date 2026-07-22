@@ -106,13 +106,38 @@
             <v-chip
               v-if="isCsvFormat && selectedFiles.length > 0"
               size="x-small"
-              color="primary"
+              :color="isCrossFolderSelection ? 'secondary' : 'primary'"
               variant="tonal"
               class="ml-2"
             >
-              {{ selectedFiles.length }} / {{ csvFilesInFolder.length }} selected
+              <v-icon v-if="isCrossFolderSelection" size="14" class="mr-1">mdi-source-merge</v-icon>
+              {{ selectedFiles.length }} selected
+              <span v-if="isCrossFolderSelection">
+                &nbsp;· {{ basketFolders.length }} folders
+              </span>
             </v-chip>
+            <v-btn
+              v-if="isCsvFormat && selectedFiles.length > 0"
+              variant="text"
+              size="x-small"
+              color="error"
+              class="ml-1"
+              @click="clearBasket"
+            >
+              Clear
+            </v-btn>
             <v-spacer />
+            <v-btn
+              v-if="isCsvFormat && folderIsMachineShape"
+              variant="tonal"
+              size="small"
+              color="secondary"
+              prepend-icon="mdi-source-branch-plus"
+              class="mr-2"
+              @click="openLoadAllDialog"
+            >
+              Load All Sensors
+            </v-btn>
             <v-btn
               v-if="isCsvFormat && csvFilesInFolder.length > 0"
               variant="tonal"
@@ -351,16 +376,36 @@
             </v-list-item>
           </v-list>
 
-          <!-- Multi-CSV selection info -->
+          <!-- Multi-CSV selection info — grouped by folder so cross-folder
+               picks are legible. Each file has an X to drop it from the basket. -->
           <v-alert
             v-if="isCsvFormat && selectedFiles.length > 1"
-            type="info"
+            :type="isCrossFolderSelection ? 'warning' : 'info'"
             variant="tonal"
             class="mt-4"
+            density="compact"
           >
-            <div class="font-weight-medium">{{ selectedFiles.length }} CSV files selected</div>
-            <div class="text-caption">
-              {{ selectedFiles.map(f => f.name).join(', ') }}
+            <div class="d-flex align-center mb-1">
+              <div class="font-weight-medium">
+                {{ selectedFiles.length }} CSV files selected
+                <span v-if="isCrossFolderSelection">
+                  · cross-sensor JOIN (columns: {{ sensorsInBasket.join(', ') }})
+                </span>
+              </div>
+            </div>
+            <div v-for="grp in basketByFolder" :key="grp.dir" class="mt-1">
+              <div class="text-caption font-weight-medium">{{ grp.dir }}/</div>
+              <v-chip
+                v-for="f in grp.files"
+                :key="f.path"
+                size="x-small"
+                variant="outlined"
+                closable
+                class="mr-1 mb-1"
+                @click:close="removeFromBasket(f)"
+              >
+                {{ f.name }}
+              </v-chip>
             </div>
           </v-alert>
 
@@ -712,7 +757,7 @@
       <v-expand-transition>
         <div v-if="showVisualization && canVisualize" class="mt-4">
           <v-card variant="outlined" class="pa-4">
-            <div class="d-flex align-center mb-2">
+            <div class="d-flex align-center mb-2 flex-wrap">
               <v-icon size="small" class="mr-1" color="primary">mdi-chart-line</v-icon>
               <span class="text-subtitle-2 font-weight-medium">
                 Signal Visualization
@@ -720,6 +765,27 @@
               <v-chip size="x-small" color="primary" variant="tonal" class="ml-2">
                 {{ plottableColumns.length }} signal{{ plottableColumns.length === 1 ? '' : 's' }}
               </v-chip>
+              <!-- Phase G — mode toggle. In label mode click-drag places
+                   start/end lines instead of panning. Only offered for
+                   single-CSV loads (labels sidecar is per-CSV). -->
+              <v-btn-toggle
+                v-if="labelModeAvailable"
+                v-model="chartMode"
+                mandatory
+                variant="tonal"
+                density="compact"
+                divided
+                class="ml-3"
+              >
+                <v-btn value="pan" size="small" :title="'Zoom / pan'">
+                  <v-icon size="16" start>mdi-magnify</v-icon>
+                  Zoom/Pan
+                </v-btn>
+                <v-btn value="label" size="small" :title="'Label mode'" color="warning">
+                  <v-icon size="16" start>mdi-tag-plus-outline</v-icon>
+                  Label
+                </v-btn>
+              </v-btn-toggle>
               <v-btn
                 size="x-small"
                 variant="text"
@@ -737,22 +803,186 @@
             </div>
             <div
               class="chart-container"
-              :style="{ height: '340px', position: 'relative', cursor: panCursor, userSelect: 'none' }"
+              :style="{ height: '340px', position: 'relative', cursor: chartCursor, userSelect: 'none' }"
               @wheel="onChartWheel"
               @mousedown="onChartMouseDown"
               @mousemove="onChartMouseMove"
               @mouseup="onChartMouseUp"
               @mouseleave="onChartMouseUp"
-              @dblclick="resetZoom"
+              @dblclick="onChartDoubleClick"
+              @click="onChartClick"
             >
-              <Line ref="chartRef" :data="chartData" :options="chartOptions" />
+              <Line ref="chartRef" :data="chartData" :options="chartOptions" :plugins="labelChartPlugins" />
             </div>
             <div class="text-caption text-medium-emphasis mt-1">
-              X-axis: {{ timestampColumn }} &nbsp;·&nbsp; <strong>Scroll</strong> to zoom, <strong>drag</strong> to pan, <strong>double-click</strong> to reset. Toggle signals via the column headers above.
+              <template v-if="isLabelMode">
+                X-axis: {{ timestampColumn }} &nbsp;·&nbsp;
+                <strong>Click</strong> to place start line, click again for end,
+                type into the boxes below for precision, then <strong>Apply</strong>.
+                Colored strip along the axis shows saved label ranges.
+              </template>
+              <template v-else>
+                X-axis: {{ timestampColumn }} &nbsp;·&nbsp; <strong>Scroll</strong> to zoom, <strong>drag</strong> to pan, <strong>double-click</strong> to reset. Toggle signals via the column headers above.
+              </template>
+            </div>
+
+            <!-- Phase G — placement panel (label mode only) -->
+            <div v-if="isLabelMode" class="mt-3 label-placement-panel pa-3">
+              <div class="d-flex align-center flex-wrap ga-3">
+                <v-text-field
+                  v-model.number="labelStart"
+                  label="Start"
+                  type="number"
+                  step="0.01"
+                  density="compact"
+                  variant="outlined"
+                  hide-details
+                  style="max-width: 150px"
+                  :placeholder="labelPlaceholderMin"
+                />
+                <v-text-field
+                  v-model.number="labelEnd"
+                  label="End"
+                  type="number"
+                  step="0.01"
+                  density="compact"
+                  variant="outlined"
+                  hide-details
+                  style="max-width: 150px"
+                  :placeholder="labelPlaceholderMax"
+                />
+                <v-combobox
+                  v-model="labelClass"
+                  :items="knownClassNames"
+                  label="Class"
+                  density="compact"
+                  variant="outlined"
+                  hide-details
+                  clearable
+                  style="min-width: 180px; max-width: 280px"
+                />
+                <v-btn
+                  color="primary"
+                  variant="flat"
+                  :disabled="!canApplyLabel"
+                  @click="applyPendingLabel"
+                >
+                  <v-icon start size="16">mdi-check</v-icon>
+                  {{ editingLabelIndex === null ? 'Apply' : 'Update' }}
+                </v-btn>
+                <v-btn variant="text" @click="cancelPendingLabel">
+                  Cancel
+                </v-btn>
+              </div>
+              <div v-if="labelValidationError" class="text-caption text-error mt-2">
+                {{ labelValidationError }}
+              </div>
             </div>
           </v-card>
         </div>
       </v-expand-transition>
+
+      <!-- Phase G — Labels panel (visible whenever we have a single CSV
+           loaded and either sidecar labels exist or user is in label
+           mode). Renders below the chart, above "Load More". -->
+      <div v-if="labelModeAvailable && showVisualization && (labels.length > 0 || isLabelMode)" class="mt-4">
+        <v-card variant="outlined" class="pa-4">
+          <div class="d-flex align-center mb-2">
+            <v-icon size="small" class="mr-1" color="warning">mdi-tag-multiple-outline</v-icon>
+            <span class="text-subtitle-2 font-weight-medium">Labels</span>
+            <v-chip
+              v-if="labels.length > 0"
+              size="x-small"
+              color="warning"
+              variant="tonal"
+              class="ml-2"
+            >
+              {{ labels.length }}
+            </v-chip>
+            <v-spacer />
+            <span
+              class="text-caption d-flex align-center"
+              :class="hasUnsavedLabels ? 'text-warning' : 'text-success'"
+            >
+              <v-icon size="10" class="mr-1">
+                {{ hasUnsavedLabels ? 'mdi-circle' : 'mdi-check-circle' }}
+              </v-icon>
+              {{ hasUnsavedLabels ? 'unsaved' : 'saved' }}
+            </span>
+            <v-btn
+              v-if="hasUnsavedLabels"
+              class="ml-2"
+              size="x-small"
+              variant="tonal"
+              color="primary"
+              :loading="savingLabels"
+              @click="saveLabels()"
+            >
+              Save now
+            </v-btn>
+          </div>
+
+          <div v-if="labels.length === 0" class="text-caption text-medium-emphasis py-2">
+            No labels yet. Switch to Label mode above, click on the chart to
+            place start and end lines, type a class name, then Apply.
+          </div>
+          <v-list v-else density="compact" class="pa-0">
+            <v-list-item
+              v-for="(l, idx) in sortedLabels"
+              :key="`${l.from}-${l.to}-${idx}`"
+              class="px-2 label-row"
+              :active="editingLabelIndex === idx"
+            >
+              <template #prepend>
+                <span
+                  class="label-dot"
+                  :style="{ background: classColor(l.class) }"
+                />
+              </template>
+              <v-list-item-title class="d-flex align-center">
+                <strong class="mr-2">{{ l.class }}</strong>
+                <code class="text-caption">{{ l.from.toFixed(2) }} → {{ l.to.toFixed(2) }}</code>
+                <span class="text-caption text-medium-emphasis ml-2">
+                  ({{ (l.to - l.from).toFixed(2) }} s)
+                </span>
+              </v-list-item-title>
+              <template #append>
+                <v-btn
+                  icon
+                  size="x-small"
+                  variant="text"
+                  :title="'Edit'"
+                  @click="startEditLabel(idx)"
+                >
+                  <v-icon size="16">mdi-pencil</v-icon>
+                </v-btn>
+                <v-btn
+                  icon
+                  size="x-small"
+                  variant="text"
+                  color="error"
+                  :title="'Delete'"
+                  @click="deleteLabel(idx)"
+                >
+                  <v-icon size="16">mdi-delete-outline</v-icon>
+                </v-btn>
+              </template>
+            </v-list-item>
+          </v-list>
+
+          <div class="d-flex align-center mt-2 text-caption text-medium-emphasis">
+            <span>
+              Coverage {{ labelCoverageDisplay }} ·
+              {{ labels.length }} label{{ labels.length === 1 ? '' : 's' }} ·
+              {{ knownClassNames.length }} class{{ knownClassNames.length === 1 ? '' : 'es' }}
+            </span>
+            <v-spacer />
+            <span v-if="labelsLastSavedAt" class="text-caption">
+              Last saved {{ labelsLastSavedDisplay }}
+            </span>
+          </div>
+        </v-card>
+      </div>
 
       <!-- Load More Info -->
       <div class="d-flex align-center justify-space-between pa-2 mt-2">
@@ -776,11 +1006,11 @@
             variant="tonal"
             size="small"
             color="primary"
-            :loading="loadingMore"
-            @click="loadMorePreview"
+            :loading="loadingMore || savingLabels"
+            @click="loadMorePreviewWithSave"
           >
             <v-icon start>mdi-plus</v-icon>
-            Load More Rows
+            {{ hasUnsavedLabels ? 'Save Labels + Load More' : 'Load More Rows' }}
           </v-btn>
           <span v-else-if="dataPreview.preview.length >= maxPreviewRows" class="text-caption text-warning">
             Preview limit reached ({{ maxPreviewRows }} rows max)
@@ -1690,11 +1920,84 @@
       :initial-path="currentPath"
       @refresh-requested="loadFolders"
     />
+
+    <!-- Cross-sensor JOIN alignment picker (only opens for multi-folder baskets) -->
+    <CsvMergeSettingsDialog
+      v-model="mergeDialogOpen"
+      :sensors="sensorsInBasket"
+      @confirm="onMergeDialogConfirm"
+      @cancel="onMergeDialogCancel"
+    />
+
+    <!-- "Load all sensors" date picker + preview -->
+    <v-dialog v-model="loadAllDialogOpen" max-width="560" persistent>
+      <v-card>
+        <v-card-title class="d-flex align-center">
+          <v-icon color="secondary" class="mr-2">mdi-source-branch-plus</v-icon>
+          <span>Load all sensors for this machine</span>
+        </v-card-title>
+        <v-card-subtitle class="text-body-2 mt-2" style="white-space: normal">
+          Picks one CSV file per child sensor folder on the chosen date.
+          Sensors without a file for that date are shown but excluded.
+        </v-card-subtitle>
+        <v-card-text>
+          <v-text-field
+            v-model="loadAllDate"
+            type="date"
+            label="Date"
+            variant="outlined"
+            density="compact"
+            :max="new Date().toISOString().slice(0,10)"
+            @update:model-value="fetchSensorFilesForDate"
+            hide-details
+            class="mb-4"
+          />
+          <div v-if="loadingSensorFiles" class="text-center py-4">
+            <v-progress-circular indeterminate color="secondary" size="24" />
+          </div>
+          <div v-else-if="loadAllPreview.length === 0" class="text-center text-medium-emphasis py-4">
+            No sensor folders found under this path.
+          </div>
+          <v-list v-else density="compact" class="pa-0">
+            <v-list-item
+              v-for="entry in loadAllPreview"
+              :key="entry.sensor"
+              :class="{ 'text-medium-emphasis': !entry.exists }"
+            >
+              <template #prepend>
+                <v-icon :color="entry.exists ? 'success' : 'grey'" size="18">
+                  {{ entry.exists ? 'mdi-check-circle' : 'mdi-close-circle-outline' }}
+                </v-icon>
+              </template>
+              <v-list-item-title>
+                {{ entry.sensor }}
+                <span v-if="!entry.exists" class="text-caption ml-2">(no file for that date)</span>
+              </v-list-item-title>
+              <v-list-item-subtitle class="text-caption">
+                {{ entry.file }}
+              </v-list-item-subtitle>
+            </v-list-item>
+          </v-list>
+        </v-card-text>
+        <v-card-actions>
+          <v-spacer />
+          <v-btn variant="text" @click="loadAllDialogOpen = false">Cancel</v-btn>
+          <v-btn
+            color="secondary"
+            variant="flat"
+            :disabled="!loadAllPreview.some(x => x.exists)"
+            @click="confirmLoadAllSensors"
+          >
+            Add {{ loadAllPreview.filter(x => x.exists).length }} to basket
+          </v-btn>
+        </v-card-actions>
+      </v-card>
+    </v-dialog>
   </v-container>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { usePipelineStore } from '@/stores/pipeline'
 import { useNotificationStore } from '@/stores/notification'
@@ -1702,6 +2005,7 @@ import { useAuthStore } from '@/stores/auth'
 import PipelineStepper from '@/components/PipelineStepper.vue'
 import MachinePipelineBanner from '@/components/MachinePipelineBanner.vue'
 import FileManagerDialog from '@/components/FileManagerDialog.vue'
+import CsvMergeSettingsDialog from '@/components/CsvMergeSettingsDialog.vue'
 import { Line } from 'vue-chartjs'
 import {
   Chart as ChartJS,
@@ -1750,6 +2054,21 @@ const currentItems = ref<FileItem[]>([])
 const selectedFile = ref<FileItem | null>(null)
 const selectedFiles = ref<FileItem[]>([])  // Multi-select for CSV
 const multiCsvError = ref<string | null>(null)
+
+// Cross-sensor JOIN state — set by CsvMergeSettingsDialog when the basket
+// spans multiple folders. Null values mean the backend uses its defaults
+// (auto-detect single-folder → concat, cross-folder → exact JOIN).
+const mergeDialogOpen = ref(false)
+const mergeAlignment = ref<'exact' | 'nearest' | 'resample' | null>(null)
+const mergeToleranceMs = ref<number | null>(null)
+const mergeResampleHz = ref<number | null>(null)
+let pendingLoadAction: null | (() => Promise<void>) = null
+
+// Load-all-sensors state (file browser "Load All" button)
+const loadAllDialogOpen = ref(false)
+const loadAllDate = ref<string>(new Date().toISOString().slice(0, 10))
+const loadAllPreview = ref<Array<{sensor: string; file: string; path: string; exists: boolean}>>([])
+const loadingSensorFiles = ref(false)
 const dataPreview = ref<any>(null)
 const loading = ref(false)
 const loadingFolders = ref(false)
@@ -1767,6 +2086,32 @@ let isPanning = false
 let panStartClientX = 0
 let panStartMin = 0
 let panStartMax = 0
+
+// ── Phase G — Label mode state ──────────────────────────────────────────
+// Only enabled for single-CSV loads (labels sidecar is per-CSV). Cross-
+// sensor JOIN loads are excluded — the sidecar path model doesn't fit a
+// synthesized combined dataset.
+interface LabelEntry {
+  from: number
+  to: number
+  class: string
+}
+const chartMode = ref<'pan' | 'label'>('pan')
+const labels = ref<LabelEntry[]>([])
+const savedLabelsSignature = ref<string>('[]')  // JSON of last-saved labels
+const labelsLastSavedAt = ref<string | null>(null)
+const savingLabels = ref(false)
+const labelsHydratedForPath = ref<string | null>(null)
+// Placement — start / end are the current pending line positions. null =
+// not placed yet. First chart click sets labelStart, next sets labelEnd.
+const labelStart = ref<number | null>(null)
+const labelEnd = ref<number | null>(null)
+const labelClass = ref<string>('')
+const labelValidationError = ref<string | null>(null)
+const editingLabelIndex = ref<number | null>(null)
+// x_column from the last loaded sidecar (null when nothing loaded / first
+// time labeling this CSV — we default to the current timestamp column).
+const sidecarXColumn = ref<string | null>(null)
 
 // Dataset scan & partition state
 const datasetScan = ref<any>(null)
@@ -2121,6 +2466,126 @@ const csvFilesInFolder = computed(() => {
   return currentItems.value.filter(i => !i.is_dir && i.extension === '.csv')
 })
 
+// Parent folder of each file in the basket, deduped. If size > 1, the
+// backend switches to cross-sensor JOIN mode (per-sensor value columns).
+const basketFolders = computed(() => {
+  const dirs = new Set<string>()
+  for (const f of selectedFiles.value) {
+    const p = f.path.replace(/\\/g, '/')
+    const idx = p.lastIndexOf('/')
+    dirs.add(idx >= 0 ? p.slice(0, idx) : '')
+  }
+  return Array.from(dirs)
+})
+
+const isCrossFolderSelection = computed(() => basketFolders.value.length > 1)
+
+// Sensor names inferred from the parent folder of each selected file —
+// what the JOINed dataset's columns will be named.
+const sensorsInBasket = computed(() => {
+  const names = new Set<string>()
+  for (const f of selectedFiles.value) {
+    const p = f.path.replace(/\\/g, '/').split('/')
+    if (p.length >= 2) names.add(p[p.length - 2])
+  }
+  return Array.from(names)
+})
+
+// Group basket by folder for the "Selected files" panel.
+const basketByFolder = computed(() => {
+  const groups: Record<string, FileItem[]> = {}
+  for (const f of selectedFiles.value) {
+    const p = f.path.replace(/\\/g, '/')
+    const idx = p.lastIndexOf('/')
+    const dir = idx >= 0 ? p.slice(0, idx) : ''
+    if (!groups[dir]) groups[dir] = []
+    groups[dir].push(f)
+  }
+  return Object.entries(groups).map(([dir, files]) => ({ dir, files }))
+})
+
+// "Load all sensors" is offered when the current folder looks like a
+// machine folder — it has sub-folders (assumed to be sensor folders)
+// rather than files. If it has any files, we don't offer it (the user
+// is probably already at the sensor level).
+const folderIsMachineShape = computed(() => {
+  if (currentItems.value.length === 0) return false
+  const subFolders = currentItems.value.filter(i => i.is_dir)
+  const anyFiles = currentItems.value.some(i => !i.is_dir)
+  return subFolders.length >= 2 && !anyFiles
+})
+
+function removeFromBasket(item: FileItem) {
+  const idx = selectedFiles.value.findIndex(f => f.path === item.path)
+  if (idx >= 0) selectedFiles.value.splice(idx, 1)
+  if (selectedFiles.value.length <= 1) {
+    selectedFile.value = selectedFiles.value[0] || null
+    if (selectedFiles.value.length === 1) {
+      previewFile(selectedFiles.value[0])
+    } else {
+      dataPreview.value = null
+    }
+  } else {
+    previewMultipleCsv()
+  }
+}
+
+function clearBasket() {
+  selectedFiles.value = []
+  selectedFile.value = null
+  dataPreview.value = null
+  multiCsvError.value = null
+}
+
+// "Load all sensors" — for a machine-shape folder (children are sensor
+// folders), fetch one CSV per sensor for a given date and add them to
+// the basket. Backend returns entries with `exists:false` for sensors
+// missing that date so we can show them to the user.
+async function openLoadAllDialog() {
+  loadAllDate.value = new Date().toISOString().slice(0, 10)
+  loadAllPreview.value = []
+  loadAllDialogOpen.value = true
+  await fetchSensorFilesForDate()
+}
+
+async function fetchSensorFilesForDate() {
+  if (!currentPath.value) return
+  try {
+    loadingSensorFiles.value = true
+    const response = await api.post('/api/data/sensor-files-for-date', {
+      folder_path: currentPath.value,
+      date: loadAllDate.value,
+    })
+    loadAllPreview.value = response.data.sensor_files || []
+  } catch (e: any) {
+    notificationStore.showError(e.response?.data?.error || 'Failed to list sensor files')
+    loadAllPreview.value = []
+  } finally {
+    loadingSensorFiles.value = false
+  }
+}
+
+function confirmLoadAllSensors() {
+  const toAdd = loadAllPreview.value.filter(x => x.exists)
+  if (toAdd.length === 0) {
+    notificationStore.showError('No sensor files exist for that date')
+    return
+  }
+  // Replace the basket to make intent obvious. The alternative — appending
+  // — silently merged with unrelated leftover picks and confused users.
+  selectedFiles.value = toAdd.map(x => ({
+    name: x.file,
+    path: x.path,
+    is_dir: false,
+    extension: '.csv',
+    size: null,
+    file_type: 'csv',
+  } as FileItem))
+  loadAllDialogOpen.value = false
+  notificationStore.showSuccess(`Added ${toAdd.length} sensor file${toAdd.length === 1 ? '' : 's'} to selection`)
+  previewMultipleCsv()
+}
+
 const allCsvSelectedInFolder = computed(() => {
   if (csvFilesInFolder.value.length === 0) return false
   return csvFilesInFolder.value.every(f => selectedFiles.value.some(s => s.path === f.path))
@@ -2330,6 +2795,10 @@ function onChartWheel(e: WheelEvent) {
 
 function onChartMouseDown(e: MouseEvent) {
   if (e.button !== 0 || !chartRef.value?.chart || dataLength.value < 2) return
+  // In label mode, mousedown doesn't pan — the click event handler places
+  // the start/end lines instead. Consuming mousedown here would swallow
+  // the follow-up click.
+  if (chartMode.value === 'label') return
   isPanning = true
   panCursor.value = 'grabbing'
   panStartClientX = e.clientX
@@ -2456,7 +2925,9 @@ function navigateTo(path: string) {
   selectedLabel.value = null
   dataPreview.value = null
   selectedFile.value = null
-  selectedFiles.value = []
+  // Keep `selectedFiles` (the multi-file basket) so users can pick CSVs
+  // from different folders in one go — e.g. one sensor per folder under
+  // a machine node. Use "Clear selection" in the header to reset it.
   multiCsvError.value = null
   loadFolders()
 }
@@ -2537,15 +3008,29 @@ function toggleCsvFile(item: FileItem) {
 }
 
 async function previewMultipleCsv() {
+  // Cross-folder basket + no alignment picked yet → open the merge dialog
+  // and defer this call until the user confirms.
+  if (isCrossFolderSelection.value && !mergeAlignment.value) {
+    pendingLoadAction = previewMultipleCsv
+    mergeDialogOpen.value = true
+    return
+  }
   try {
     loading.value = true
     multiCsvError.value = null
 
-    const response = await api.post('/api/data/preview', {
+    const payload: Record<string, any> = {
       file_paths: selectedFiles.value.map(f => f.path),
       rows: 100,
-      format: 'csv'
-    })
+      format: 'csv',
+    }
+    if (isCrossFolderSelection.value) {
+      payload.merge_mode = 'join'
+      payload.alignment = mergeAlignment.value
+      if (mergeToleranceMs.value != null) payload.tolerance_ms = mergeToleranceMs.value
+      if (mergeResampleHz.value != null) payload.resample_hz = mergeResampleHz.value
+    }
+    const response = await api.post('/api/data/preview', payload)
 
     dataPreview.value = response.data
     notificationStore.showSuccess(`${selectedFiles.value.length} CSV files loaded successfully`)
@@ -2565,6 +3050,34 @@ async function previewMultipleCsv() {
   }
 }
 
+function onMergeDialogConfirm(payload: {
+  alignment: 'exact' | 'nearest' | 'resample'
+  tolerance_ms: number | null
+  resample_hz: number | null
+}) {
+  mergeAlignment.value = payload.alignment
+  mergeToleranceMs.value = payload.tolerance_ms
+  mergeResampleHz.value = payload.resample_hz
+  const action = pendingLoadAction
+  pendingLoadAction = null
+  if (action) action()
+}
+
+function onMergeDialogCancel() {
+  pendingLoadAction = null
+  // Leave alignment state as-is so the user can reopen without losing their
+  // previous pick, but don't proceed with the load.
+}
+
+// Reset the cross-sensor alignment picks whenever the basket changes so the
+// dialog re-opens with a clean slate on the next cross-folder load. Only
+// clears when the set of parent folders actually changes.
+watch(basketFolders, () => {
+  mergeAlignment.value = null
+  mergeToleranceMs.value = null
+  mergeResampleHz.value = null
+}, { deep: true })
+
 async function handleItemClick(item: FileItem) {
   if (item.is_dir) {
     currentPath.value = item.path
@@ -2573,7 +3086,8 @@ async function handleItemClick(item: FileItem) {
     selectedLabel.value = null
     dataPreview.value = null
     selectedFile.value = null
-    selectedFiles.value = []
+    // Basket (`selectedFiles`) intentionally preserved across folder hops
+    // so cross-folder multi-select works. See navigateTo for the same rule.
     multiCsvError.value = null
     await loadFolders()
   } else if (isCsvFormat.value && item.extension === '.csv') {
@@ -2905,13 +3419,27 @@ async function proceedToWindowing() {
 
   // Multi-CSV: load full dataset via ingest endpoint
   if (dataPreview.value.metadata?.is_multi_csv && selectedFiles.value.length > 1) {
+    // Same "open dialog first" guard as previewMultipleCsv, in case the
+    // user reached this button without triggering the preview path first.
+    if (isCrossFolderSelection.value && !mergeAlignment.value) {
+      pendingLoadAction = proceedToWindowing
+      mergeDialogOpen.value = true
+      return
+    }
     try {
       loadingFull.value = true
       loading.value = true
 
-      const response = await api.post('/api/data/ingest/csv-multiple', {
-        file_paths: selectedFiles.value.map(f => f.path)
-      })
+      const payload: Record<string, any> = {
+        file_paths: selectedFiles.value.map(f => f.path),
+      }
+      if (isCrossFolderSelection.value) {
+        payload.merge_mode = 'join'
+        payload.alignment = mergeAlignment.value
+        if (mergeToleranceMs.value != null) payload.tolerance_ms = mergeToleranceMs.value
+        if (mergeResampleHz.value != null) payload.resample_hz = mergeResampleHz.value
+      }
+      const response = await api.post('/api/data/ingest/csv-multiple', payload)
 
       pipelineStore.dataSession = response.data
       notificationStore.showSuccess(
@@ -3404,6 +3932,433 @@ onMounted(async () => {
 
   loadFolders()
 })
+
+// ═══════════════════════════════════════════════════════════════════════
+// Phase G — Label mode (see docs/PLAN_2026-07-22_labeler-and-profile-swap.md)
+// ═══════════════════════════════════════════════════════════════════════
+
+const isLabelMode = computed(() => chartMode.value === 'label')
+
+// Only meaningful for a single-CSV, single-file preview. Multi-CSV / cross-
+// sensor JOIN / URL loads / folder previews don't map to a single sidecar.
+const labelModeAvailable = computed(() => {
+  const meta = dataPreview.value?.metadata
+  if (!meta) return false
+  if (meta.is_multi_csv) return false
+  if (meta.is_cross_sensor_join) return false
+  if (meta.is_folder) return false
+  if (meta.source_url) return false
+  // Require a resolvable local file path.
+  const path = selectedFile.value?.path || meta.file_path
+  if (!path || typeof path !== 'string') return false
+  return true
+})
+
+const chartCursor = computed<'grab' | 'grabbing' | 'crosshair'>(() => {
+  if (isLabelMode.value) return 'crosshair'
+  return panCursor.value
+})
+
+// Placeholders for the start/end inputs so users know the visible range.
+const labelPlaceholderMin = computed(() => {
+  const rows = dataPreview.value?.preview
+  if (!rows?.length || !timestampColumn.value) return ''
+  const first = Number(rows[0][timestampColumn.value])
+  return Number.isFinite(first) ? first.toFixed(2) : ''
+})
+const labelPlaceholderMax = computed(() => {
+  const rows = dataPreview.value?.preview
+  if (!rows?.length || !timestampColumn.value) return ''
+  const last = Number(rows[rows.length - 1][timestampColumn.value])
+  return Number.isFinite(last) ? last.toFixed(2) : ''
+})
+
+const knownClassNames = computed(() => {
+  const set = new Set<string>()
+  for (const l of labels.value) if (l.class) set.add(l.class)
+  return Array.from(set).sort()
+})
+
+const sortedLabels = computed(() =>
+  [...labels.value].sort((a, b) => a.from - b.from),
+)
+
+const hasUnsavedLabels = computed(() => {
+  return JSON.stringify(labels.value) !== savedLabelsSignature.value
+})
+
+const canApplyLabel = computed(() => {
+  if (labelStart.value === null || labelEnd.value === null) return false
+  if (!Number.isFinite(labelStart.value) || !Number.isFinite(labelEnd.value)) return false
+  if (!labelClass.value || !String(labelClass.value).trim()) return false
+  return true
+})
+
+const labelCoverageDisplay = computed(() => {
+  // Coverage % against the currently visible dataset window. Multi-batch
+  // labels that extend past the window still count for the visible span.
+  const rows = dataPreview.value?.preview
+  if (!rows?.length || !timestampColumn.value) return '—'
+  const first = Number(rows[0][timestampColumn.value])
+  const last = Number(rows[rows.length - 1][timestampColumn.value])
+  if (!Number.isFinite(first) || !Number.isFinite(last) || last <= first) return '—'
+  const totalSpan = last - first
+  let covered = 0
+  const clamped = labels.value
+    .map((l) => [Math.max(first, l.from), Math.min(last, l.to)] as [number, number])
+    .filter(([lo, hi]) => hi > lo)
+    .sort((a, b) => a[0] - b[0])
+  let cursor = first
+  for (const [lo, hi] of clamped) {
+    const s = Math.max(cursor, lo)
+    if (hi > s) covered += hi - s
+    if (hi > cursor) cursor = hi
+  }
+  return `${((covered / totalSpan) * 100).toFixed(0)}%`
+})
+
+const labelsLastSavedDisplay = computed(() => {
+  if (!labelsLastSavedAt.value) return ''
+  try {
+    const d = new Date(labelsLastSavedAt.value)
+    return d.toLocaleTimeString()
+  } catch {
+    return labelsLastSavedAt.value
+  }
+})
+
+// Deterministic pastel-ish color per class name (hash to hue).
+function classColor(name: string): string {
+  let h = 0
+  for (let i = 0; i < name.length; i++) {
+    h = (h * 31 + name.charCodeAt(i)) >>> 0
+  }
+  const hue = h % 360
+  return `hsl(${hue}, 62%, 55%)`
+}
+
+// ── Chart plugin — draws vertical placement lines + horizontal bars ─────
+//
+// Registered per-Line component instance via the `:plugins` prop so it
+// only runs for the DataSourceView chart, and re-reads reactive state on
+// each draw (Chart.js calls plugin.afterDatasetsDraw every render).
+const labelChartPlugins = computed(() => [
+  {
+    id: 'cira-labels-overlay',
+    afterDatasetsDraw(chart: any) {
+      const ctx = chart.ctx
+      const xScale = chart.scales.x
+      const yScale = chart.scales.y
+      if (!xScale || !yScale) return
+      const rows: any[] = dataPreview.value?.preview || []
+      const tsCol = timestampColumn.value
+      if (!tsCol) return
+
+      // Map an absolute time value to a pixel X inside the chart. The chart's
+      // x-axis is category-scale (row index) so we convert time → row index
+      // via linear interpolation, then use the scale.
+      const nRows = rows.length
+      if (nRows < 2) return
+      const firstT = Number(rows[0][tsCol])
+      const lastT = Number(rows[nRows - 1][tsCol])
+      if (!Number.isFinite(firstT) || !Number.isFinite(lastT) || lastT <= firstT) return
+
+      const timeToIndex = (t: number) => {
+        const clamped = Math.max(firstT, Math.min(lastT, t))
+        return ((clamped - firstT) / (lastT - firstT)) * (nRows - 1)
+      }
+      const timeToPx = (t: number) => {
+        try {
+          return xScale.getPixelForValue(timeToIndex(t))
+        } catch {
+          return null
+        }
+      }
+
+      // 1) Bar overlays for saved labels — thin strip near the bottom axis.
+      const barHeight = 6
+      const barY = chart.chartArea.bottom - barHeight - 1
+      for (const l of labels.value) {
+        const lo = Math.max(firstT, l.from)
+        const hi = Math.min(lastT, l.to)
+        if (hi <= lo) continue
+        const px1 = timeToPx(lo)
+        const px2 = timeToPx(hi)
+        if (px1 === null || px2 === null) continue
+        ctx.save()
+        ctx.fillStyle = classColor(l.class) + 'cc'
+        ctx.fillRect(px1, barY, Math.max(1, px2 - px1), barHeight)
+        ctx.restore()
+      }
+
+      // 2) Pending start / end vertical lines (label mode only).
+      if (!isLabelMode.value) return
+      const drawLine = (t: number | null, color: string, tag: string) => {
+        if (t === null || !Number.isFinite(t)) return
+        const px = timeToPx(t)
+        if (px === null) return
+        ctx.save()
+        ctx.strokeStyle = color
+        ctx.lineWidth = 2
+        ctx.setLineDash([4, 3])
+        ctx.beginPath()
+        ctx.moveTo(px, chart.chartArea.top)
+        ctx.lineTo(px, chart.chartArea.bottom)
+        ctx.stroke()
+        // Tag label at top.
+        ctx.setLineDash([])
+        ctx.fillStyle = color
+        ctx.font = '10px sans-serif'
+        ctx.fillText(tag, px + 4, chart.chartArea.top + 12)
+        ctx.restore()
+      }
+      drawLine(labelStart.value, '#2e7d32', `start ${labelStart.value?.toFixed(2) ?? ''}`)
+      drawLine(labelEnd.value, '#c62828', `end ${labelEnd.value?.toFixed(2) ?? ''}`)
+    },
+  },
+])
+
+// ── Chart click handler (label mode only) ───────────────────────────────
+
+function pxToTimeValue(clientX: number): number | null {
+  const chart = chartRef.value?.chart
+  if (!chart) return null
+  const rect = chart.canvas.getBoundingClientRect()
+  const px = clientX - rect.left
+  const xScale = chart.scales.x
+  let idx: number
+  try {
+    idx = xScale.getValueForPixel(px)
+  } catch {
+    return null
+  }
+  const rows = dataPreview.value?.preview
+  if (!rows?.length || !timestampColumn.value) return null
+  const nRows = rows.length
+  const firstT = Number(rows[0][timestampColumn.value])
+  const lastT = Number(rows[nRows - 1][timestampColumn.value])
+  if (!Number.isFinite(firstT) || !Number.isFinite(lastT) || lastT <= firstT) return null
+  const clampedIdx = Math.max(0, Math.min(nRows - 1, idx))
+  return firstT + (clampedIdx / (nRows - 1)) * (lastT - firstT)
+}
+
+function onChartClick(e: MouseEvent) {
+  if (!isLabelMode.value) return
+  const t = pxToTimeValue(e.clientX)
+  if (t === null) return
+  labelValidationError.value = null
+  if (labelStart.value === null) {
+    labelStart.value = Number(t.toFixed(3))
+    return
+  }
+  if (labelEnd.value === null) {
+    labelEnd.value = Number(t.toFixed(3))
+    return
+  }
+  // Both already placed — nearest one gets moved.
+  const dStart = Math.abs(t - (labelStart.value ?? 0))
+  const dEnd = Math.abs(t - (labelEnd.value ?? 0))
+  if (dStart <= dEnd) labelStart.value = Number(t.toFixed(3))
+  else labelEnd.value = Number(t.toFixed(3))
+}
+
+function onChartDoubleClick(e: MouseEvent) {
+  // Label mode: double-click clears placement so user can start over.
+  if (isLabelMode.value) {
+    cancelPendingLabel()
+    return
+  }
+  resetZoom()
+}
+
+// ── Apply / edit / delete labels ────────────────────────────────────────
+
+function _overlapsOther(from: number, to: number, excludeIdx: number | null): number {
+  for (let i = 0; i < labels.value.length; i++) {
+    if (i === excludeIdx) continue
+    const l = labels.value[i]
+    // Half-open [from, to): touching edges is fine (idle 0→45.12, fault 45.12→60.20).
+    if (from < l.to && l.from < to) return i
+  }
+  return -1
+}
+
+function applyPendingLabel() {
+  labelValidationError.value = null
+  if (labelStart.value === null || labelEnd.value === null || !labelClass.value) return
+  let from = Number(labelStart.value)
+  let to = Number(labelEnd.value)
+  if (!Number.isFinite(from) || !Number.isFinite(to)) {
+    labelValidationError.value = 'Start and end must be numbers.'
+    return
+  }
+  if (from > to) [from, to] = [to, from]  // spec: auto-swap
+  if (from === to) {
+    labelValidationError.value = 'Start and end must differ.'
+    return
+  }
+  const cls = String(labelClass.value).trim()
+  if (!cls) {
+    labelValidationError.value = 'Class is required.'
+    return
+  }
+  const overlap = _overlapsOther(from, to, editingLabelIndex.value)
+  if (overlap >= 0) {
+    const other = labels.value[overlap]
+    labelValidationError.value = `Range overlaps existing label "${other.class}" at ${other.from.toFixed(2)}–${other.to.toFixed(2)}. Delete or shrink that one first.`
+    return
+  }
+  const entry: LabelEntry = { from, to, class: cls }
+  if (editingLabelIndex.value !== null) {
+    labels.value.splice(editingLabelIndex.value, 1, entry)
+  } else {
+    labels.value.push(entry)
+  }
+  cancelPendingLabel()
+}
+
+function cancelPendingLabel() {
+  labelStart.value = null
+  labelEnd.value = null
+  labelClass.value = ''
+  editingLabelIndex.value = null
+  labelValidationError.value = null
+}
+
+function startEditLabel(sortedIdx: number) {
+  // sortedLabels is the display order — resolve back to the source index.
+  const sorted = sortedLabels.value
+  const target = sorted[sortedIdx]
+  if (!target) return
+  const idx = labels.value.findIndex(
+    (l) => l.from === target.from && l.to === target.to && l.class === target.class,
+  )
+  if (idx < 0) return
+  editingLabelIndex.value = idx
+  labelStart.value = target.from
+  labelEnd.value = target.to
+  labelClass.value = target.class
+  chartMode.value = 'label'  // switch modes so lines are visible
+}
+
+function deleteLabel(sortedIdx: number) {
+  const sorted = sortedLabels.value
+  const target = sorted[sortedIdx]
+  if (!target) return
+  const idx = labels.value.findIndex(
+    (l) => l.from === target.from && l.to === target.to && l.class === target.class,
+  )
+  if (idx < 0) return
+  labels.value.splice(idx, 1)
+  if (editingLabelIndex.value === idx) cancelPendingLabel()
+}
+
+// ── Sidecar sync (GET on load, PUT on advance) ──────────────────────────
+
+function _currentCsvPath(): string | null {
+  const path = selectedFile.value?.path || dataPreview.value?.metadata?.file_path
+  if (!path || typeof path !== 'string') return null
+  return path
+}
+
+async function hydrateLabels(force = false) {
+  const path = _currentCsvPath()
+  if (!path) return
+  if (!force && labelsHydratedForPath.value === path) return
+  try {
+    const resp = await api.get('/api/data/labels', { params: { csv_path: path } })
+    const body = resp.data || {}
+    labels.value = Array.isArray(body.labels) ? body.labels.map((l: any) => ({
+      from: Number(l.from), to: Number(l.to), class: String(l.class),
+    })) : []
+    sidecarXColumn.value = body.x_column || null
+    labelsLastSavedAt.value = body.updated_at || null
+    savedLabelsSignature.value = JSON.stringify(labels.value)
+    labelsHydratedForPath.value = path
+    if (body.warning) {
+      notificationStore.showError(`Labels sidecar warning: ${body.warning}`)
+    }
+  } catch (e: any) {
+    // Non-fatal — the labeler UI still works without hydration.
+    console.warn('[labels] hydrate failed', e)
+  }
+}
+
+async function saveLabels(): Promise<boolean> {
+  const path = _currentCsvPath()
+  if (!path) return false
+  savingLabels.value = true
+  try {
+    const resp = await api.put('/api/data/labels', {
+      csv_path: path,
+      x_column: sidecarXColumn.value || timestampColumn.value || null,
+      labels: labels.value,
+    })
+    savedLabelsSignature.value = JSON.stringify(labels.value)
+    labelsLastSavedAt.value = resp.data?.updated_at || new Date().toISOString()
+    notificationStore.showSuccess(`Saved ${labels.value.length} label${labels.value.length === 1 ? '' : 's'}`)
+    return true
+  } catch (e: any) {
+    notificationStore.showError(e.response?.data?.error || 'Failed to save labels')
+    return false
+  } finally {
+    savingLabels.value = false
+  }
+}
+
+// Hydrate labels whenever a new CSV becomes the current preview target.
+watch(
+  () => _currentCsvPath(),
+  (newPath, oldPath) => {
+    // Reset state on file switch so labels from a prior file don't leak.
+    if (newPath !== oldPath) {
+      labels.value = []
+      savedLabelsSignature.value = '[]'
+      cancelPendingLabel()
+      labelsHydratedForPath.value = null
+      labelsLastSavedAt.value = null
+    }
+    if (newPath && labelModeAvailable.value) {
+      hydrateLabels()
+    }
+  },
+)
+
+// Also hydrate when labelModeAvailable becomes true (e.g. cross-folder
+// basket collapses back to a single file), for good measure.
+watch(labelModeAvailable, (v) => {
+  if (v) hydrateLabels()
+})
+
+// ── Auto-save hook on "Load More Rows" ──────────────────────────────────
+//
+// Wraps the existing loadMorePreview so unsaved labels get PUT'd first.
+// If the save fails, we abort the load — the user sees the error toast
+// and the batch counter doesn't advance.
+const _originalLoadMorePreview = loadMorePreview
+async function loadMorePreviewWithSave() {
+  if (labelModeAvailable.value && hasUnsavedLabels.value) {
+    const ok = await saveLabels()
+    if (!ok) return  // don't advance — spec: "If save fails → toast, don't advance"
+  }
+  await _originalLoadMorePreview()
+}
+
+// ── beforeunload guard ──────────────────────────────────────────────────
+
+function _beforeUnloadHandler(e: BeforeUnloadEvent) {
+  if (!hasUnsavedLabels.value) return
+  e.preventDefault()
+  // Modern browsers ignore custom text but still show a generic warning
+  // when returnValue is set.
+  e.returnValue = ''
+}
+onMounted(() => window.addEventListener('beforeunload', _beforeUnloadHandler))
+onBeforeUnmount(() => window.removeEventListener('beforeunload', _beforeUnloadHandler))
+
+// Whenever labels change during editing, drop any focused validation error
+// so the panel doesn't stick showing an outdated "overlaps" hint.
+watch(labels, () => { labelValidationError.value = null }, { deep: true })
 </script>
 
 <style scoped lang="scss">
@@ -3436,6 +4391,27 @@ onMounted(async () => {
     max-height: 400px;
     overflow-y: auto;
   }
+}
+
+// Phase G — label mode UI
+.label-placement-panel {
+  background: rgba(var(--v-theme-surface-variant), 0.35);
+  border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+  border-radius: 8px;
+}
+.label-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  display: inline-block;
+  margin-right: 8px;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+}
+.label-row {
+  border-bottom: 1px dashed rgba(var(--v-border-color), var(--v-border-opacity));
+}
+.label-row:last-child {
+  border-bottom: none;
 }
 
 // Upload dropzone styles

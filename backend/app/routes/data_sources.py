@@ -3,10 +3,13 @@ CiRA ME - Data Sources Routes
 Handles CSV, Edge Impulse JSON, Edge Impulse CBOR, and CiRA CBOR formats
 """
 
+import json
+import logging
 import os
 import shutil
 import tempfile
 import uuid
+from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
 import requests
@@ -15,6 +18,8 @@ from werkzeug.utils import secure_filename
 from ..auth import login_required, validate_path, get_user_folders, _is_path_within
 from ..services.data_loader import DataLoader, DataValidationError
 from ..models import Project, DataSession, WindowedSession
+
+logger = logging.getLogger(__name__)
 
 data_sources_bp = Blueprint('data_sources', __name__)
 
@@ -514,6 +519,76 @@ def admin_delete_file():
         return jsonify({'error': str(e)}), 500
 
 
+@data_sources_bp.route('/sensor-files-for-date', methods=['POST'])
+@login_required
+def sensor_files_for_date():
+    """List one CSV per child sensor folder for a given date.
+
+    Used by the file-browser "Load all sensors" button. Body:
+        folder_path: absolute path to a machine folder whose direct children
+                     are sensor folders (each containing daily CSVs).
+        date:        YYYY-MM-DD (default: today).
+
+    Returns:
+        {
+          "folder_path": "...",
+          "date": "2026-07-21",
+          "sensor_files": [
+            {"sensor": "pressure", "file": "2026-07-21.csv",
+             "path": "<abs path>", "exists": true},
+            {"sensor": "temperature", "file": "2026-07-21.csv",
+             "path": "<abs path>", "exists": false},
+            ...
+          ]
+        }
+
+    A sensor entry with `exists: false` is returned so the UI can tell the
+    user which sensors have no file for that date rather than silently
+    dropping them from the basket.
+    """
+    from datetime import date as _date
+    data = request.get_json() or {}
+    folder_path = data.get('folder_path')
+    date_str = data.get('date') or _date.today().isoformat()
+
+    if not folder_path:
+        return jsonify({'error': 'folder_path required'}), 400
+    if not isinstance(date_str, str) or len(date_str) != 10 or date_str.count('-') != 2:
+        return jsonify({'error': 'date must be YYYY-MM-DD'}), 400
+
+    datasets_root = current_app.config['DATASETS_ROOT_PATH']
+    shared_folder = current_app.config['SHARED_FOLDER_PATH']
+    if not validate_path(folder_path, request.current_user, datasets_root, shared_folder):
+        return jsonify({'error': 'Access denied to this path'}), 403
+    if not os.path.isdir(folder_path):
+        return jsonify({'error': 'Not a directory'}), 404
+
+    filename = f"{date_str}.csv"
+    sensor_files = []
+    try:
+        for entry in sorted(os.listdir(folder_path)):
+            if entry.startswith('.'):
+                continue  # hide .multi_csv_selections / other internal dirs
+            child = os.path.join(folder_path, entry)
+            if not os.path.isdir(child):
+                continue
+            candidate = os.path.join(child, filename)
+            sensor_files.append({
+                'sensor': entry,
+                'file': filename,
+                'path': candidate,
+                'exists': os.path.isfile(candidate),
+            })
+    except OSError as e:
+        return jsonify({'error': f'listdir failed: {e}'}), 500
+
+    return jsonify({
+        'folder_path': folder_path,
+        'date': date_str,
+        'sensor_files': sensor_files,
+    })
+
+
 @data_sources_bp.route('/scan', methods=['POST'])
 @login_required
 def scan_dataset():
@@ -590,9 +665,23 @@ def ingest_csv_multiple():
         if not validate_path(fp, request.current_user, datasets_root, shared_folder):
             return jsonify({'error': f'Access denied to: {fp}'}), 403
 
+    # Cross-sensor JOIN parameters (all optional). When merge_mode is
+    # omitted, load_csv_multiple auto-detects: same folder → row concat,
+    # different folders → JOIN by timestamp.
+    merge_mode = data.get('merge_mode')  # None | 'concat' | 'join'
+    alignment = data.get('alignment', 'exact')  # 'exact' | 'nearest' | 'resample'
+    tolerance_ms = data.get('tolerance_ms')  # required if alignment='nearest'
+    resample_hz = data.get('resample_hz')  # required if alignment='resample'
+
     try:
         loader = DataLoader()
-        result = loader.load_csv_multiple(file_paths)
+        result = loader.load_csv_multiple(
+            file_paths,
+            merge_mode=merge_mode,
+            alignment=alignment,
+            tolerance_ms=tolerance_ms,
+            resample_hz=resample_hz,
+        )
         return jsonify(result)
     except Exception as e:
         return jsonify({'error': str(e)}), 400
@@ -713,12 +802,18 @@ def preview_data():
     try:
         loader = DataLoader()
 
-        # Multi-CSV preview
+        # Multi-CSV preview — same cross-sensor JOIN params as /ingest/csv-multiple.
         if file_paths and isinstance(file_paths, list) and len(file_paths) > 1:
             for fp in file_paths:
                 if not validate_path(fp, request.current_user, datasets_root, shared_folder):
                     return jsonify({'error': f'Access denied to: {fp}'}), 403
-            result = loader.load_csv_multiple(file_paths)
+            result = loader.load_csv_multiple(
+                file_paths,
+                merge_mode=data.get('merge_mode'),
+                alignment=data.get('alignment', 'exact'),
+                tolerance_ms=data.get('tolerance_ms'),
+                resample_hz=data.get('resample_hz'),
+            )
             # Limit preview rows
             session = loader._get_session(result['session_id'])
             if session:
@@ -1431,3 +1526,262 @@ def copy_items():
     with dirs_exist_ok=False (existing destination is an error).
     """
     return _bulk_transfer('copy')
+
+
+# ── Phase G — Labels sidecar (in-app timeline labeler) ───────────────────
+#
+# GET/PUT /api/data/labels — sidecar labels colocated with the source CSV.
+# See docs/PLAN_2026-07-22_labeler-and-profile-swap.md for the JSON format.
+#
+# Design note: the plan doc uses `/api/pipeline/data/labels` in a spec-side
+# table; the actual mount path is `/api/data/labels` because that's where
+# the rest of the data-source pipeline lives (see backend/app/__init__.py
+# `register_blueprint(data_sources_bp, url_prefix='/api/data')`). The
+# frontend already talks to `/api/data/*` for preview + ingest, so
+# consistency wins over the plan's aspirational prefix.
+
+
+def _labels_sidecar_path(csv_path: str) -> str:
+    """Return the sidecar path colocated with the given CSV: same directory,
+    same stem, `.labels.json` extension. Case-preserving on Windows and Linux.
+    """
+    directory = os.path.dirname(csv_path)
+    base = os.path.basename(csv_path)
+    stem, _ext = os.path.splitext(base)
+    return os.path.join(directory, f'{stem}.labels.json')
+
+
+def _resolve_labels_csv_path(raw_path):
+    """Resolve a caller-provided csv_path to an absolute, validated path.
+
+    Returns (abs_path, error_response_or_none). On failure error_response is
+    a Flask (jsonify, status) tuple ready to return; on success it's None.
+    """
+    if not raw_path or not isinstance(raw_path, str):
+        return None, (jsonify({'error': "'csv_path' (string) required"}), 400)
+
+    datasets_root = current_app.config['DATASETS_ROOT_PATH']
+    shared_folder = current_app.config['SHARED_FOLDER_PATH']
+
+    # Reject empty / null bytes early — os.path.abspath silently normalizes
+    # `\x00` on some platforms which would slip through validate_path.
+    if '\x00' in raw_path:
+        return None, (jsonify({'error': 'csv_path contains null byte'}), 400)
+
+    # Resolve to absolute. abspath() normalizes `..` sequences; the subsequent
+    # validate_path enforces the datasets-root/shared-folder prefix so any
+    # remaining traversal ends up outside the allowed prefix and gets rejected.
+    abs_path = os.path.abspath(raw_path)
+
+    if not validate_path(
+        abs_path, request.current_user, datasets_root, shared_folder,
+    ):
+        return None, (jsonify({'error': 'Access denied to this path'}), 403)
+
+    # Only allow CSV targets — labels don't apply to CBOR/JSON here and the
+    # sidecar filename convention is `<csv_stem>.labels.json`.
+    if not abs_path.lower().endswith('.csv'):
+        return None, (jsonify({
+            'error': 'csv_path must end with .csv'
+        }), 400)
+
+    return abs_path, None
+
+
+def _validate_labels_payload(payload):
+    """Validate the labels array. Returns error message on failure, else None.
+
+    Rules:
+    - each label has numeric `from` < `to`
+    - each label has non-empty `class` string
+    - no two labels overlap (ranges are half-open `[from, to)` for the check)
+    """
+    if not isinstance(payload, list):
+        return "'labels' must be an array"
+
+    normalised = []
+    for i, item in enumerate(payload):
+        if not isinstance(item, dict):
+            return f'labels[{i}] must be an object'
+        try:
+            frm = float(item['from'])
+            to = float(item['to'])
+        except (KeyError, TypeError, ValueError):
+            return f'labels[{i}] requires numeric "from" and "to"'
+        cls = item.get('class')
+        if not isinstance(cls, str) or not cls.strip():
+            return f'labels[{i}] requires non-empty "class" string'
+        if not (frm < to):
+            return f'labels[{i}] requires from ({frm}) < to ({to})'
+        normalised.append((i, frm, to, cls.strip()))
+
+    # Overlap check — sort by `from`, walk once.
+    sorted_labels = sorted(normalised, key=lambda t: t[1])
+    for a, b in zip(sorted_labels, sorted_labels[1:]):
+        _ia, _fa, ta, ca = a
+        ib, fb, _tb, cb = b
+        if fb < ta:
+            return (
+                f'labels[{ib}] range overlaps existing label {ca!r} '
+                f'at {a[1]}–{ta}'
+            )
+    return None
+
+
+@data_sources_bp.route('/labels', methods=['GET'])
+@login_required
+def get_labels():
+    """Read the sidecar labels for a CSV.
+
+    Query: csv_path=<absolute-or-relative path>
+
+    Returns the sidecar's parsed JSON when it exists, else an empty envelope
+    `{"csv": <basename>, "x_column": null, "labels": []}`. Malformed sidecars
+    are surfaced with `warning` in the response so the UI can flag them
+    without the label mode falling over.
+    """
+    raw_path = request.args.get('csv_path', '', type=str)
+    abs_path, err = _resolve_labels_csv_path(raw_path)
+    if err is not None:
+        return err
+
+    sidecar_path = _labels_sidecar_path(abs_path)
+    empty = {'csv': os.path.basename(abs_path), 'x_column': None, 'labels': []}
+    if not os.path.isfile(sidecar_path):
+        return jsonify(empty)
+
+    try:
+        with open(sidecar_path, 'r', encoding='utf-8') as f:
+            parsed = json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        # HARD REQ: never crash on malformed sidecar. Log + return empty
+        # with a warning so the UI can render it as "unparseable — start
+        # fresh?" without breaking the label mode.
+        logger.warning('[labels] sidecar %s malformed: %s', sidecar_path, e)
+        out = dict(empty)
+        out['warning'] = f'sidecar malformed: {e}'
+        return jsonify(out)
+
+    if not isinstance(parsed, dict):
+        logger.warning('[labels] sidecar %s not an object', sidecar_path)
+        out = dict(empty)
+        out['warning'] = 'sidecar not a JSON object'
+        return jsonify(out)
+
+    # Coerce shape defensively — old sidecars may lack fields.
+    labels = parsed.get('labels')
+    if not isinstance(labels, list):
+        labels = []
+    return jsonify({
+        'csv': parsed.get('csv') or os.path.basename(abs_path),
+        'x_column': parsed.get('x_column'),
+        'labels': labels,
+        'updated_at': parsed.get('updated_at'),
+        'updated_by': parsed.get('updated_by'),
+    })
+
+
+@data_sources_bp.route('/labels', methods=['PUT'])
+@login_required
+def put_labels():
+    """Write the sidecar labels for a CSV. Any authed user allowed.
+
+    Body:
+        {
+          "csv_path": "...",
+          "x_column": "timestamp_iso" | null,
+          "labels": [{"from": 0.0, "to": 45.12, "class": "idle"}, ...]
+        }
+
+    Writes atomically (temp file + rename) and stamps `updated_at` (UTC ISO)
+    + `updated_by` (username). Returns the JSON that was written.
+    """
+    data = request.get_json(silent=True) or {}
+    abs_path, err = _resolve_labels_csv_path(data.get('csv_path'))
+    if err is not None:
+        return err
+
+    # Refuse to write a sidecar for a CSV that doesn't exist. Otherwise
+    # any authed user could spray orphan .labels.json files (and their
+    # parent directories) throughout the datasets root — no security
+    # boundary crossed, but noisy garbage (QA G polish #6).
+    if not os.path.isfile(abs_path):
+        return jsonify({
+            'error': f'csv_path does not point to an existing file: '
+                     f'{data.get("csv_path")!r}',
+        }), 400
+
+    labels = data.get('labels', [])
+    validation_error = _validate_labels_payload(labels)
+    if validation_error is not None:
+        return jsonify({'error': validation_error}), 400
+
+    x_column = data.get('x_column')
+    if x_column is not None and not isinstance(x_column, str):
+        return jsonify({'error': "'x_column' must be a string or null"}), 400
+
+    # Rebuild the labels array in a canonical shape so downstream consumers
+    # can trust from/to are floats and class is stripped.
+    canonical_labels = [
+        {
+            'from': float(l['from']),
+            'to': float(l['to']),
+            'class': str(l['class']).strip(),
+        }
+        for l in labels
+    ]
+
+    sidecar_path = _labels_sidecar_path(abs_path)
+    envelope = {
+        'csv': os.path.basename(abs_path),
+        'x_column': x_column,
+        'labels': canonical_labels,
+        'updated_at': datetime.now(timezone.utc).isoformat().replace(
+            '+00:00', 'Z'),
+        'updated_by': (request.current_user or {}).get('username') or 'unknown',
+    }
+
+    # Atomic write: tempfile in the same directory (so os.replace stays on the
+    # same filesystem), then os.replace over the target.
+    parent_dir = os.path.dirname(sidecar_path)
+    try:
+        os.makedirs(parent_dir, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(
+            prefix=os.path.basename(sidecar_path) + '.',
+            suffix='.tmp',
+            dir=parent_dir,
+        )
+        try:
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                json.dump(envelope, f, indent=2, ensure_ascii=False)
+                f.flush()
+                try:
+                    os.fsync(f.fileno())
+                except OSError:
+                    pass  # fsync is best-effort; not fatal on some FS
+            os.replace(tmp_path, sidecar_path)
+            # tempfile.mkstemp creates the file with 0600 (owner-only). The
+            # sidecar is public-by-intent data; downstream consumers (data
+            # loader, training, external scripts) may run under different
+            # UIDs on customer installs. Widen to 0644 post-rename.
+            # (QA G polish #7 — no-op on Windows where chmod is a stub.)
+            try:
+                os.chmod(sidecar_path, 0o644)
+            except OSError:
+                pass
+        except Exception:
+            # Clean up the temp file so failed writes don't accumulate.
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+    except OSError as e:
+        logger.exception('[labels] atomic write failed for %s', sidecar_path)
+        return jsonify({'error': f'Failed to write labels sidecar: {e}'}), 500
+
+    logger.info(
+        '[labels] wrote %d labels to %s (by %s)',
+        len(canonical_labels), sidecar_path, envelope['updated_by'],
+    )
+    return jsonify(envelope)

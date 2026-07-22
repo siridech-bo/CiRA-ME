@@ -1919,6 +1919,24 @@ class AssetNode:
         return result
 
     @staticmethod
+    def reactivate(node_id: int) -> bool:
+        """Flip a single retired node back to status='active'.
+
+        Used by the simulator's change-profile flow so a name that was
+        retired in an earlier swap can be reused when the new profile
+        happens to declare a sensor with the same name (e.g. two profiles
+        that both have `vibration` or `temperature`). Returns True if the
+        node existed and was flipped, False otherwise.
+        """
+        with get_db() as conn:
+            cursor = conn.execute(
+                "UPDATE asset_nodes SET status='active', retired_at=NULL "
+                "WHERE id = ?", (node_id,)
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+
+    @staticmethod
     def retire_cascade(node_id: int) -> list:
         """Set node + all descendants to status='retired'. Returns list of affected ids."""
         now = datetime.utcnow().isoformat()

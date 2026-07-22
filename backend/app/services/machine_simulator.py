@@ -450,8 +450,28 @@ class MachineSimulator:
                 f"(current asset-tree root); got '{topic_base}'"
             )
 
+        # Phase G — Q1 check: if the target machine node already exists with
+        # active sensor children, refuse when their names don't match the
+        # profile's sensors. This is what caught the compressor/boiler mixup.
+        # Only run when autoprovision is on: without autoprovision, the
+        # operator is telling us "trust me, I've wired the tree myself" and
+        # a mismatch of names is a legitimate customization to allow
+        # (QA G polish #2).
+        if autoprovision_tree:
+            # Depth check first so a too-shallow / too-deep topic_base
+            # surfaces its real error instead of being misdiagnosed as a
+            # sensor conflict (QA G polish #3).
+            self._validate_topic_base_depth(topic_base)
+            self._check_children_match_profile(
+                topic_base=topic_base, profile=profile,
+            )
+
         # Auto-provision tree segments BEFORE we start the thread so early
         # ticks don't hit the rejection log while nodes are being created.
+        # _autoprovision_tree runs its own depth validation up-front — so
+        # a too-shallow / too-deep topic_base surfaces there with a clear
+        # message instead of the mismatch check misdiagnosing it as a
+        # sensor conflict (QA G polish #3).
         created_node_ids: List[int] = []
         if autoprovision_tree:
             created_node_ids = self._autoprovision_tree(
@@ -494,6 +514,177 @@ class MachineSimulator:
         logger.info('[sim] instance %s → state=%s (actor=%s)',
                     instance_id, new_state, actor_user_id)
         return m.to_dict()
+
+    def change_profile(
+        self,
+        instance_id: str,
+        new_profile_id: str,
+        new_state: Optional[str] = None,
+        actor_user_id: int = 0,
+    ) -> dict:
+        """Swap a running simulator's profile without losing the topic_base.
+
+        Stops the thread, retires the current profile's sensor children under
+        the machine node, autoprovisions the new profile's sensors, then
+        restarts the thread with the new profile. Returns the reborn
+        instance's `.to_dict()` result.
+
+        Raises KeyError if instance_id is unknown, ValueError on bad inputs.
+        """
+        # 1. Look up the instance
+        with self._instances_lock:
+            old = self._instances.get(instance_id)
+        if old is None:
+            raise KeyError(f'Instance {instance_id!r} not found')
+
+        # 2. Look up new profile
+        new_profile = get_profile(new_profile_id)
+        if new_profile is None:
+            raise ValueError(f'Unknown profile_id: {new_profile_id!r}')
+
+        # 3. Validate new_state (default to new profile's default_state)
+        target_state = new_state or new_profile.default_state
+        if target_state not in new_profile.states:
+            raise ValueError(
+                f'state {target_state!r} not in profile {new_profile_id!r}. '
+                f'Valid: {sorted(new_profile.states.keys())!r}'
+            )
+
+        # No-op guard: swapping to the same profile is a bug (or a redundant
+        # UI click). Refuse rather than tear down + rebuild identical state.
+        if old.profile.id == new_profile_id:
+            raise ValueError(
+                f'Instance is already on profile {new_profile_id!r}; '
+                f'use PATCH state to change state instead.'
+            )
+
+        # Refuse to tear down + rebuild while broker is down — the new
+        # profile's sensors would be created but the sim couldn't publish
+        # into them, and the ingest router snapshot wouldn't see the swap.
+        # Matches publish_raw's guard (QA G polish #1).
+        if not self._connected:
+            raise RuntimeError(
+                'MQTT broker not connected — refusing to change profile '
+                'while offline. Retry once the broker is back up.'
+            )
+
+        old_profile = old.profile
+        topic_base = old.topic_base
+        name = old.name
+
+        # 4. Stop the current thread. We hold the instances_lock only when
+        # mutating the dict; a stop can block briefly waiting for the loop.
+        try:
+            old.stop()
+        except Exception:
+            logger.warning('[sim] stop() during change_profile failed',
+                           exc_info=True)
+        try:
+            old.join(1.0)
+        except Exception:
+            pass
+
+        # 5. Retire the old profile's sensor children under the machine node.
+        # We deliberately do NOT rely on old_profile.sensors — the operator
+        # may have added/removed sensors manually in the tree UI. Instead,
+        # retire every ACTIVE direct child of the machine node so we get a
+        # clean slate to autoprovision into.
+        from ..models import AssetNode, AssetTreeAudit
+        machine_node = AssetNode.get_by_topic_path(topic_base)
+        retired_sensor_ids: List[int] = []
+        if machine_node is not None:
+            for child in AssetNode.get_children(machine_node['id']):
+                if child.get('status') != 'active':
+                    continue
+                # retire_cascade covers grand-children in the rare case a
+                # sensor has sub-nodes attached; still a single call per child.
+                affected = AssetNode.retire_cascade(child['id'])
+                retired_sensor_ids.extend(affected)
+
+        # 6. Autoprovision the new profile's sensors under the same machine.
+        # If the machine node itself doesn't exist yet (unusual — the sim
+        # was running without any tree presence), _autoprovision_tree
+        # handles walking + creating it too. When the machine already exists
+        # active, the walk short-circuits at every level so only the sensor
+        # children get created.
+        created_sensor_ids: List[int] = []
+        try:
+            created_sensor_ids = self._autoprovision_tree(
+                topic_base=topic_base,
+                profile=new_profile,
+                actor_user_id=actor_user_id,
+            )
+        except Exception as e:
+            # Rollback: unretire everything we just retired so the machine
+            # doesn't end up with zero active children when the caller sees
+            # a 400. Re-raise after — caller still gets a clean error, but
+            # the tree state is restored. (QA G polish #4.)
+            logger.exception('[sim] change_profile autoprovision failed — '
+                             'rolling back retirements')
+            for nid in retired_sensor_ids:
+                try:
+                    AssetNode.reactivate(nid)
+                except Exception:
+                    logger.warning('[sim] rollback reactivate %s failed',
+                                   nid, exc_info=True)
+            with self._instances_lock:
+                # Remove the dead instance so list() doesn't show a corpse.
+                self._instances.pop(instance_id, None)
+            raise ValueError(
+                f'Failed to autoprovision new profile {new_profile_id!r}: {e}'
+            )
+
+        # 7. Build a new machine and register it. We keep the SAME
+        # instance_id so the UI's card stays in place.
+        new_machine = _SimulatedMachine(
+            parent=self,
+            instance_id=instance_id,
+            profile=new_profile,
+            name=name,
+            topic_base=topic_base,
+            initial_state=target_state,
+        )
+        with self._instances_lock:
+            self._instances[instance_id] = new_machine
+        new_machine.start()
+
+        # 8. Nudge the ingest router so retirements + new sensor children
+        # take effect immediately (dropped messages on the retired paths,
+        # accepted messages on the new ones).
+        self._reload_ingest_router()
+
+        # 9. Audit event.
+        try:
+            AssetTreeAudit.log(
+                actor_user_id=actor_user_id or 0,
+                event_type='simulator_change_profile',
+                target_type='simulator',
+                target_id=None,
+                payload={
+                    'instance_id': instance_id,
+                    'name': name,
+                    'topic_base': topic_base,
+                    'from_profile': old_profile.id,
+                    'to_profile': new_profile.id,
+                    'retired_sensor_ids': retired_sensor_ids,
+                    'created_sensor_ids': created_sensor_ids,
+                    'new_state': target_state,
+                },
+            )
+        except Exception:
+            logger.warning('[sim] audit log change_profile failed',
+                           exc_info=True)
+
+        logger.info(
+            '[sim] instance %s: profile %s → %s (name=%s, topic_base=%s, '
+            'retired=%d, created=%d)',
+            instance_id, old_profile.id, new_profile.id, name, topic_base,
+            len(retired_sensor_ids), len(created_sensor_ids),
+        )
+        result = new_machine.to_dict()
+        result['retired_sensor_ids'] = retired_sensor_ids
+        result['created_sensor_ids'] = created_sensor_ids
+        return result
 
     def delete_instance(self, instance_id: str,
                         actor_user_id: int = 0) -> None:
@@ -704,9 +895,34 @@ class MachineSimulator:
             sensor_path = f'{topic_base}/{sensor.name}'
             existing = AssetNode.get_by_topic_path(sensor_path)
             if existing is not None:
-                # Already there (active or retired) — leave it alone.
-                # Retired sensors will drop messages; the operator can
-                # un-retire from the tree admin if that's a mistake.
+                # If the node is retired at this exact path, un-retire it
+                # instead of skipping. QA G blocker: without this,
+                # change_profile through profile-A → profile-B → profile-A
+                # leaves the A-shaped sensors stuck retired because
+                # change_profile retires everything before autoprovisioning,
+                # and the second autoprovision then no-ops on a retired
+                # node whose name matches. Router keeps rejecting.
+                if existing.get('status') == 'retired':
+                    AssetNode.reactivate(existing['id'])
+                    created_ids.append(existing['id'])
+                    # Refresh sensor_meta while we're here — the new
+                    # profile may declare a different unit / rate on the
+                    # same sensor name.
+                    try:
+                        AssetSensorMeta.upsert(
+                            asset_id=existing['id'],
+                            unit=sensor.unit,
+                            sample_rate_hz=sensor.sample_rate_hz,
+                            data_type='float',
+                        )
+                    except Exception:
+                        logger.warning(
+                            '[sim] failed to refresh sensor meta on '
+                            'reactivated %s', sensor_path, exc_info=True,
+                        )
+                # Active node with matching name → leave as-is, sim will
+                # publish into it. (No sensor_meta refresh here because
+                # the operator may have intentional custom values.)
                 continue
             sensor_id = AssetNode.create(
                 parent_id=parent_id,
@@ -748,6 +964,74 @@ class MachineSimulator:
                 logger.warning('[sim] audit log failed', exc_info=True)
 
         return created_ids
+
+    def _validate_topic_base_depth(self, topic_base: str) -> None:
+        """Refuse a topic_base whose segment count doesn't put it exactly at
+        the machine level. Extracted so `create_instance` can run this
+        BEFORE `_check_children_match_profile`, so a too-shallow topic_base
+        surfaces the real depth error instead of misdiagnosing itself as a
+        sensor-name conflict (QA G polish #3).
+        """
+        from ..models import AssetTreeConfig
+        cfg = AssetTreeConfig.get() or {}
+        level_names = cfg.get('level_names') or []
+        max_depth = max(0, len(level_names) - 1)
+        segments = topic_base.split('/')
+        machine_level = max(0, len(segments) - 1)
+        if machine_level != max_depth - 1:
+            expected_segments = max_depth
+            raise ValueError(
+                f'topic_base must have exactly {expected_segments} segments '
+                f'(one per level, ending at the machine level); got '
+                f'{len(segments)} segments in {topic_base!r}. Level names: '
+                f'{level_names!r}.'
+            )
+
+    def _check_children_match_profile(
+        self,
+        topic_base: str,
+        profile: MachineProfile,
+    ) -> None:
+        """Refuse when target machine already has ACTIVE children whose names
+        disagree with the profile's sensor names. Prevents the "boiler profile
+        pointed at compressor" mix-up. No-ops when the machine node doesn't
+        exist yet or has no active children.
+
+        Raises ValueError with a message listing existing vs expected sets.
+        """
+        from ..models import AssetNode
+        machine_node = AssetNode.get_by_topic_path(topic_base)
+        if machine_node is None or machine_node.get('status') != 'active':
+            return  # nothing to conflict with
+
+        existing_active = {
+            c['name']
+            for c in AssetNode.get_children(machine_node['id'])
+            if c.get('status') == 'active'
+        }
+        if not existing_active:
+            return  # empty machine → nothing to conflict with
+
+        expected = {s.name for s in profile.sensors}
+        if existing_active == expected:
+            return  # perfect match
+
+        # A subset match (existing ⊂ expected) is fine — autoprovision will
+        # fill in the missing sensors. Only refuse when there are FOREIGN
+        # names on the machine that don't belong to this profile.
+        foreign = existing_active - expected
+        if not foreign:
+            return
+
+        # Grab the machine's own name for the error message so operators can
+        # immediately see which machine they were pointing at.
+        machine_name = machine_node.get('name') or topic_base.split('/')[-1]
+        raise ValueError(
+            f"Machine {machine_name!r} already has children {sorted(existing_active)!r}; "
+            f"profile {profile.id!r} expects {sorted(expected)!r}. "
+            f"Retire the old sensors first, or POST /simulators/<id>/change-profile "
+            f"after creating."
+        )
 
     def _reload_ingest_router(self) -> None:
         """Synchronous cache refresh on the ingest router so auto-provisioned

@@ -160,6 +160,60 @@ def patch_instance(instance_id):
     return jsonify(instance)
 
 
+@simulators_bp.route('/<instance_id>/change-profile', methods=['POST'])
+@login_required
+def change_profile(instance_id):
+    """Swap a running simulator's profile without deleting/recreating.
+
+    Body:
+        {
+          "profile_id": "industrial_boiler",   # required
+          "state": "idle"                      # optional; defaults to new
+                                               # profile's default_state
+        }
+
+    Stops the sim thread, retires the current profile's sensor children
+    under the machine node, autoprovisions the new profile's sensors,
+    and restarts the thread on the new profile at `state`. The audit event
+    `simulator_change_profile` records what got retired + created.
+
+    Phase G — Q1 (2026-07-22 spec).
+    """
+    guard = _admin_only()
+    if guard is not None:
+        return guard
+    data = request.get_json(silent=True) or {}
+    profile_id = data.get('profile_id')
+    if not profile_id or not isinstance(profile_id, str):
+        return jsonify({'error': "'profile_id' (string) required"}), 400
+    new_state = data.get('state')
+    if new_state is not None and not isinstance(new_state, str):
+        return jsonify({'error': "'state' must be a string when provided"}), 400
+
+    try:
+        instance = machine_simulator.change_profile(
+            instance_id=instance_id,
+            new_profile_id=profile_id,
+            new_state=new_state,
+            actor_user_id=_actor_id(),
+        )
+    except KeyError:
+        return jsonify({'error': f'Instance {instance_id!r} not found'}), 404
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except RuntimeError as e:
+        # Broker down / router unavailable → 503, matches publish-raw pattern.
+        return jsonify({'error': str(e)}), 503
+    except Exception as e:
+        logger.exception('change_profile failed')
+        return jsonify({'error': str(e)}), 500
+
+    # (Audit event is emitted inside machine_simulator.change_profile so the
+    # payload can reference the exact retired/created node ids the routine
+    # observed. Route-level catch-all here is intentionally omitted.)
+    return jsonify(instance)
+
+
 @simulators_bp.route('/<instance_id>', methods=['DELETE'])
 @login_required
 def delete_instance(instance_id):

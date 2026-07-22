@@ -141,6 +141,120 @@ class DataLoader:
                 return None
             return session
 
+    # ── Phase G — Labels sidecar integration ─────────────────────────────
+    #
+    # After load_csv() (and any other loader that returns a single-CSV
+    # DataFrame), look for `<csv_stem>.labels.json` colocated with the file.
+    # When present, add a `label` column populated by mapping each row's
+    # timestamp into the label ranges.
+    #
+    # Failure policy matches the sidecar route's: malformed/missing sidecar
+    # never crashes the loader — the DataFrame comes back unlabeled.
+
+    def _labels_sidecar_path(self, csv_path: str) -> str:
+        """Sibling sidecar path — same directory, `<stem>.labels.json`."""
+        directory = os.path.dirname(csv_path)
+        stem, _ext = os.path.splitext(os.path.basename(csv_path))
+        return os.path.join(directory, f'{stem}.labels.json')
+
+    def _read_labels_sidecar(self, csv_path: str) -> Optional[Dict[str, Any]]:
+        """Return the parsed sidecar dict, or None on missing/malformed.
+
+        Logs a warning on malformed JSON but never raises — a broken sidecar
+        must not knock the data pipeline over.
+        """
+        sidecar = self._labels_sidecar_path(csv_path)
+        if not os.path.isfile(sidecar):
+            return None
+        try:
+            with open(sidecar, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError) as e:
+            import logging
+            logging.getLogger(__name__).warning(
+                '[data_loader] sidecar %s malformed: %s — ignoring',
+                sidecar, e,
+            )
+            return None
+        if not isinstance(data, dict):
+            return None
+        return data
+
+    # PHASE-G-FOLLOWUP: labels are only applied by load_csv() (single-CSV
+    # path). load_csv_multiple() concat + JOIN loaders skip the sidecar —
+    # for v1, cross-file labels don't have a canonical anchor. Add per-file
+    # sidecar merging when users start asking for it.
+
+    def _apply_labels_sidecar(
+        self,
+        df: pd.DataFrame,
+        csv_path: str,
+        timestamp_col: Optional[str],
+    ) -> int:
+        """Add a `label` column to `df` from the CSV's sibling sidecar.
+
+        Ranges are half-open `[from, to)` matched against the timestamp
+        column's numeric values. Rows outside any range get None. Returns
+        the count of labels applied (0 when no sidecar or empty).
+        """
+        if not timestamp_col or timestamp_col not in df.columns:
+            return 0
+        sidecar = self._read_labels_sidecar(csv_path)
+        if not sidecar:
+            return 0
+        raw_labels = sidecar.get('labels')
+        if not isinstance(raw_labels, list) or not raw_labels:
+            return 0
+
+        # Build label column initialized to None. Iterate ranges and stamp
+        # the class where the timestamp falls in [from, to).
+        ts_series = df[timestamp_col]
+        if not pd.api.types.is_numeric_dtype(ts_series):
+            # After load_csv's _coerce_timestamp_to_seconds() the column is
+            # numeric. If a caller reaches here with a non-numeric ts, skip
+            # rather than guess — labels are numeric-x by contract.
+            import logging
+            logging.getLogger(__name__).warning(
+                '[data_loader] cannot apply labels — timestamp column %r is '
+                'not numeric (dtype=%s)',
+                timestamp_col, ts_series.dtype,
+            )
+            return 0
+
+        # Start with the existing label column if the CSV had one — sidecar
+        # labels take precedence but rows outside sidecar ranges keep the
+        # CSV-native label. This matches operator intent: "add labels
+        # post-hoc to my continuous recording."
+        if 'label' in df.columns:
+            label_col = df['label'].copy()
+        else:
+            label_col = pd.Series([None] * len(df), index=df.index, dtype=object)
+
+        applied = 0
+        for entry in raw_labels:
+            try:
+                frm = float(entry['from'])
+                to = float(entry['to'])
+                cls = str(entry['class']).strip()
+            except (KeyError, TypeError, ValueError):
+                continue  # silently skip malformed entries
+            if not cls or not (frm < to):
+                continue
+            mask = (ts_series >= frm) & (ts_series < to)
+            n = int(mask.sum())
+            if n > 0:
+                label_col.loc[mask] = cls
+                applied += n
+
+        df['label'] = label_col
+
+        import logging
+        logging.getLogger(__name__).info(
+            '[data_loader] applied %d labels from sidecar to %s',
+            applied, csv_path,
+        )
+        return applied
+
     # Patterns to detect time/timestamp columns (case-insensitive).
     # ``index`` is accepted so a CSV with a plain row-counter column named
     # ``index`` (or ``Index``, ``INDEX``…) can serve as the timestamp axis.
@@ -260,7 +374,7 @@ class DataLoader:
 
         return None
 
-    def load_csv(self, file_path: str) -> Dict[str, Any]:
+    def load_csv(self, file_path: str, apply_labels: bool = True) -> Dict[str, Any]:
         """
         Load data from a CSV file.
 
@@ -269,6 +383,13 @@ class DataLoader:
         - Numeric sensor columns
         - Optional label column (e.g. 'label', 'class', 'target')
         - Optional time column (e.g. 'timestamp', 'Time (s)', 'time', 'elapsed', 'index')
+
+        Phase G: when `apply_labels=True` (default) and a sibling
+        `<csv_stem>.labels.json` sidecar exists, its label ranges are
+        stamped onto a `label` column of the returned DataFrame. Rows
+        outside every range keep whatever label the CSV already had (or
+        None). Windowing/features/training already consume `label` when
+        present — no downstream changes needed.
         """
         if not os.path.exists(file_path):
             raise FileNotFoundError(f"File not found: {file_path}")
@@ -349,18 +470,41 @@ class DataLoader:
                 hint="Ensure at least one column contains numeric values. Text columns are treated as labels.",
             )
 
+        # Phase G — apply sidecar labels BEFORE metadata / preview so the
+        # `labels` metadata reflects sidecar-added classes and downstream
+        # windowing sees them without reload.
+        sidecar_applied = 0
+        if apply_labels:
+            try:
+                sidecar_applied = self._apply_labels_sidecar(
+                    df, file_path, timestamp_col,
+                )
+                # After applying, treat `label` as the label column even if
+                # the CSV didn't originally have one.
+                if sidecar_applied > 0 and 'label' in df.columns and not label_col:
+                    label_col = 'label'
+            except Exception:
+                # HARD REQ: never crash on sidecar. Log + carry on.
+                import logging
+                logging.getLogger(__name__).exception(
+                    '[data_loader] apply_labels_sidecar failed for %s '
+                    '— continuing without labels',
+                    file_path,
+                )
+
         # Generate session ID and store data
         session_id = self._generate_session_id()
         metadata = {
             'format': 'csv',
             'file_path': file_path,
             'total_rows': len(df),
-            'columns': columns,
+            'columns': list(df.columns),  # includes label if sidecar added
             'sensor_columns': sensor_cols,
             'label_column': label_col,
             'timestamp_column': timestamp_col,
             'time_epoch_start': time_epoch_start,
-            'labels': _safe_labels(df[label_col]) if label_col else None
+            'labels': _safe_labels(df[label_col]) if label_col else None,
+            'labels_sidecar_applied': sidecar_applied,
         }
 
         self._store_session(session_id, df, metadata)
@@ -568,12 +712,32 @@ class DataLoader:
             'preview': _safe_preview_records(df)
         }
 
-    def load_csv_multiple(self, file_paths: List[str]) -> Dict[str, Any]:
+    def load_csv_multiple(
+        self,
+        file_paths: List[str],
+        merge_mode: Optional[str] = None,
+        alignment: str = 'exact',
+        tolerance_ms: Optional[float] = None,
+        resample_hz: Optional[float] = None,
+    ) -> Dict[str, Any]:
         """
         Load data from multiple CSV files as one dataset.
 
-        All files must have identical columns. Each file becomes a separate
-        sample_id so windowing respects file boundaries.
+        merge_mode:
+            - None (default): auto-detect. All files under the same parent
+              folder → concat rows (existing "many-days-of-same-sensor"
+              behavior). Files span multiple parent folders → JOIN by
+              timestamp with one column per sensor folder.
+            - 'concat': force row concatenation (existing behavior, requires
+              identical column names across files).
+            - 'join': force cross-sensor JOIN even if files share a folder.
+
+        alignment (only used when merge_mode resolves to 'join'):
+            - 'exact': inner join on identical timestamp values.
+            - 'nearest': pd.merge_asof with tolerance_ms tolerance
+              (per-file timestamps may drift slightly).
+            - 'resample': resample each file to resample_hz then align on
+              the common grid (interpolates gaps).
         """
         if not file_paths:
             raise ValueError("No file paths provided")
@@ -586,6 +750,23 @@ class DataLoader:
             if not os.path.exists(fp):
                 raise FileNotFoundError(f"File not found: {fp}")
 
+        # Auto-detect merge mode from folder layout when caller didn't ask.
+        # Files under one parent → user is picking multiple days of the same
+        # sensor → row-concat. Files under different parents → user is picking
+        # different sensors for the same machine → JOIN by timestamp.
+        if merge_mode is None:
+            parent_dirs = {os.path.dirname(fp) for fp in file_paths}
+            merge_mode = 'join' if len(parent_dirs) > 1 else 'concat'
+
+        if merge_mode == 'join':
+            return self._load_csv_multi_join(
+                file_paths,
+                alignment=alignment,
+                tolerance_ms=tolerance_ms,
+                resample_hz=resample_hz,
+            )
+
+        # ── merge_mode == 'concat' path (existing behavior) ──────────────
         # Read headers from all files and check column compatibility
         reference_cols = None
         reference_file = None
@@ -712,6 +893,175 @@ class DataLoader:
             'session_id': session_id,
             'metadata': metadata,
             'preview': _safe_records(preview)
+        }
+
+    def _load_csv_multi_join(
+        self,
+        file_paths: List[str],
+        alignment: str = 'exact',
+        tolerance_ms: Optional[float] = None,
+        resample_hz: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Cross-sensor JOIN of multiple single-sensor CSVs by timestamp.
+
+        Each file contributes columns named after its parent folder (the
+        sensor name). Files may live in different folders but must each
+        have a detectable timestamp column.
+        """
+        frames = []
+        sensor_names: List[str] = []
+
+        for fp in file_paths:
+            df = pd.read_csv(fp)
+            cols = df.columns.tolist()
+
+            ts_col = self._detect_time_column(cols)
+            if not ts_col and cols and pd.api.types.is_numeric_dtype(df[cols[0]]):
+                ts_col = cols[0]
+            if not ts_col:
+                raise DataValidationError(
+                    code='NO_TIME_OR_INDEX',
+                    message=f"File {os.path.basename(fp)} has no timestamp column for JOIN.",
+                    hint="Cross-sensor JOIN needs a `time` / `timestamp` / `index` column in every file.",
+                )
+
+            # Normalise timestamp to seconds in-place (adds a computed column
+            # when the source was datetime strings).
+            self._coerce_timestamp_to_seconds(df, ts_col)
+
+            label_col = self._detect_label_column(cols)
+            sensor = os.path.basename(os.path.dirname(fp)) or 'sensor'
+            sensor_names.append(sensor)
+
+            # Numeric sensor columns from THIS file (excludes timestamp + label).
+            value_cols = [
+                c for c in cols
+                if c != ts_col and c != label_col and pd.api.types.is_numeric_dtype(df[c])
+            ]
+            if not value_cols:
+                raise DataValidationError(
+                    code='NO_SENSOR_COLUMNS',
+                    message=f"File {os.path.basename(fp)} has no numeric sensor columns to JOIN.",
+                    hint="Ensure the file contains at least one numeric non-timestamp column.",
+                )
+
+            # Rename: single value column takes the sensor name directly;
+            # multiple value columns get sensor__origColName prefix.
+            rename = {}
+            if len(value_cols) == 1:
+                rename[value_cols[0]] = sensor
+            else:
+                for c in value_cols:
+                    rename[c] = f"{sensor}__{c}"
+            rename[ts_col] = '__ts'
+            df = df.rename(columns=rename)
+            df = df[['__ts'] + list(rename[c] for c in value_cols)]
+            df = df.sort_values('__ts').reset_index(drop=True)
+            frames.append(df)
+
+        # ── Merge ────────────────────────────────────────────────────────
+        if alignment == 'exact':
+            combined = frames[0]
+            for f in frames[1:]:
+                combined = combined.merge(f, on='__ts', how='inner')
+            if combined.empty:
+                raise DataValidationError(
+                    code='NO_MATCHING_TIMESTAMPS',
+                    message="No exact-timestamp matches across the selected sensor files.",
+                    hint="Try alignment mode 'nearest' with a tolerance, or 'resample' to a common rate.",
+                )
+
+        elif alignment == 'nearest':
+            if not tolerance_ms or tolerance_ms <= 0:
+                raise ValueError("tolerance_ms > 0 required for 'nearest' alignment")
+            tol = pd.Timedelta(milliseconds=float(tolerance_ms))
+            # merge_asof needs a datetime-like column
+            for f in frames:
+                f['__ts_td'] = pd.to_timedelta(f['__ts'], unit='s')
+            combined = frames[0]
+            for f in frames[1:]:
+                combined = pd.merge_asof(
+                    combined.sort_values('__ts_td'),
+                    f.sort_values('__ts_td'),
+                    on='__ts_td', tolerance=tol, direction='nearest',
+                    suffixes=('', '__dup'),
+                )
+                # Drop duplicated __ts columns from right frames.
+                for dup in [c for c in combined.columns if c.endswith('__dup') or (c == '__ts' and '__ts_td' in combined.columns and combined.columns.tolist().count('__ts') > 1)]:
+                    if dup in combined.columns:
+                        combined = combined.drop(columns=[dup])
+            combined = combined.dropna()
+            if combined.empty:
+                raise DataValidationError(
+                    code='NO_NEAREST_MATCHES',
+                    message=f"No timestamp matches within {tolerance_ms} ms tolerance.",
+                    hint="Increase tolerance_ms, or switch to 'resample' alignment.",
+                )
+            combined = combined.drop(columns=['__ts_td'])
+
+        elif alignment == 'resample':
+            if not resample_hz or resample_hz <= 0:
+                raise ValueError("resample_hz > 0 required for 'resample' alignment")
+            period_ms = int(round(1000.0 / float(resample_hz)))
+            resampled = []
+            for f in frames:
+                idx = pd.to_datetime(f['__ts'], unit='s')
+                f2 = f.drop(columns=['__ts']).set_index(idx)
+                f2 = f2.resample(f"{period_ms}ms").mean()
+                resampled.append(f2)
+            combined = resampled[0]
+            for f in resampled[1:]:
+                combined = combined.join(f, how='outer')
+            combined = combined.interpolate(method='linear').dropna()
+            if combined.empty:
+                raise DataValidationError(
+                    code='RESAMPLE_EMPTY',
+                    message="Resample-aligned dataset is empty after interpolation.",
+                    hint="Check timestamp ranges overlap and rate is reasonable for the data.",
+                )
+            combined = combined.reset_index().rename(columns={'index': '__ts'})
+            combined['__ts'] = (combined['__ts'] - combined['__ts'].iloc[0]).dt.total_seconds()
+
+        else:
+            raise ValueError(f"Unknown alignment mode: {alignment!r}")
+
+        # Rename __ts to a friendlier name downstream consumers understand.
+        combined = combined.rename(columns={'__ts': 'timestamp_s'})
+
+        session_id = self._generate_session_id()
+        columns = combined.columns.tolist()
+        sensor_cols = [c for c in columns if c != 'timestamp_s']
+
+        selection_dir = _build_multi_csv_selection_dir(session_id, file_paths)
+
+        metadata = {
+            'format': 'csv',
+            'file_path': selection_dir,
+            'file_paths': file_paths,
+            'is_multi_csv': True,
+            'is_cross_sensor_join': True,
+            'total_rows': len(combined),
+            'total_samples': 1,  # combined is one continuous joined dataset
+            'columns': columns,
+            'sensor_columns': sensor_cols,
+            'label_column': None,
+            'timestamp_column': 'timestamp_s',
+            'time_epoch_start': 0.0,
+            'labels': None,
+            'source_files': [os.path.basename(fp) for fp in file_paths],
+            'source_sensors': sensor_names,
+            'merge_mode': 'join',
+            'alignment': alignment,
+            'tolerance_ms': tolerance_ms,
+            'resample_hz': resample_hz,
+        }
+
+        self._store_session(session_id, combined, metadata)
+
+        return {
+            'session_id': session_id,
+            'metadata': metadata,
+            'preview': _safe_records(combined.head(20)),
         }
 
     def load_edge_impulse_json(self, file_path: str) -> Dict[str, Any]:

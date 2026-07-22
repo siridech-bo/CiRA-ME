@@ -117,6 +117,7 @@
           :is-admin="isAdmin"
           @patch-state="onPatchState"
           @delete="onDelete"
+          @change-profile="onChangeProfile"
         />
       </v-col>
     </v-row>
@@ -184,6 +185,13 @@
       :root-name="rootName"
       @created="onCreated"
     />
+
+    <!-- Change-profile dialog (Phase G — Q1) -->
+    <SimulatorChangeProfileDialog
+      v-model="showChangeProfileDialog"
+      :instance="changeProfileTarget"
+      @changed="onProfileChanged"
+    />
   </v-container>
 </template>
 
@@ -195,6 +203,7 @@ import { useAssetTreeStore } from '@/stores/assetTree'
 import { useNotificationStore } from '@/stores/notification'
 import SimulatorCard from '@/components/SimulatorCard.vue'
 import SimulatorNewDialog from '@/components/SimulatorNewDialog.vue'
+import SimulatorChangeProfileDialog from '@/components/SimulatorChangeProfileDialog.vue'
 
 interface SensorInfo {
   name: string
@@ -252,6 +261,12 @@ const snapshot = ref<Snapshot>({
 const loadingList = ref(false)
 const showNewDialog = ref(false)
 
+// Change-profile dialog state (Phase G — Q1). We hold onto the target
+// instance object so the dialog can render its current profile / topic
+// alongside the picker.
+const showChangeProfileDialog = ref(false)
+const changeProfileTarget = ref<Instance | null>(null)
+
 // Raw-publish widget state
 const rawTopic = ref('')
 const rawPayload = ref('')
@@ -307,6 +322,26 @@ async function onDelete(id: string) {
     await refresh()
   } catch (e: any) {
     notify.showError(e.response?.data?.error || 'Failed to delete simulator')
+  }
+}
+
+function onChangeProfile(id: string) {
+  const inst = instances.value.find(i => i.id === id) || null
+  if (!inst) return
+  changeProfileTarget.value = inst
+  showChangeProfileDialog.value = true
+}
+
+async function onProfileChanged() {
+  // Backend already re-provisioned the tree — refresh both the sim list
+  // and the tree store so the sidebar picks up the retired-old +
+  // created-new sensor children.
+  await refresh()
+  try {
+    assetTreeStore.invalidateTree?.()
+    await assetTreeStore.fetchTree?.()
+  } catch {
+    /* older builds may not expose invalidate */
   }
 }
 

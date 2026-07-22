@@ -53,17 +53,33 @@
           :disabled="!isAdmin"
           @update:model-value="onStateChange"
         />
-        <v-btn
-          v-if="isAdmin"
-          icon
-          size="small"
-          variant="tonal"
-          color="error"
-          @click="confirmDelete"
-          :title="'Delete simulator'"
-        >
-          <v-icon>mdi-delete-outline</v-icon>
-        </v-btn>
+        <v-menu v-if="isAdmin" location="bottom end">
+          <template #activator="{ props: menuProps }">
+            <v-btn
+              icon
+              size="small"
+              variant="tonal"
+              v-bind="menuProps"
+              :title="'More actions'"
+            >
+              <v-icon>mdi-dots-vertical</v-icon>
+            </v-btn>
+          </template>
+          <v-list density="compact">
+            <v-list-item
+              prepend-icon="mdi-swap-horizontal"
+              title="Change profile…"
+              @click="onChangeProfile"
+            />
+            <v-divider />
+            <v-list-item
+              prepend-icon="mdi-delete-outline"
+              base-color="error"
+              title="Delete simulator"
+              @click="confirmDelete"
+            />
+          </v-list>
+        </v-menu>
       </div>
 
       <!-- Sparklines -->
@@ -143,6 +159,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'patch-state', id: string, newState: string): void
   (e: 'delete', id: string): void
+  (e: 'change-profile', id: string): void
 }>()
 
 const isChaos = computed(() => props.instance.state === 'chaos')
@@ -216,6 +233,10 @@ function onStateChange(v: string) {
 function confirmDelete() {
   if (!confirm(`Stop simulator "${props.instance.name}"?`)) return
   emit('delete', props.instance.id)
+}
+
+function onChangeProfile() {
+  emit('change-profile', props.instance.id)
 }
 </script>
 
