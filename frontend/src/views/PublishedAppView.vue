@@ -2192,11 +2192,118 @@ function downloadMultiModelCsv() {
 const fileInput = ref(null)
 
 // ── Live Stream (MQTT) ─────────────────────────────────
+// Phase H — accept either `input.live_stream` (single topic) or
+// `input.machine_live_stream` (bound to a machine node → fan out over
+// its sensor children). The machine variant projects itself onto the
+// same downstream contract (mqttTopic + liveChannels) by using an MQTT
+// wildcard subscription (`<machine_topic>/+`) and computing channels
+// from the stored topology snapshot (single-value sensor → `<sensor>`,
+// multi-axis → `<sensor>.<axis>` per spec §H.5).
 const isLiveStream = computed(() => {
-  return parsedNodes.value.some(n => n.type === 'input.live_stream')
+  return parsedNodes.value.some(
+    n => n.type === 'input.live_stream'
+      || n.type === 'input.machine_live_stream',
+  )
 })
 
+const machineLiveStreamNode = computed(() =>
+  parsedNodes.value.find(n => n.type === 'input.machine_live_stream'),
+)
+
+const machineLiveTopology = computed(() => {
+  const raw = machineLiveStreamNode.value?.config?.topology
+  if (!raw) return []
+  try {
+    const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw
+    return Array.isArray(parsed) ? parsed : []
+  } catch { return [] }
+})
+
+// Compose channel names per spec §H.5.
+const machineLiveChannels = computed(() => {
+  const out = []
+  for (const t of machineLiveTopology.value) {
+    if (Array.isArray(t.channels) && t.channels.length > 0) {
+      for (const axis of t.channels) out.push(`${t.name}.${axis}`)
+    } else {
+      out.push(t.name)
+    }
+  }
+  return out
+})
+
+// Phase H — per-machine fan-in state. Keyed by sensor name so out-of-order
+// arrivals overwrite the "last known" cache; downstream sees a joined
+// dict on every message so the existing sample-by-sample handler stays
+// unchanged. Cleared automatically when the topology changes.
+const machineSensorCache = new Map()
+watch(machineLiveTopology, () => {
+  machineSensorCache.clear()
+})
+
+function mergeMachineTopicMessage(topic, raw) {
+  const topology = machineLiveTopology.value
+  if (!topology.length) return raw
+  const parts = String(topic || '').split('/')
+  const sensorName = parts[parts.length - 1]
+  const meta = topology.find(t => t.name === sensorName)
+  if (!meta) return null  // unknown sensor for this machine — silently drop
+  // Extract per-channel values from THIS message.
+  if (Array.isArray(meta.channels) && meta.channels.length > 0) {
+    // Multi-axis: expect `{"x": ..., "y": ..., ...}`.
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+      for (const axis of meta.channels) {
+        if (axis in raw) {
+          const n = typeof raw[axis] === 'number' ? raw[axis] : parseFloat(raw[axis])
+          if (Number.isFinite(n)) machineSensorCache.set(`${sensorName}.${axis}`, n)
+        }
+      }
+    }
+  } else {
+    // Single-value: `{"value": N}` or bare number.
+    let v = raw
+    if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+      v = raw.value ?? raw.v ?? raw.val
+    }
+    const n = typeof v === 'number' ? v : parseFloat(v)
+    if (Number.isFinite(n)) machineSensorCache.set(sensorName, n)
+  }
+  // Compose the joined dict for downstream consumption. Include only keys
+  // that have SOME value yet so the sample gate in parseSensorPayload
+  // (which requires channel presence) fires as soon as we have data for
+  // any subscribed sensor. Nearest-neighbour behaviour: each emit is the
+  // latest sample per key (spec §H.5 "nearest" default). PHASE-H-FOLLOWUP
+  // — configurable emit rate with a background timer instead of on every
+  // MQTT message; current shape emits per-message which is fine for the
+  // MVP but ignores the sample_rate_hz config knob.
+  if (machineSensorCache.size === 0) return null
+  const merged = {}
+  for (const [k, v] of machineSensorCache.entries()) merged[k] = v
+  return merged
+}
+
 const liveStreamConfig = computed(() => {
+  // Phase H — a machine_live_stream node projects to the same shape as
+  // input.live_stream for downstream code (broker_url, topic, channels).
+  const machine = machineLiveStreamNode.value
+  if (machine) {
+    const cfg = machine.config || {}
+    const base = cfg.machine_topic || ''
+    return {
+      broker_url: cfg.broker_url,
+      // `+` wildcard = one segment (matches direct sensor children only,
+      // not deeper sub-topics — exactly what the tree contract guarantees).
+      topic: base ? `${base}/+` : (cfg.topic || 'sensors/#'),
+      channels: machineLiveChannels.value.join(', '),
+      _machine: true,
+      _topology: machineLiveTopology.value,
+      _machine_topic: base,
+      sample_rate_hz: cfg.sample_rate_hz,
+      alignment: cfg.alignment,
+      tolerance_ms: cfg.tolerance_ms,
+      buffer_window_s: cfg.buffer_window_s,
+    }
+  }
   const node = parsedNodes.value.find(n => n.type === 'input.live_stream')
   return node?.config || {}
 })
@@ -2774,7 +2881,7 @@ async function startLiveStream() {
       mqttMessageCount.value++
       rateCounter++
       try {
-        const raw = JSON.parse(payload.toString())
+        let raw = JSON.parse(payload.toString())
         // Layer 3: ring-buffer the raw payload for the "Show raw MQTT" panel.
         // Pretty-print to 2-space JSON so operators can eyeball payload shape
         // without a separate viewer. Newest-first, capped at 3 entries.
@@ -2785,6 +2892,15 @@ async function startLiveStream() {
             rawMqttBuffer.value = rawMqttBuffer.value.slice(0, 3)
           }
         } catch { /* stringify should not fail on parseable JSON */ }
+        // Phase H — Machine Live Stream: fan-in per-sensor topics into a
+        // combined dict whose keys match `liveChannels` (sensor for
+        // single-value, sensor.axis for multi-axis). We synthesise `raw`
+        // here so downstream parseSensorPayload sees the same shape as
+        // input.live_stream.
+        if (liveStreamConfig.value?._machine) {
+          raw = mergeMachineTopicMessage(_topic, raw)
+          if (!raw) return  // still waiting for other sensors to fill in
+        }
         const sample = parseSensorPayload(raw)
         if (sample) {
           // Preview buffer (recorder-mode only): always updates while connected,

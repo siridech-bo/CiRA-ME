@@ -29,6 +29,11 @@ class SensorDef:
     name: str            # topic segment (regex ^[A-Za-z0-9_-]+$)
     unit: str            # 'bar', 'celsius', 'mm_s2', 'a', 'hz', 'percent'
     sample_rate_hz: float  # publish rate (Hz)
+    # Phase H — non-empty means this sensor publishes multiple axes in ONE
+    # MQTT payload (e.g. `{"x", "y", "z"}` on one topic). None / [] keeps
+    # the legacy single-value behavior. Each channel is a JS-identifier-safe
+    # string; the router demultiplexes into a multi-column CSV.
+    channels: Optional[List[str]] = None
 
 
 # Params tuple: (mean, std_dev, sinusoid_amplitude, sinusoid_period_s)
@@ -69,6 +74,9 @@ class MachineProfile:
                     'name': s.name,
                     'unit': s.unit,
                     'sample_rate_hz': s.sample_rate_hz,
+                    # Phase H — surface channels so the frontend can render
+                    # a multi-axis chip on the profile picker.
+                    'channels': list(s.channels) if s.channels else None,
                 }
                 for s in self.sensors
             ],
@@ -103,6 +111,44 @@ def sample(
         sine = 0.0
     noise = random.gauss(0.0, std) if std > 0 else 0.0
     return mean + sine + noise
+
+
+def sample_multi_axis(
+    state_params: StateParams,
+    sensor_name: str,
+    channels: List[str],
+    t_seconds: float,
+) -> Optional[dict]:
+    """Sample each channel of a multi-axis sensor.
+
+    Lookup convention: `state_params.per_sensor` holds one entry per
+    `<sensor_name>.<channel>` (e.g. `accel.x`, `accel.y`, `accel.z`).
+    Falls back to the bare `<sensor_name>` params for any channel that
+    doesn't have its own entry so profiles can share one shape across
+    axes without spelling out three identical rows.
+
+    Returns a dict `{channel: float}` in the same order as `channels`, or
+    None if the whole sensor is silent this state (all lookups miss).
+    Missing individual channels are omitted from the payload — the
+    router / storage layer treats them as empty cells.
+    """
+    if state_params is None or not channels:
+        return None
+    fallback = state_params.per_sensor.get(sensor_name)
+    out = {}
+    for ch in channels:
+        key = f'{sensor_name}.{ch}'
+        params = state_params.per_sensor.get(key, fallback)
+        if params is None:
+            continue
+        mean, std, amp, period = params
+        if amp != 0 and period > 0:
+            sine = amp * math.sin(2.0 * math.pi * (t_seconds / period))
+        else:
+            sine = 0.0
+        noise = random.gauss(0.0, std) if std > 0 else 0.0
+        out[ch] = mean + sine + noise
+    return out if out else None
 
 
 # ── Common shorthand ─────────────────────────────────────────────────────
@@ -472,6 +518,94 @@ _CHILLER = MachineProfile(
 )
 
 
+# ── 3.7 3-axis Accelerometer (Phase H) ────────────────────────────────────
+
+_ACCEL_SENSORS = [
+    SensorDef('accel', 'g', 100.0, channels=['x', 'y', 'z']),
+]
+
+_ACCEL = MachineProfile(
+    id='accelerometer_3axis',
+    display_name='3-axis Accelerometer',
+    icon='mdi-axis-arrow',
+    description='IMU accelerometer publishing {"x","y","z"} on ONE topic.',
+    sensors=_ACCEL_SENSORS,
+    default_state='still',
+    states={
+        # "Off" — sensor unpowered / not publishing. Silent (no MQTT publish
+        # at all — QA H polish #1). Compare the compressor's 'maintenance'
+        # state which uses the same idiom.
+        'off': _silent(_ACCEL_SENSORS),
+        # "Still" — resting flat: gravity on Z, near-zero on X/Y.
+        'still': StateParams(per_sensor={
+            'accel.x': _n(0.0, 0.02),
+            'accel.y': _n(0.0, 0.02),
+            'accel.z': _n(9.8, 0.03),
+        }),
+        # "Walking" — coupled sinusoidal on X/Y ~2 Hz, steady Z.
+        'walking': StateParams(per_sensor={
+            'accel.x': _s(0.0, 0.05, 1.5, 0.5),  # 2 Hz stride on x
+            'accel.y': _s(0.0, 0.05, 1.0, 0.5),
+            'accel.z': _n(9.8, 0.4),
+        }),
+        # "Impact" — spike on one axis on top of moderate noise.
+        'impact': StateParams(per_sensor={
+            'accel.x': _n(0.0, 4.0),   # wide spread simulates spike
+            'accel.y': _n(0.0, 0.5),
+            'accel.z': _n(9.8, 1.0),
+        }),
+        # Chaos overlays poison messages onto the still baseline.
+        'chaos': StateParams(per_sensor={
+            'accel.x': _n(0.0, 0.02),
+            'accel.y': _n(0.0, 0.02),
+            'accel.z': _n(9.8, 0.03),
+        }),
+    },
+)
+
+
+# ── 3.8 3-axis Gyroscope (Phase H) ────────────────────────────────────────
+
+_GYRO_SENSORS = [
+    SensorDef('gyro', 'dps', 100.0, channels=['x', 'y', 'z']),
+]
+
+_GYRO = MachineProfile(
+    id='gyroscope_3axis',
+    display_name='3-axis Gyroscope',
+    icon='mdi-rotate-3d-variant',
+    description='IMU gyroscope publishing {"x","y","z"} on ONE topic.',
+    sensors=_GYRO_SENSORS,
+    default_state='still',
+    states={
+        # "Off" — sensor unpowered / not publishing. Silent (QA H polish #1).
+        'off': _silent(_GYRO_SENSORS),
+        'still': StateParams(per_sensor={
+            'gyro.x': _n(0.0, 0.5),
+            'gyro.y': _n(0.0, 0.5),
+            'gyro.z': _n(0.0, 0.5),
+        }),
+        # Sustained rotation about y — sinusoidal on y, small on others.
+        'rotating_y': StateParams(per_sensor={
+            'gyro.x': _n(0.0, 1.5),
+            'gyro.y': _s(45.0, 1.0, 15.0, 2.0),   # 45 dps mean, 2s wobble
+            'gyro.z': _n(0.0, 1.5),
+        }),
+        # Tumbling — all three axes moving.
+        'tumbling': StateParams(per_sensor={
+            'gyro.x': _s(0.0, 8.0, 60.0, 1.5),
+            'gyro.y': _s(0.0, 8.0, 80.0, 1.2),
+            'gyro.z': _s(0.0, 8.0, 40.0, 1.8),
+        }),
+        'chaos': StateParams(per_sensor={
+            'gyro.x': _n(0.0, 0.5),
+            'gyro.y': _n(0.0, 0.5),
+            'gyro.z': _n(0.0, 0.5),
+        }),
+    },
+)
+
+
 # ── Registry ─────────────────────────────────────────────────────────────
 
 _PROFILES: Dict[str, MachineProfile] = {
@@ -482,6 +616,8 @@ _PROFILES: Dict[str, MachineProfile] = {
         _CONVEYOR,
         _CNC,
         _CHILLER,
+        _ACCEL,
+        _GYRO,
     ]
 }
 

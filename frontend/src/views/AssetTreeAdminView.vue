@@ -596,6 +596,10 @@ const hasChanges = computed(() => {
     if ((a.data_type ?? null) !== (b.data_type ?? null)) return true
     if ((a.expected_min ?? null) !== (b.expected_min ?? null)) return true
     if ((a.expected_max ?? null) !== (b.expected_max ?? null)) return true
+    // Phase H — channels list edit
+    const aCh = Array.isArray(a.channels) ? a.channels : null
+    const bCh = Array.isArray(b.channels) ? b.channels : null
+    if ((aCh?.join('|') ?? '') !== (bCh?.join('|') ?? '')) return true
   }
   return false
 })

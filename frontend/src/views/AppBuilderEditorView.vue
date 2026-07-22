@@ -318,7 +318,12 @@
               No configuration needed.
             </div>
 
-            <div v-for="field in selectedCap?.configSchema" :key="field.key" class="config-field">
+            <div
+              v-for="field in selectedCap?.configSchema"
+              :key="field.key"
+              v-show="!(selectedNode?.type === 'input.machine_live_stream' && (field.key === 'machine_id' || field.key === 'topology'))"
+              class="config-field"
+            >
               <div class="d-flex align-center justify-space-between mb-1">
                 <label class="config-field-label">{{ field.label }}</label>
                 <!-- toggle inline -->
@@ -333,8 +338,54 @@
                 />
               </div>
 
+              <!-- Phase H — Machine Live Stream: custom picker + topology -->
+              <div v-if="selectedNode?.type === 'input.machine_live_stream' && field.key === 'machine_topic'" class="mb-2">
+                <v-select
+                  :model-value="getConfigVal(selectedNode, field)"
+                  @update:model-value="v => onMachinePicked(v)"
+                  :items="machineOptions"
+                  item-title="label"
+                  item-value="value"
+                  label="Machine"
+                  variant="outlined"
+                  density="compact"
+                  hide-details
+                  class="config-input"
+                  :hint="machineOptions.length === 0 ? 'No active machines in asset tree' : ''"
+                  persistent-hint
+                />
+                <v-btn
+                  size="x-small"
+                  variant="tonal"
+                  color="info"
+                  class="mt-2"
+                  :disabled="!getConfigVal(selectedNode, field)"
+                  @click="refreshMachineTopology(selectedNode)"
+                >
+                  <v-icon start size="12">mdi-refresh</v-icon>
+                  Refresh topology
+                </v-btn>
+                <div class="mt-2" style="font-size:11px; color: rgba(255,255,255,0.7);">
+                  <div v-if="!machineLiveTopology.length">
+                    Pick a machine to auto-detect its sensor topics.
+                  </div>
+                  <div v-else>
+                    <div class="mb-1" style="color:#8b949e;">Auto-detected {{ machineLiveTopology.length }} sensor topic{{ machineLiveTopology.length === 1 ? '' : 's' }}</div>
+                    <div v-for="t in machineLiveTopology" :key="t.name" class="d-flex align-center" style="gap:6px; line-height:1.4;">
+                      <v-icon size="12" color="success">mdi-check</v-icon>
+                      <code style="font-size:11px;">{{ t.name }}</code>
+                      <span style="color:#8b949e; font-size:10px;">
+                        ({{ t.channels && t.channels.length ? ('multi-axis: ' + t.channels.join(', ')) : 'single' }})
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <!-- machine_id + topology fields are stored but hidden — set by the picker above -->
+              <div v-else-if="selectedNode?.type === 'input.machine_live_stream' && (field.key === 'machine_id' || field.key === 'topology')" />
+
               <!-- MQTT topic field with discover button -->
-              <div v-if="field.type === 'text' && field.key === 'topic' && selectedNode?.type === 'input.live_stream'" class="mb-2">
+              <div v-else-if="field.type === 'text' && field.key === 'topic' && selectedNode?.type === 'input.live_stream'" class="mb-2">
                 <div class="d-flex align-center gap-1">
                   <v-text-field
                     :model-value="getConfigVal(selectedNode, field)"
@@ -848,8 +899,10 @@ import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import api from '@/services/api'
 import { useNotificationStore } from '@/stores/notification'
+import { useAssetTreeStore } from '@/stores/assetTree'
 
 const notificationStore = useNotificationStore()
+const assetTreeStore = useAssetTreeStore()
 
 // ── Router ──────────────────────────────────────────────────────────
 const router = useRouter()
@@ -877,6 +930,12 @@ const ALL_FEATURES = ['mean','std','rms','max','min','fft_peak','entropy','skew'
 const STATIC_CAPS = {
   'input.csv_upload':          { label: 'CSV Upload',      icon: 'mdi-file-delimited',       color: '#60a5fa', category: 'Input',     outputs: ['timeseries'], configSchema: [{ key: 'timestamp_col', label: 'Timestamp Column', type: 'text', default: 'timestamp' }, { key: 'value_cols', label: 'Value Columns', type: 'text', default: 'value' }] },
   'input.live_stream':         { label: 'Live Stream (MQTT)', icon: 'mdi-access-point',       color: '#60a5fa', category: 'Input',     outputs: ['timeseries'], configSchema: [{ key: 'broker_url', label: 'MQTT Broker URL', type: 'text', default: 'ws://localhost:9001/mqtt' }, { key: 'topic', label: 'MQTT Topic', type: 'text', default: 'sensors/machine1/#' }, { key: 'channels', label: 'Channel Names (comma-separated)', type: 'text', default: '' }] },
+  // Phase H — Machine Live Stream: bind to one asset-tree machine and
+  // auto-subscribe to ALL its sensor topics. Config schema is minimal
+  // because most fields are rendered by the custom panel below (machine
+  // picker, topology preview, refresh button). The stored values still
+  // live under node.config so save/load round-trip works.
+  'input.machine_live_stream': { label: 'Machine Live Stream', icon: 'mdi-source-branch',      color: '#60a5fa', category: 'Input',     outputs: ['timeseries'], configSchema: [{ key: 'broker_url', label: 'MQTT Broker URL', type: 'text', default: 'ws://localhost:9001/mqtt' }, { key: 'machine_topic', label: 'Machine topic path', type: 'text', default: '' }, { key: 'machine_id', label: 'Machine node id', type: 'number', default: 0 }, { key: 'topology', label: 'Topology snapshot (JSON)', type: 'text', default: '[]' }, { key: 'sample_rate_hz', label: 'Emit rate (Hz)', type: 'number', default: 10 }, { key: 'alignment', label: 'Alignment', type: 'select', options: ['nearest','exact','resample'], default: 'nearest' }, { key: 'tolerance_ms', label: 'Tolerance (ms)', type: 'number', default: 200 }, { key: 'buffer_window_s', label: 'Buffer window (s)', type: 'number', default: 60 }] },
   'transform.window':          { label: 'Windowing',       icon: 'mdi-view-grid-outline',     color: '#818cf8', category: 'Transform', inputs: ['timeseries'], outputs: ['timeseries'], configSchema: [{ key: 'window_size', label: 'Window Size', type: 'number', default: 32 }, { key: 'step', label: 'Stride', type: 'number', default: 16 }] },
   'transform.fill_missing':    { label: 'Fill Missing',    icon: 'mdi-format-align-justify',  color: '#818cf8', category: 'Transform', inputs: ['timeseries'], outputs: ['timeseries'], configSchema: [{ key: 'method', label: 'Method', type: 'select', options: ['ffill','bfill','interpolate','zero'], default: 'interpolate' }] },
   'transform.normalize':       { label: 'Normalize',       icon: 'mdi-arrow-expand-vertical', color: '#818cf8', category: 'Transform', inputs: ['timeseries'], outputs: ['timeseries'], configSchema: [{ key: 'method', label: 'Method', type: 'select', options: ['minmax','zscore','robust'], default: 'zscore' }] },
@@ -1220,6 +1279,106 @@ function switchEndpoint(newEndpointId) {
   // (see hasFeatureExtractNode) — DL endpoints don't appear in the picker
   // while a Feature Extract node exists, so no dialog is needed here.
 }
+
+// ── Phase H — Machine Live Stream: machine picker + topology ───────
+// Sourced from the asset tree store. Only "machine-level" nodes (one
+// level above the sensor leaves) are eligible options. Topology is
+// stored on the node.config so a saved app can rebuild the subscription
+// without re-hitting the API.
+const treeReady = ref(false)
+const machineOptions = computed(() => {
+  const cfg = assetTreeStore.config
+  const maxDepth = Math.max(0, (cfg?.level_names?.length || 4) - 1)
+  const machineLevel = Math.max(0, maxDepth - 1)
+  const out = []
+  const walk = (arr) => {
+    for (const n of arr || []) {
+      if (n.status !== 'retired' && n.level === machineLevel) {
+        out.push({
+          value: n.topic_path,
+          label: n.display_name ? `${n.name} (${n.display_name})` : n.name,
+          id: n.id,
+          children: n.children || [],
+        })
+      }
+      if (n.children) walk(n.children)
+    }
+  }
+  walk(assetTreeStore.tree || [])
+  return out.sort((a, b) => a.label.localeCompare(b.label))
+})
+
+// Live view of the currently-selected machine's sensor topology. Rendered
+// under the picker as a read-only preview. Falls back to the snapshot
+// stored on the node (so opening a saved app pre-populates before the
+// tree fetch completes).
+const machineLiveTopology = computed(() => {
+  const node = selectedNode.value
+  if (!node || node.type !== 'input.machine_live_stream') return []
+  const picked = node.config?.machine_topic
+  if (!picked) return []
+  const opt = machineOptions.value.find(m => m.value === picked)
+  if (opt) {
+    return (opt.children || [])
+      .filter(c => c.status !== 'retired')
+      .map(c => ({
+        name: c.name,
+        channels: c.sensor_meta?.channels || null,
+      }))
+  }
+  // Fallback: whatever we saved on the node last time.
+  try {
+    const raw = node.config?.topology
+    const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw
+    return Array.isArray(parsed) ? parsed : []
+  } catch { return [] }
+})
+
+async function ensureTreeLoaded() {
+  if (treeReady.value) return
+  try {
+    await assetTreeStore.ensureConfigChecked()
+    if (typeof assetTreeStore.fetchTree === 'function') {
+      await assetTreeStore.fetchTree()
+    }
+    treeReady.value = true
+  } catch (e) {
+    console.warn('[machine_live_stream] tree load failed', e)
+  }
+}
+
+function onMachinePicked(topicPath) {
+  const node = selectedNode.value
+  if (!node) return
+  const opt = machineOptions.value.find(m => m.value === topicPath)
+  updateConfig(node.id, 'machine_topic', topicPath || '')
+  updateConfig(node.id, 'machine_id', opt?.id || 0)
+  const topology = (opt?.children || [])
+    .filter(c => c.status !== 'retired')
+    .map(c => ({
+      name: c.name,
+      channels: c.sensor_meta?.channels || null,
+    }))
+  updateConfig(node.id, 'topology', JSON.stringify(topology))
+}
+
+async function refreshMachineTopology(node) {
+  if (!node) return
+  await ensureTreeLoaded()
+  if (typeof assetTreeStore.fetchTree === 'function') {
+    try { await assetTreeStore.fetchTree(true) } catch { /* ignore */ }
+  }
+  const topicPath = node.config?.machine_topic
+  if (topicPath) {
+    onMachinePicked(topicPath)
+    notificationStore.showSuccess('Topology refreshed')
+  }
+}
+
+// Trigger a tree load when a machine_live_stream node becomes selected.
+watch(selectedNode, (n) => {
+  if (n?.type === 'input.machine_live_stream') ensureTreeLoaded()
+})
 
 // MQTT topic discovery
 const discoveringTopics = ref(false)

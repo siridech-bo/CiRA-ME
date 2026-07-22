@@ -108,13 +108,13 @@
   </div>
 </header>
 
-<section class="overall" style="--overall: 96;">
-  <div class="ring"><span>96%</span></div>
+<section class="overall" style="--overall: 94;">
+  <div class="ring"><span>94%</span></div>
   <div class="stats">
-    <div class="stat"><div class="n">7</div><div class="l">Phases done</div></div>
-    <div class="stat"><div class="n">52</div><div class="l">Subtasks done</div></div>
-    <div class="stat"><div class="n">8</div><div class="l">Phases total</div></div>
-    <div class="stat"><div class="n">55</div><div class="l">Subtasks total</div></div>
+    <div class="stat"><div class="n">8</div><div class="l">Phases done</div></div>
+    <div class="stat"><div class="n">59</div><div class="l">Subtasks done</div></div>
+    <div class="stat"><div class="n">9</div><div class="l">Phases total</div></div>
+    <div class="stat"><div class="n">63</div><div class="l">Subtasks total</div></div>
   </div>
 </section>
 
@@ -250,6 +250,25 @@
     <li><span class="id">G.6</span> <span class="chip done">done</span> Labels panel + auto-save-on-next hook + bar overlays <span class="time">2026-07-22</span></li>
     <li><span class="id">G.QA</span> <span class="chip done">done</span> QA — 1 blocker + 8 polish. Blocker fixed (change-profile A→B→A now unretires matching-name nodes via AssetNode.reactivate). 5 polish fixed (503 on broker-down, mismatch check gated on autoprovision, depth check first, rollback on autoprovision failure, PUT existence guard + sidecar 0644 perms). <span class="time">2026-07-22</span></li>
     <li><span class="id">G.T</span> <span class="chip pending">pending</span> Personal browser test <span class="time">—</span></li>
+  </ul>
+</section>
+
+<!-- ═══════════════════════════════════════════════════ PHASE H ═════ -->
+<section class="phase status-done" id="phase-h">
+  <div class="head">
+    <h2>Phase H · Multi-axis sensors + Machine Live Stream node</h2>
+    <span class="est">~2 days · <span class="chip done">done</span></span>
+  </div>
+  <div class="bar"><i style="width:100%"></i></div>
+  <ul class="subtasks">
+    <li><span class="id">H.1</span> <span class="chip done">done</span> AssetSensorMeta.channels column + PATCH validation + tree admin UI field + chip <span class="time">2026-07-22</span></li>
+    <li><span class="id">H.2</span> <span class="chip done">done</span> Ingest router multi-axis payload parse + multi-column CSV write + channels_written stat <span class="time">2026-07-22</span></li>
+    <li><span class="id">H.3</span> <span class="chip done">done</span> New profiles: 3-axis Accelerometer + 3-axis Gyroscope; simulator multi-axis publish <span class="time">2026-07-22</span></li>
+    <li><span class="id">H.4</span> <span class="chip done">done</span> Data loader channels_by_sensor metadata for downstream UI <span class="time">2026-07-22</span></li>
+    <li><span class="id">H.5</span> <span class="chip done">done</span> Machine Live Stream app-builder node + tree-picker config + mqtt.js runtime <span class="time">2026-07-22</span></li>
+    <li><span class="id">H.6</span> <span class="chip done">done</span> Downstream nodes verify multi-channel + sensor.axis naming <span class="time">2026-07-22</span></li>
+    <li><span class="id">H.QA</span> <span class="chip done">done</span> QA — 1 blocker + 5 polish. Blocker fixed (mid-day channel schema change now 409's if today's CSV has data). 2 polish fixed (accel/gyro 'off' state silent; partial sensor_meta PATCH preserves unspecified fields). 3 polish deferred (cosmetic: mislabeled files_written counter, DB-context traceback outside Flask, scientific notation on small floats). <span class="time">2026-07-22</span></li>
+    <li><span class="id">H.T</span> <span class="chip pending">pending</span> Personal browser test <span class="time">—</span></li>
   </ul>
 </section>
 

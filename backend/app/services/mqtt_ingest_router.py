@@ -33,7 +33,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
 
 from ..models import (
-    AssetTreeConfig, AssetNode, AssetTreeAudit, get_db,
+    AssetTreeConfig, AssetNode, AssetSensorMeta, AssetTreeAudit, get_db,
 )
 
 logger = logging.getLogger(__name__)
@@ -115,6 +115,11 @@ class MqttIngestRouter:
             'messages_meta': 0,
             'messages_parse_errors': 0,
             'files_written': 0,
+            # Phase H — multi-axis stats. `channels_written` counts total
+            # (rows × channels) written on multi-axis topics so operators
+            # can see the fan-out volume separately from `messages_routed`
+            # (which stays a per-message counter).
+            'channels_written': 0,
             'last_message_at': None,
             'last_message_topic': None,
             'last_connected_at': None,
@@ -330,6 +335,8 @@ class MqttIngestRouter:
 
         # Full active-node scan. Retired paths are omitted so newly-published
         # messages against a retired sensor rejection-log rather than routing.
+        # Phase H — also fetch sensor_meta.channels so the router can
+        # demultiplex multi-axis payloads without a per-message DB read.
         with get_db() as conn:
             cursor = conn.cursor()
             cursor.execute(
@@ -337,6 +344,29 @@ class MqttIngestRouter:
                 "FROM asset_nodes WHERE status = 'active'"
             )
             rows = [dict(r) for r in cursor.fetchall()]
+            cursor.execute(
+                'SELECT asset_id, channels FROM asset_sensor_meta'
+            )
+            meta_rows = cursor.fetchall()
+        # asset_id → channels list (or None). Decoded from stored JSON here
+        # so the message-thread hot path is a plain dict lookup.
+        channels_by_asset: Dict[int, Optional[list]] = {}
+        for mr in meta_rows:
+            raw = mr['channels'] if isinstance(mr, dict) else mr[1]
+            asset_id = mr['asset_id'] if isinstance(mr, dict) else mr[0]
+            if raw:
+                try:
+                    parsed = json.loads(raw)
+                    if isinstance(parsed, list) and parsed:
+                        channels_by_asset[asset_id] = [str(c) for c in parsed]
+                        continue
+                except Exception:
+                    pass
+            channels_by_asset[asset_id] = None
+        # Attach channels directly onto each cached node dict so the route
+        # hot path is a single lookup.
+        for r in rows:
+            r['_channels'] = channels_by_asset.get(r['id'])
         new_cache: Dict[str, dict] = {r['topic_path']: r for r in rows}
         with self._cache_lock:
             self._path_cache = new_cache
@@ -484,7 +514,27 @@ class MqttIngestRouter:
             else:
                 self._reject(topic, 'unknown topic (strict mode)')
                 return
-        # 4. Parse payload
+        # 3.5 Phase H — multi-axis branch. If the target sensor declares
+        # `channels`, demultiplex ONE JSON dict payload into a multi-column
+        # row. Falls through to the single-value path when channels is None.
+        channels = node.get('_channels') if isinstance(node, dict) else None
+        canonical_path = node.get('topic_path') or topic
+        if channels:
+            row_values = self._parse_multi_axis_payload(payload, channels)
+            if row_values is None:
+                with self._stats_lock:
+                    self._stats['messages_parse_errors'] += 1
+                expected = ', '.join(channels)
+                self._reject(
+                    topic,
+                    f'payload has no channel keys (expected: {expected})',
+                )
+                return
+            self._append_multi_row(
+                canonical_path, _iso_now(), row_values, channels,
+            )
+            return  # multi-axis path handled — do NOT fall through.
+        # 4. Parse payload (single-value path — unchanged from Phase D)
         value = self._parse_payload(payload)
         if value is None:
             with self._stats_lock:
@@ -494,7 +544,6 @@ class MqttIngestRouter:
         # 5. Buffer for the writer thread. topic_path may differ from `topic`
         #    only in weird edge cases (learn mode); use the node's canonical
         #    path so the file layout matches the tree.
-        canonical_path = node.get('topic_path') or topic
         row = (_iso_now(), value)
         with self._buffer_lock:
             self._buffer.setdefault(canonical_path, []).append(row)
@@ -509,6 +558,85 @@ class MqttIngestRouter:
                 self._flush_buffer(force=True)
             except Exception:
                 logger.exception('[ingest] force flush failed')
+
+    # ── Multi-axis payload path (Phase H) ────────────────────────────────
+
+    def _parse_multi_axis_payload(self, payload: bytes, channels: list):
+        """Demultiplex a JSON dict payload into per-channel scalar strings.
+
+        Returns a list of length ``len(channels)``, in the same order.
+        Missing keys → None in that slot. Non-numeric / bool values → the
+        same coercion as ``_value_to_str``. If EVERY channel is missing
+        (or the payload can't be parsed as a dict), returns None so the
+        caller can reject with a helpful message.
+        """
+        if payload is None:
+            return None
+        try:
+            raw = payload.decode('utf-8', errors='replace').strip()
+        except Exception:
+            return None
+        if not raw:
+            return None
+        try:
+            obj = json.loads(raw)
+        except Exception:
+            return None
+        if not isinstance(obj, dict):
+            # A bare number / string on a multi-axis sensor is a config
+            # mismatch — reject rather than silently dropping columns.
+            return None
+        out: list = []
+        any_present = False
+        for ch in channels:
+            if ch not in obj:
+                out.append(None)
+                continue
+            v = obj[ch]
+            if v is None:
+                out.append(None)
+                continue
+            any_present = True
+            if isinstance(v, bool):
+                out.append('1' if v else '0')
+            elif isinstance(v, (int, float)):
+                out.append(self._value_to_str(v))
+            else:
+                # Non-numeric value (e.g. `{"x": "foo"}`) — drop that cell.
+                # Warning-log level so noisy publishers surface in the tail.
+                logger.debug(
+                    '[ingest] multi-axis %s: non-numeric %s=%r → empty cell',
+                    channels, ch, v,
+                )
+                out.append(None)
+        if not any_present:
+            return None
+        return out
+
+    def _append_multi_row(
+        self, topic_path: str, ts: str, values: list, channels: list,
+    ) -> None:
+        """Buffer one multi-axis row for the writer thread.
+
+        Structure mirrors `_route`'s single-value branch — buffer entries
+        are ``(ts, values_list, channels_tuple)`` so the writer can render
+        the CSV header and rows without hitting the DB again.
+        """
+        row = (ts, tuple(values), tuple(channels))
+        with self._buffer_lock:
+            self._buffer.setdefault(topic_path, []).append(row)
+            self._buffer_count += 1
+            need_flush = self._buffer_count >= _FLUSH_BATCH
+        # Message-level counters: ONE published message = one increment even
+        # if it fanned out to N channels. `channels_written` tracks fan-out.
+        with self._stats_lock:
+            self._stats['messages_routed'] += 1
+            self._stats['channels_written'] += len(channels)
+        if need_flush:
+            try:
+                self._flush_buffer(force=True)
+            except Exception:
+                logger.exception('[ingest] force flush (multi-axis) failed')
 
     def _parse_payload(self, payload: bytes):
         """Return a string suitable for the CSV `value` column, or None
@@ -700,7 +828,17 @@ class MqttIngestRouter:
                 time.sleep(0.05)
 
     def _flush_buffer(self, force: bool = False) -> None:
-        """Drain the in-memory buffer to per-sensor CSVs."""
+        """Drain the in-memory buffer to per-sensor CSVs.
+
+        Two row shapes may appear in the buffer:
+          * single-value (Phase D): ``(ts, value_str)`` — 2-tuple
+          * multi-axis (Phase H) : ``(ts, values_tuple, channels_tuple)``
+            — 3-tuple. Detected by length.
+        Rows for a single topic_path always share one shape because the
+        sensor's channels config either declared multi-axis or didn't
+        when the messages were routed. If the config flips mid-day the
+        NEXT UTC-midnight rotation gives the new schema a fresh file.
+        """
         # Swap the buffer atomically so appenders don't stall on the write.
         with self._buffer_lock:
             if not self._buffer:
@@ -716,6 +854,9 @@ class MqttIngestRouter:
                 folder = os.path.join(root, *topic_path.split('/'))
                 os.makedirs(folder, exist_ok=True)
                 file_path = os.path.join(folder, f'{_today_utc()}.csv')
+                # Detect row shape from the first row. Multi-axis is 3-tuple.
+                first = rows[0]
+                is_multi = isinstance(first, tuple) and len(first) == 3
                 # Header on first write of the file. `_headers_written` is a
                 # process-local memo; if the file existed before this process
                 # started, don't overwrite its header — check disk.
@@ -725,16 +866,37 @@ class MqttIngestRouter:
                         write_header = True
                     self._headers_written.add(file_path)
                 with open(file_path, 'a', encoding='utf-8', newline='\n') as fh:
-                    if write_header:
-                        fh.write('timestamp_iso,value\n')
-                    for ts, value in rows:
-                        # Escape commas / quotes minimally — sensor values
-                        # shouldn't contain them, but a truncated JSON payload
-                        # in learn mode might. Wrap in quotes if needed.
-                        v = value if isinstance(value, str) else str(value)
-                        if ',' in v or '"' in v or '\n' in v:
-                            v = '"' + v.replace('"', '""') + '"'
-                        fh.write(f'{ts},{v}\n')
+                    if is_multi:
+                        # Multi-axis: header + N-column rows. First row's
+                        # channels tuple defines the header (routing state
+                        # is consistent within a flush).
+                        _ts0, _vals0, channels0 = first
+                        if write_header:
+                            fh.write(
+                                'timestamp_iso,' + ','.join(channels0) + '\n'
+                            )
+                        for entry in rows:
+                            ts, vals, _ = entry
+                            # Empty string for missing / dropped cells.
+                            cells = []
+                            for v in vals:
+                                if v is None:
+                                    cells.append('')
+                                    continue
+                                s = v if isinstance(v, str) else str(v)
+                                if ',' in s or '"' in s or '\n' in s:
+                                    s = '"' + s.replace('"', '""') + '"'
+                                cells.append(s)
+                            fh.write(f'{ts},' + ','.join(cells) + '\n')
+                    else:
+                        if write_header:
+                            fh.write('timestamp_iso,value\n')
+                        for ts, value in rows:
+                            # Escape commas / quotes minimally.
+                            v = value if isinstance(value, str) else str(value)
+                            if ',' in v or '"' in v or '\n' in v:
+                                v = '"' + v.replace('"', '""') + '"'
+                            fh.write(f'{ts},{v}\n')
                 with self._stats_lock:
                     self._stats['files_written'] += 1
             except Exception:

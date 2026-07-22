@@ -33,6 +33,10 @@ export interface SensorMeta {
   expected_min?: number | null
   expected_max?: number | null
   data_type?: 'float' | 'int' | 'string' | null
+  // Phase H (2026-07-22) — non-null / non-empty means the sensor
+  // publishes multiple axes in ONE MQTT payload (e.g. accelerometer with
+  // `{"x", "y", "z"}`). The router demultiplexes into a multi-column CSV.
+  channels?: string[] | null
 }
 
 export interface AssetNode {

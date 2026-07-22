@@ -45,7 +45,8 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 from ..constants.machine_profiles import (
-    MachineProfile, get_all_profiles, get_profile, sample as sample_signal,
+    MachineProfile, get_all_profiles, get_profile,
+    sample as sample_signal, sample_multi_axis,
 )
 
 logger = logging.getLogger(__name__)
@@ -220,12 +221,22 @@ class _SimulatedMachine(threading.Thread):
             due = self._next_due.get(sensor.name, 0.0)
             if now < due:
                 continue
-            # Compute value; None means silent this state.
-            value = sample_signal(state_params, sensor.name, t_elapsed)
             # Schedule the next publish based on nominal rate. Doing it
             # BEFORE the publish keeps cadence stable if publish blocks.
             period = 1.0 / max(sensor.sample_rate_hz, 0.05)
             self._next_due[sensor.name] = now + period
+            # Phase H — multi-axis sensor: sample all channels + publish
+            # ONE dict payload. Silent state (all channels miss) → skip.
+            if sensor.channels:
+                payload_dict = sample_multi_axis(
+                    state_params, sensor.name, sensor.channels, t_elapsed,
+                )
+                if payload_dict is None:
+                    continue
+                self._publish_multi_axis(sensor.name, payload_dict)
+                continue
+            # Single-value path (unchanged Phase F behavior).
+            value = sample_signal(state_params, sensor.name, t_elapsed)
             if value is None:
                 continue  # silent state
             self._publish_signal(sensor.name, value)
@@ -259,13 +270,69 @@ class _SimulatedMachine(threading.Thread):
         with self._parent._stats_lock:
             self._parent._stats['messages_published'] += 1
 
+    def _publish_multi_axis(self, sensor_name: str, values: dict) -> None:
+        """Publish a multi-axis payload `{"x": vx, "y": vy, ...}` as ONE
+        MQTT message on `<topic_base>/<sensor_name>` (Phase H).
+
+        One MQTT publish = one message toward stats, regardless of channel
+        count. The sparkline ring buffer stores the magnitude of the
+        payload (Euclidean length) so a single-line preview still shows
+        activity even though the payload is multi-dimensional.
+        """
+        if not self._parent._connected:
+            return
+        topic = f'{self.topic_base}/{sensor_name}'
+        try:
+            payload = json.dumps({
+                k: round(float(v), 6) for k, v in values.items()
+            })
+        except Exception:
+            logger.warning('[sim:%s] multi-axis payload serialization failed '
+                           '(sensor=%s)', self.name, sensor_name, exc_info=True)
+            return
+        try:
+            self._parent._publish_bytes(topic, payload.encode('utf-8'))
+        except Exception:
+            logger.warning('[sim:%s] multi-axis publish failed on %s',
+                           self.name, topic, exc_info=True)
+            return
+        self.messages_published += 1
+        # Sparkline magnitude for the UI overview card. Not stored per-axis
+        # to keep the payload small; the axis-detail view lives in the
+        # published-app / chart node.
+        try:
+            magnitude = float(sum(v * v for v in values.values()) ** 0.5)
+        except Exception:
+            magnitude = 0.0
+        with self._lock:
+            self._recent_values[sensor_name].append(magnitude)
+        with self._parent._stats_lock:
+            self._parent._stats['messages_published'] += 1
+
     def _do_chaos(self) -> None:
-        """Fire ONE poison message. Rotates through 4 flavours."""
+        """Fire ONE poison message. Rotates through 4 flavours.
+
+        Phase H — when the picked sensor is multi-axis, the poison variants
+        target the multi-axis payload contract (missing all keys, wrong
+        types, bare number). Single-value sensors keep the original
+        variants. All variants are chosen at random so a long-running sim
+        exercises both branches.
+        """
         # Pick a real sensor name from this profile — hard-coding
         # 'temperature' meant only 1 of 6 profiles ever hit the intended
         # payload-parse paths (QA F.QA polish #3).
-        sensor_name = random.choice(self.profile.sensors).name
-        variant = random.choice(('null', 'garbage', 'wrong_root', 'unknown_plant'))
+        sensor = random.choice(self.profile.sensors)
+        sensor_name = sensor.name
+        if sensor.channels:
+            # Multi-axis poison variants (spec §H.3).
+            variant = random.choice((
+                'ma_missing_all', 'ma_wrong_types', 'ma_bare_number',
+                'wrong_root', 'unknown_plant',
+            ))
+        else:
+            variant = random.choice(
+                ('null', 'garbage', 'wrong_root', 'unknown_plant')
+            )
         if variant == 'null':
             topic = f'{self.topic_base}/{sensor_name}'
             payload = b'{"value": null}'
@@ -274,6 +341,20 @@ class _SimulatedMachine(threading.Thread):
             # failure rather than topic rejection.
             topic = f'{self.topic_base}/{sensor_name}'
             payload = b'\x00\x01\xff\xfeGARBAGE'
+        elif variant == 'ma_missing_all':
+            # Multi-axis sensor gets a `{"value": N}` payload — router
+            # rejects with the "expected: x, y, z" message.
+            topic = f'{self.topic_base}/{sensor_name}'
+            payload = b'{"value": 1.23}'
+        elif variant == 'ma_wrong_types':
+            # Right keys, wrong types — router writes empty cells, no crash.
+            topic = f'{self.topic_base}/{sensor_name}'
+            fake = {ch: 'oops' for ch in sensor.channels}
+            payload = json.dumps(fake).encode('utf-8')
+        elif variant == 'ma_bare_number':
+            # Bare number where a JSON dict was expected.
+            topic = f'{self.topic_base}/{sensor_name}'
+            payload = b'42'
         elif variant == 'wrong_root':
             topic = f'wrong_root/{self.name}/{sensor_name}'
             payload = b'{"value": 1.23}'
@@ -907,13 +988,16 @@ class MachineSimulator:
                     created_ids.append(existing['id'])
                     # Refresh sensor_meta while we're here — the new
                     # profile may declare a different unit / rate on the
-                    # same sensor name.
+                    # same sensor name. Phase H — also refresh channels
+                    # so a swap from single-value → multi-axis takes
+                    # effect on the reactivated node.
                     try:
                         AssetSensorMeta.upsert(
                             asset_id=existing['id'],
                             unit=sensor.unit,
                             sample_rate_hz=sensor.sample_rate_hz,
                             data_type='float',
+                            channels=sensor.channels,
                         )
                     except Exception:
                         logger.warning(
@@ -933,12 +1017,15 @@ class MachineSimulator:
             )
             created_ids.append(sensor_id)
             # Attach sensor meta so the tree UI shows unit + rate.
+            # Phase H — pass channels through so multi-axis profiles land
+            # with the right shape without a separate PATCH.
             try:
                 AssetSensorMeta.upsert(
                     asset_id=sensor_id,
                     unit=sensor.unit,
                     sample_rate_hz=sensor.sample_rate_hz,
                     data_type='float',
+                    channels=sensor.channels,
                 )
             except Exception:
                 logger.warning(

@@ -12,9 +12,12 @@ See:
 - docs/EXECUTION_asset-tree.md       — subtask IDs
 """
 
+import os
 import re
 import logging
-from flask import Blueprint, request, jsonify
+from datetime import datetime, timezone
+
+from flask import Blueprint, request, jsonify, current_app
 
 from ..auth import login_required
 from ..models import (
@@ -50,6 +53,87 @@ def _reload_ingest_router():
 NAME_REGEX = re.compile(r'^[A-Za-z0-9_-]+$')
 VALID_TOPIC_MODES = ('strict', 'learn')
 VALID_DATA_TYPES = ('float', 'int', 'string')
+
+# Phase H — channel-name grammar (matches spec §H.1). Same regex used for
+# node names, but no dashes: MQTT payload keys are dict keys, and CSV
+# column headers ideally stay JS-identifier-safe so downstream nodes
+# (chart legends, feature-extract picker) can render them verbatim.
+_CHANNEL_NAME_REGEX = re.compile(r'^[A-Za-z0-9_]+$')
+_MAX_CHANNELS = 16
+
+
+def _check_channels_conflict_with_today(sensor_node_id: int):
+    """Return an error message if today's CSV file for this sensor already
+    has data written under the old schema. Otherwise return None.
+
+    Prevents QA H blocker: mid-day channel schema change corrupts the CSV
+    by appending new-schema rows onto a file whose header row still lists
+    the old columns, breaking every downstream pandas load.
+
+    Users can either delete today's CSV first (data loss they explicitly
+    accept) or wait until UTC-midnight rotation opens a fresh file.
+    """
+    node = AssetNode.get_by_id(sensor_node_id)
+    if not node or not node.get('topic_path'):
+        return None
+    try:
+        datasets_root = current_app.config['DATASETS_ROOT_PATH']
+    except Exception:
+        datasets_root = os.environ.get('DATASETS_ROOT_PATH')
+    if not datasets_root:
+        return None  # can't check → allow change (fail-open on config issues)
+    today = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+    csv_path = os.path.join(datasets_root, node['topic_path'], f'{today}.csv')
+    try:
+        if os.path.isfile(csv_path) and os.path.getsize(csv_path) > 0:
+            return (
+                f"Cannot change channels on sensor {node['topic_path']!r}: "
+                f"today's CSV ({today}.csv) already has data written under "
+                f"the current schema. Changing the columns now would produce "
+                f"an unparseable file. Delete today's CSV first, or wait "
+                f"until UTC midnight when a fresh file rotates in."
+            )
+    except OSError:
+        pass
+    return None
+
+
+def _validate_channels(raw):
+    """Validate + normalize a `channels` payload value.
+
+    Returns (ok, normalized_list_or_None, error_message).
+
+    - None / missing → (True, None, '')  — no change intended.
+    - []             → (True, None, '')  — spec: empty list treated as NULL.
+    - list of 1-16 unique strings each matching ^[A-Za-z0-9_]+$ → (True, list, '')
+    - anything else  → (False, None, 'user-facing reason')
+    """
+    if raw is None:
+        return True, None, ''
+    if not isinstance(raw, list):
+        return False, None, 'channels must be a list of strings'
+    if len(raw) == 0:
+        return True, None, ''
+    if len(raw) > _MAX_CHANNELS:
+        return False, None, f'channels: max {_MAX_CHANNELS} entries'
+    cleaned = []
+    seen = set()
+    for c in raw:
+        if not isinstance(c, str):
+            return False, None, 'channels: every entry must be a string'
+        name = c.strip()
+        if not name:
+            return False, None, 'channels: blank entry not allowed'
+        if not _CHANNEL_NAME_REGEX.match(name):
+            return (
+                False, None,
+                f'channels: {name!r} must match ^[A-Za-z0-9_]+$'
+            )
+        if name in seen:
+            return False, None, f'channels: duplicate entry {name!r}'
+        seen.add(name)
+        cleaned.append(name)
+    return True, cleaned, ''
 # NOTE: no static MACHINE_LEVEL constant — see `_is_machine_level` which
 # computes it from the live config so 5-level trees (e.g. datacenter →
 # server) work identically to 4-level (factory → machine).
@@ -303,6 +387,10 @@ def create_node():
         dt = sensor_meta.get('data_type')
         if dt is not None and dt not in VALID_DATA_TYPES:
             return jsonify({'error': f'data_type must be one of {VALID_DATA_TYPES}'}), 400
+        # Phase H — channels: 'channels' key present ⇒ validate. Absent ⇒ leave NULL.
+        ch_ok, ch_norm, ch_err = _validate_channels(sensor_meta.get('channels'))
+        if not ch_ok:
+            return jsonify({'error': ch_err}), 400
         AssetSensorMeta.upsert(
             asset_id=node_id,
             unit=sensor_meta.get('unit'),
@@ -310,6 +398,7 @@ def create_node():
             expected_min=sensor_meta.get('expected_min'),
             expected_max=sensor_meta.get('expected_max'),
             data_type=dt,
+            channels=ch_norm,
         )
 
     created = AssetNode.get_by_id(node_id)
@@ -392,13 +481,45 @@ def patch_node(node_id):
         dt = sensor_meta.get('data_type')
         if dt is not None and dt not in VALID_DATA_TYPES:
             return jsonify({'error': f'data_type must be one of {VALID_DATA_TYPES}'}), 400
+        # Phase H — channels: 'channels' key present ⇒ validate + set/clear.
+        # Absent ⇒ preserve whatever's already in the DB.
+        existing_meta = AssetSensorMeta.get(node_id) or {}
+        if 'channels' in sensor_meta:
+            ch_ok, ch_norm, ch_err = _validate_channels(sensor_meta.get('channels'))
+            if not ch_ok:
+                return jsonify({'error': ch_err}), 400
+            # QA H blocker: mid-day channel schema changes corrupt the
+            # currently-open CSV (header written with old columns, new rows
+            # appended with new columns → unparseable file). Refuse the
+            # change if today's file already has data; user can either
+            # delete it or wait until UTC midnight rotation.
+            existing_channels = existing_meta.get('channels') or []
+            new_channels = ch_norm or []
+            if list(existing_channels) != list(new_channels):
+                conflict_err = _check_channels_conflict_with_today(node_id)
+                if conflict_err is not None:
+                    return jsonify({'error': conflict_err}), 409
+        else:
+            ch_norm = existing_meta.get('channels')
+        # QA H polish #2: partial sensor_meta PATCH must NOT clobber
+        # unspecified fields to NULL. Merge only what the caller provided
+        # with what's already stored — key absence means "don't touch".
         AssetSensorMeta.upsert(
             asset_id=node_id,
-            unit=sensor_meta.get('unit'),
-            sample_rate_hz=sensor_meta.get('sample_rate_hz'),
-            expected_min=sensor_meta.get('expected_min'),
-            expected_max=sensor_meta.get('expected_max'),
-            data_type=dt,
+            unit=sensor_meta['unit'] if 'unit' in sensor_meta
+                 else existing_meta.get('unit'),
+            sample_rate_hz=sensor_meta['sample_rate_hz']
+                 if 'sample_rate_hz' in sensor_meta
+                 else existing_meta.get('sample_rate_hz'),
+            expected_min=sensor_meta['expected_min']
+                 if 'expected_min' in sensor_meta
+                 else existing_meta.get('expected_min'),
+            expected_max=sensor_meta['expected_max']
+                 if 'expected_max' in sensor_meta
+                 else existing_meta.get('expected_max'),
+            data_type=dt if 'data_type' in sensor_meta
+                 else existing_meta.get('data_type'),
+            channels=ch_norm,
         )
 
     after = AssetNode.get_by_id(node_id)
@@ -684,6 +805,11 @@ def import_tree():
         created_ids.append(node_id)
         sm = node_spec.get('sensor_meta')
         if isinstance(sm, dict):
+            # Phase H — pass channels through on import too, so an exported
+            # tree with multi-axis sensors round-trips. Silently drop bad
+            # values rather than aborting the import (they'd only affect
+            # this one sensor).
+            _, ch_norm, _ = _validate_channels(sm.get('channels'))
             AssetSensorMeta.upsert(
                 asset_id=node_id,
                 unit=sm.get('unit'),
@@ -691,6 +817,7 @@ def import_tree():
                 expected_min=sm.get('expected_min'),
                 expected_max=sm.get('expected_max'),
                 data_type=sm.get('data_type'),
+                channels=ch_norm,
             )
         for child in node_spec.get('children') or []:
             _walk(child, node_id, level + 1, topic_path)

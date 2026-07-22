@@ -507,6 +507,18 @@ def init_db(db_path: str):
                 # Column already exists — expected on second-and-later boots.
                 pass
 
+        # ── Phase H (2026-07-22) — Multi-axis sensor channels ─────────────
+        # `channels` JSON list on `asset_sensor_meta` — non-null means the
+        # sensor publishes multiple axes in one MQTT payload (e.g.
+        # `{"x": 1, "y": 2, "z": 3}` on ONE topic). Null / empty preserves
+        # the existing single-value behavior. Column is idempotently added.
+        try:
+            cursor.execute(
+                "ALTER TABLE asset_sensor_meta ADD COLUMN channels TEXT"
+            )
+        except Exception:
+            pass  # Column already exists
+
         # Create default admin user if not exists
         cursor.execute('SELECT id FROM users WHERE username = ?', ('admin',))
         if not cursor.fetchone():
@@ -1984,6 +1996,21 @@ class AssetNode:
                 meta = meta_by_id[n['id']]
                 # asset_id is the FK; expose as sensor_meta dict without the FK
                 sensor_meta = {k: v for k, v in meta.items() if k != 'asset_id'}
+                # Phase H — decode channels JSON to a Python list so the
+                # frontend / router see a native list, not a JSON string.
+                raw_channels = sensor_meta.get('channels')
+                if raw_channels:
+                    try:
+                        parsed = json.loads(raw_channels)
+                        sensor_meta['channels'] = (
+                            [str(c) for c in parsed]
+                            if isinstance(parsed, list) and parsed
+                            else None
+                        )
+                    except Exception:
+                        sensor_meta['channels'] = None
+                else:
+                    sensor_meta['channels'] = None
                 n['sensor_meta'] = sensor_meta
 
         roots = []
@@ -2001,10 +2028,17 @@ class AssetNode:
 
 
 class AssetSensorMeta:
-    """Sensor metadata (unit, sample rate, etc.) for leaf asset nodes."""
+    """Sensor metadata (unit, sample rate, etc.) for leaf asset nodes.
+
+    Phase H: added optional `channels` JSON list. Non-null means the sensor
+    publishes multiple axes in ONE MQTT payload (e.g. accelerometer with
+    ``{"x", "y", "z"}``), and the ingest router demultiplexes into a
+    multi-column CSV.
+    """
 
     @staticmethod
     def get(asset_id: int) -> dict:
+        import json
         with get_db() as conn:
             cursor = conn.cursor()
             cursor.execute(
@@ -2012,12 +2046,47 @@ class AssetSensorMeta:
                 (asset_id,)
             )
             row = cursor.fetchone()
-            return dict(row) if row else None
+            if not row:
+                return None
+            d = dict(row)
+            # Decode channels JSON back to a Python list; missing / null / bad
+            # data all coerce to None so callers can trust the type.
+            raw_channels = d.get('channels')
+            if raw_channels:
+                try:
+                    parsed = json.loads(raw_channels)
+                    if isinstance(parsed, list) and parsed:
+                        d['channels'] = [str(c) for c in parsed]
+                    else:
+                        d['channels'] = None
+                except Exception:
+                    d['channels'] = None
+            else:
+                d['channels'] = None
+            return d
 
     @staticmethod
     def upsert(asset_id: int, unit: str = None, sample_rate_hz: float = None,
                expected_min: float = None, expected_max: float = None,
-               data_type: str = None):
+               data_type: str = None, channels=None):
+        """Insert or update a sensor_meta row.
+
+        `channels` (optional, Phase H): iterable of strings. Stored as a
+        JSON-encoded array. Pass None or an empty list to clear.
+        Existing callers that pass no `channels` argument leave the
+        column NULL (== single-value behavior — no regression).
+        """
+        import json
+        # Normalize channels to a JSON string (or None). Accept list-like;
+        # anything else silently becomes None so we never persist garbage.
+        channels_json = None
+        if channels:
+            try:
+                cleaned = [str(c) for c in channels if str(c).strip()]
+                if cleaned:
+                    channels_json = json.dumps(cleaned)
+            except Exception:
+                channels_json = None
         with get_db() as conn:
             cursor = conn.cursor()
             existing = cursor.execute(
@@ -2028,19 +2097,19 @@ class AssetSensorMeta:
                 cursor.execute(
                     '''UPDATE asset_sensor_meta
                        SET unit = ?, sample_rate_hz = ?, expected_min = ?,
-                           expected_max = ?, data_type = ?
+                           expected_max = ?, data_type = ?, channels = ?
                        WHERE asset_id = ?''',
                     (unit, sample_rate_hz, expected_min, expected_max,
-                     data_type, asset_id)
+                     data_type, channels_json, asset_id)
                 )
             else:
                 cursor.execute(
                     '''INSERT INTO asset_sensor_meta
                        (asset_id, unit, sample_rate_hz, expected_min,
-                        expected_max, data_type)
-                       VALUES (?, ?, ?, ?, ?, ?)''',
+                        expected_max, data_type, channels)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)''',
                     (asset_id, unit, sample_rate_hz, expected_min,
-                     expected_max, data_type)
+                     expected_max, data_type, channels_json)
                 )
             conn.commit()
 

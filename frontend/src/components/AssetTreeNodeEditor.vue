@@ -44,6 +44,14 @@
         >
           ({{ node.display_name }})
         </span>
+        <!-- Phase H — chip on sensor rows that publish multi-axis payloads -->
+        <span
+          v-if="channelsPreview"
+          class="channels-chip text-caption ml-2"
+          :title="`Multi-axis MQTT payload: ${channelsPreview}`"
+        >
+          multi-axis · {{ channelsPreview }}
+        </span>
         <span v-if="isRetired" class="text-caption text-medium-emphasis ml-2">
           (retired)
         </span>
@@ -123,6 +131,15 @@ const expanded = ref(props.depth <= 1)
 
 const hasChildren = computed(() => (props.node.children?.length ?? 0) > 0)
 const isRetired = computed(() => props.node.status === 'retired')
+
+// Phase H — join the sensor's channels list into an inline chip string.
+// Renders only on sensor rows that actually declare multi-axis payloads.
+const channelsPreview = computed<string>(() => {
+  const ch = props.node.sensor_meta?.channels
+  if (!Array.isArray(ch) || ch.length === 0) return ''
+  const shown = ch.slice(0, 4).join(', ')
+  return ch.length > 4 ? `${shown}, ...` : shown
+})
 
 const canAddChild = computed(() => {
   if (props.readonly) return false
@@ -276,5 +293,18 @@ function onDrop(evt: DragEvent) {
 
 .is-root > .asset-tree-row {
   font-weight: 600;
+}
+
+/* Phase H — multi-axis chip on sensor rows. Colour picked to sit apart from
+   the level's tint so operators can spot fan-out sensors at a glance. */
+.channels-chip {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(129, 140, 248, 0.14);
+  color: rgb(129, 140, 248);
+  font-size: 0.72em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: nowrap;
 }
 </style>

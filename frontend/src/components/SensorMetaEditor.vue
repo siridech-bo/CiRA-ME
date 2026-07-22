@@ -65,7 +65,7 @@
     />
 
     <!-- Expected min / max -->
-    <div class="d-flex ga-2">
+    <div class="d-flex ga-2 mb-3">
       <v-text-field
         :model-value="meta.expected_min"
         label="Expected min"
@@ -83,6 +83,19 @@
         @update:model-value="update({ expected_max: coerceNumber($event) })"
       />
     </div>
+
+    <!-- Channels (Phase H — multi-axis payloads on ONE topic) -->
+    <v-text-field
+      :model-value="channelsText"
+      label="Channels (comma-separated, blank = single value)"
+      placeholder="x, y, z"
+      density="compact"
+      hide-details="auto"
+      hint="For accelerometers/gyroscopes publishing multiple axes in one MQTT payload. Leave blank for standard single-value sensors."
+      persistent-hint
+      :error-messages="channelsError ? [channelsError] : []"
+      @update:model-value="onChannelsInput"
+    />
   </div>
 </template>
 
@@ -238,6 +251,45 @@ function coerceNumber(v: number | string | null): number | null {
   if (v == null || v === '') return null
   const n = typeof v === 'number' ? v : parseFloat(v)
   return Number.isFinite(n) ? n : null
+}
+
+// ── Channels (Phase H) ───────────────────────────────────────────────────
+// Mirrors backend _CHANNEL_NAME_REGEX exactly. Enforced client-side so the
+// user gets an immediate inline hint instead of a 400 on save.
+const CHANNEL_NAME_REGEX = /^[A-Za-z0-9_]+$/
+const MAX_CHANNELS = 16
+
+const channelsText = computed<string>(() => {
+  const arr = meta.value.channels
+  return Array.isArray(arr) ? arr.join(', ') : ''
+})
+const channelsError = ref('')
+
+function onChannelsInput(v: string) {
+  const raw = (v || '').trim()
+  channelsError.value = ''
+  if (!raw) {
+    update({ channels: null })
+    return
+  }
+  const parts = raw.split(',').map(s => s.trim()).filter(Boolean)
+  if (parts.length > MAX_CHANNELS) {
+    channelsError.value = `Max ${MAX_CHANNELS} channels`
+    return
+  }
+  const seen = new Set<string>()
+  for (const p of parts) {
+    if (!CHANNEL_NAME_REGEX.test(p)) {
+      channelsError.value = `"${p}" must match letters, digits, underscore`
+      return
+    }
+    if (seen.has(p)) {
+      channelsError.value = `Duplicate channel "${p}"`
+      return
+    }
+    seen.add(p)
+  }
+  update({ channels: parts })
 }
 </script>
 

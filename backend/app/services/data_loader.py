@@ -492,6 +492,14 @@ class DataLoader:
                     file_path,
                 )
 
+        # Phase H — expose channels_by_sensor so downstream nodes (chart,
+        # normalize, feature-extract) can render multi-axis columns as one
+        # named group per source sensor. Single-value CSVs get the sensor
+        # name → [sensor_name] so consumers can iterate uniformly.
+        channels_by_sensor = self._resolve_channels_by_sensor(
+            file_path, sensor_cols,
+        )
+
         # Generate session ID and store data
         session_id = self._generate_session_id()
         metadata = {
@@ -505,6 +513,7 @@ class DataLoader:
             'time_epoch_start': time_epoch_start,
             'labels': _safe_labels(df[label_col]) if label_col else None,
             'labels_sidecar_applied': sidecar_applied,
+            'channels_by_sensor': channels_by_sensor,
         }
 
         self._store_session(session_id, df, metadata)
@@ -514,6 +523,69 @@ class DataLoader:
             'metadata': metadata,
             'preview': _safe_preview_records(df)
         }
+
+    def _resolve_channels_by_sensor(
+        self, file_path: str, sensor_cols: List[str],
+    ) -> Optional[Dict[str, List[str]]]:
+        """Look up the source sensor's channels config from the asset tree.
+
+        Ingest router writes each sensor's CSV under
+        ``<datasets_root>/<root>/<plant>/<machine>/<sensor>/<date>.csv`` —
+        so the parent directory of ``file_path`` relative to the datasets
+        root is the sensor's ``topic_path``. Look up ``AssetSensorMeta``:
+        if the sensor has ``channels`` configured (multi-axis), return
+        ``{sensor_name: [ch1, ch2, ...]}``. If not, fall back to
+        ``{sensor_name: [sensor_name]}`` so downstream code always sees a
+        uniform dict shape. Returns None on any lookup failure — callers
+        treat missing as "unknown / assume flat".
+        """
+        try:
+            datasets_root = os.environ.get(
+                'DATASETS_ROOT_PATH',
+                os.path.join(
+                    os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+                    'datasets',
+                ),
+            )
+            abs_path = os.path.abspath(file_path)
+            abs_root = os.path.abspath(datasets_root)
+            if not abs_path.startswith(abs_root):
+                return None
+            # Sensor directory relative to root, using forward-slash so it
+            # matches AssetNode.topic_path regardless of OS.
+            parent_dir = os.path.dirname(abs_path)
+            rel = os.path.relpath(parent_dir, abs_root).replace(os.sep, '/')
+            if rel.startswith('.'):
+                return None
+            sensor_name = rel.rsplit('/', 1)[-1]
+            # Deferred imports so the pure-data path stays testable in
+            # isolation without needing the Flask app / models module.
+            try:
+                from ..models import AssetNode, AssetSensorMeta
+            except Exception:
+                return None
+            node = AssetNode.get_by_topic_path(rel)
+            if not node:
+                # Router CSV location, but no tree node — could be a stale
+                # file from a retired sensor. Fall back to a flat map.
+                return {sensor_name: list(sensor_cols) if sensor_cols else [sensor_name]}
+            meta = AssetSensorMeta.get(node['id'])
+            channels = (meta or {}).get('channels')
+            if channels:
+                # Preserve only channels actually present in the CSV. If the
+                # tree config was updated mid-day the file may still have
+                # the old columns; expose the intersection so downstream
+                # nodes only enumerate real columns.
+                return {sensor_name: [c for c in channels if c in sensor_cols] or list(channels)}
+            return {sensor_name: [sensor_name]}
+        except Exception:
+            # HARD REQ — never crash the loader on metadata lookup.
+            import logging
+            logging.getLogger(__name__).warning(
+                '[data_loader] channels_by_sensor lookup failed for %s',
+                file_path, exc_info=True,
+            )
+            return None
 
     def _sniff_text_delimiter(self, file_path: str, sample_bytes: int = 4096) -> str:
         """Sniff the delimiter of a text file. Falls back to ',' on failure."""
@@ -926,6 +998,10 @@ class DataLoader:
         """
         frames = []
         sensor_names: List[str] = []
+        # Phase H — channels_by_sensor for the joined output. Single-value
+        # sensors map to their own name; multi-axis sensors expose each
+        # declared axis. Filled in as each file is processed.
+        channels_by_sensor: Dict[str, List[str]] = {}
 
         for fp in file_paths:
             df = pd.read_csv(fp)
@@ -961,17 +1037,46 @@ class DataLoader:
                     hint="Ensure the file contains at least one numeric non-timestamp column.",
                 )
 
+            # Phase H — look up this sensor's channels from the asset tree
+            # so multi-axis files get the spec's `sensor.axis` naming.
+            declared_channels = self._resolve_channels_by_sensor(fp, value_cols)
+            declared_list = None
+            if declared_channels:
+                declared_list = declared_channels.get(sensor)
+
             # Rename: single value column takes the sensor name directly;
-            # multiple value columns get sensor__origColName prefix.
+            # declared multi-axis columns use `sensor.axis` (spec §H.5);
+            # anything else falls back to the legacy `sensor__origColName`
+            # prefix so existing non-multi-axis multi-column files still work.
             rename = {}
+            output_names = []
             if len(value_cols) == 1:
                 rename[value_cols[0]] = sensor
+                output_names.append(sensor)
+                channels_by_sensor[sensor] = [sensor]
+            elif declared_list and set(declared_list) & set(value_cols):
+                per_axis = []
+                for c in value_cols:
+                    if c in declared_list:
+                        renamed = f'{sensor}.{c}'
+                    else:
+                        # A stray non-axis column on a multi-axis CSV — keep
+                        # the legacy prefix so we never silently drop data.
+                        renamed = f'{sensor}__{c}'
+                    rename[c] = renamed
+                    output_names.append(renamed)
+                    if c in declared_list:
+                        per_axis.append(c)
+                channels_by_sensor[sensor] = per_axis
             else:
                 for c in value_cols:
-                    rename[c] = f"{sensor}__{c}"
+                    renamed = f"{sensor}__{c}"
+                    rename[c] = renamed
+                    output_names.append(renamed)
+                channels_by_sensor[sensor] = [rename[c] for c in value_cols]
             rename[ts_col] = '__ts'
             df = df.rename(columns=rename)
-            df = df[['__ts'] + list(rename[c] for c in value_cols)]
+            df = df[['__ts'] + output_names]
             df = df.sort_values('__ts').reset_index(drop=True)
             frames.append(df)
 
@@ -1085,6 +1190,7 @@ class DataLoader:
             'labels_sidecar_applied': labels_applied,
             'source_files': [os.path.basename(fp) for fp in file_paths],
             'source_sensors': sensor_names,
+            'channels_by_sensor': channels_by_sensor,
             'merge_mode': 'join',
             'alignment': alignment,
             'tolerance_ms': tolerance_ms,
