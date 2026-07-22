@@ -4272,6 +4272,17 @@ function applyPendingLabel() {
   cancelPendingLabel()
 }
 
+// The label-lines plugin reads `labelStart` / `labelEnd` from Vue refs
+// at draw time, but Chart.js has no way to know the refs changed —
+// nothing triggers a redraw. Result: clicking a label in the panel
+// updated the refs instantly but the lines only appeared on the next
+// unrelated re-render (hover, resize). This watcher pushes an
+// animation-less update the moment either endpoint changes.
+watch([labelStart, labelEnd, chartMode], () => {
+  const chart = chartRef.value?.chart
+  if (chart) chart.update('none')
+}, { flush: 'post' })
+
 function cancelPendingLabel() {
   labelStart.value = null
   labelEnd.value = null
