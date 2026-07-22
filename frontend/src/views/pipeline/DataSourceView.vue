@@ -3985,16 +3985,25 @@ onMounted(async () => {
 
 const isLabelMode = computed(() => chartMode.value === 'label')
 
-// Only meaningful for a single-CSV, single-file preview. Multi-CSV / cross-
-// sensor JOIN / URL loads / folder previews don't map to a single sidecar.
+// Label mode is available on:
+//   - a single CSV (sidecar colocated with it),
+//   - a cross-sensor JOIN of one machine's sensor CSVs (sidecar canonically
+//     lives next to the FIRST source CSV; labels apply to time ranges
+//     shared across all joined sensors, which is the most useful case
+//     for supervised training of a machine's model).
+// Not available on: URL loads, folder previews, multi-CSV concats (which
+// are heterogeneous stitches, not a shared timeline).
 const labelModeAvailable = computed(() => {
   const meta = dataPreview.value?.metadata
   if (!meta) return false
-  if (meta.is_multi_csv) return false
-  if (meta.is_cross_sensor_join) return false
+  // Cross-sensor JOIN → canonical sidecar path is file_paths[0].
+  if (meta.is_cross_sensor_join) {
+    const first = Array.isArray(meta.file_paths) ? meta.file_paths[0] : null
+    return typeof first === 'string' && first.length > 0
+  }
+  if (meta.is_multi_csv) return false  // heterogeneous concat, not a shared timeline
   if (meta.is_folder) return false
   if (meta.source_url) return false
-  // Require a resolvable local file path.
   const path = selectedFile.value?.path || meta.file_path
   if (!path || typeof path !== 'string') return false
   return true
@@ -4317,7 +4326,16 @@ function deleteLabel(sortedIdx: number) {
 // ── Sidecar sync (GET on load, PUT on advance) ──────────────────────────
 
 function _currentCsvPath(): string | null {
-  const path = selectedFile.value?.path || dataPreview.value?.metadata?.file_path
+  const meta = dataPreview.value?.metadata
+  // For a cross-sensor JOIN, the sidecar canonically lives next to the
+  // first source CSV. Labels are per-time-range (not per-sensor), so any
+  // source CSV would be a valid anchor; pinning to file_paths[0] keeps
+  // the writer + reader agreeing on ONE path.
+  if (meta?.is_cross_sensor_join && Array.isArray(meta.file_paths)) {
+    const first = meta.file_paths[0]
+    if (typeof first === 'string' && first.length > 0) return first
+  }
+  const path = selectedFile.value?.path || meta?.file_path
   if (!path || typeof path !== 'string') return null
   return path
 }

@@ -1028,9 +1028,27 @@ class DataLoader:
         # Rename __ts to a friendlier name downstream consumers understand.
         combined = combined.rename(columns={'__ts': 'timestamp_s'})
 
+        # Apply labels sidecar for cross-sensor JOIN: labels attach to time
+        # ranges (not individual sensors), so any source CSV's sidecar is a
+        # valid anchor. Canonically use file_paths[0] — writer + reader agree.
+        # Data flow: user writes labels via PUT with csv_path=file_paths[0];
+        # this loader reads that same sidecar and stamps the joined DataFrame
+        # with a `label` column so downstream training gets supervised data.
+        labels_applied = 0
+        if file_paths:
+            try:
+                labels_applied = self._apply_labels_sidecar(
+                    df=combined,
+                    csv_path=file_paths[0],
+                    timestamp_col='timestamp_s',
+                )
+            except Exception:
+                logger.warning('[data_loader] JOIN sidecar apply failed',
+                               exc_info=True)
+
         session_id = self._generate_session_id()
         columns = combined.columns.tolist()
-        sensor_cols = [c for c in columns if c != 'timestamp_s']
+        sensor_cols = [c for c in columns if c not in ('timestamp_s', 'label')]
 
         selection_dir = _build_multi_csv_selection_dir(session_id, file_paths)
 
@@ -1044,10 +1062,11 @@ class DataLoader:
             'total_samples': 1,  # combined is one continuous joined dataset
             'columns': columns,
             'sensor_columns': sensor_cols,
-            'label_column': None,
+            'label_column': 'label' if 'label' in combined.columns else None,
             'timestamp_column': 'timestamp_s',
             'time_epoch_start': 0.0,
             'labels': None,
+            'labels_sidecar_applied': labels_applied,
             'source_files': [os.path.basename(fp) for fp in file_paths],
             'source_sensors': sensor_names,
             'merge_mode': 'join',
