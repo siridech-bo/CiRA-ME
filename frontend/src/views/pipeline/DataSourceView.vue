@@ -901,24 +901,30 @@
             </v-chip>
             <v-spacer />
             <span
-              class="text-caption d-flex align-center"
-              :class="hasUnsavedLabels ? 'text-warning' : 'text-success'"
+              class="text-caption d-flex align-center mr-3"
+              :class="hasUnsavedLabels ? 'text-warning font-weight-bold' : 'text-success'"
             >
-              <v-icon size="10" class="mr-1">
-                {{ hasUnsavedLabels ? 'mdi-circle' : 'mdi-check-circle' }}
+              <v-icon size="12" class="mr-1">
+                {{ hasUnsavedLabels ? 'mdi-alert-circle' : 'mdi-check-circle' }}
               </v-icon>
-              {{ hasUnsavedLabels ? 'unsaved' : 'saved' }}
+              {{ hasUnsavedLabels ? 'Unsaved changes' : 'Saved' }}
             </span>
+            <!-- Save button is ALWAYS visible when there's at least one
+                 label so users know where to click. Highlights (elevated
+                 primary) while unsaved, greys out once saved. This is the
+                 explicit action; auto-save-on-Load-More is a bonus for
+                 multi-batch files where the label list may be long. -->
             <v-btn
-              v-if="hasUnsavedLabels"
-              class="ml-2"
-              size="x-small"
-              variant="tonal"
-              color="primary"
+              v-if="labels.length > 0"
+              size="small"
+              :variant="hasUnsavedLabels ? 'elevated' : 'tonal'"
+              :color="hasUnsavedLabels ? 'primary' : 'success'"
               :loading="savingLabels"
+              :disabled="!hasUnsavedLabels && !savingLabels"
+              prepend-icon="mdi-content-save-outline"
               @click="saveLabels()"
             >
-              Save now
+              {{ hasUnsavedLabels ? 'Save' : 'Saved' }}
             </v-btn>
           </div>
 
@@ -932,6 +938,7 @@
               :key="`${l.from}-${l.to}-${idx}`"
               class="px-2 label-row"
               :active="editingLabelIndex === idx"
+              @click="previewLabel(idx)"
             >
               <template #prepend>
                 <span
@@ -1031,7 +1038,19 @@
         <v-col cols="12" sm="6" md="3">
           <div class="text-caption text-medium-emphasis">Labels</div>
           <div class="font-weight-medium">
-            {{ dataPreview.metadata.labels?.join(', ') || 'None' }}
+            <!-- Prefer classes from the sidecar labeler if present (the
+                 authoritative source when a user has hand-labeled ranges),
+                 else fall back to filename-convention labels from
+                 dataPreview metadata (Edge Impulse style: idle_2024.csv). -->
+            <template v-if="knownClassNames.length > 0">
+              {{ knownClassNames.join(', ') }}
+              <span class="text-caption text-medium-emphasis ml-1">
+                ({{ labels.length }} range{{ labels.length === 1 ? '' : 's' }})
+              </span>
+            </template>
+            <template v-else>
+              {{ dataPreview.metadata.labels?.join(', ') || 'None' }}
+            </template>
           </div>
         </v-col>
         <v-col cols="12" sm="6" md="3">
@@ -2546,6 +2565,33 @@ async function openLoadAllDialog() {
   loadAllPreview.value = []
   loadAllDialogOpen.value = true
   await fetchSensorFilesForDate()
+
+  // If today has no files for any sensor, walk backwards up to 30 days
+  // and land on the most recent date that has ANY data. Silently
+  // updates the date input + re-populates the list. Prevents the
+  // common "picked today, saw all zeros, gave up" trap when a sim
+  // hasn't run yet today OR the writer hasn't flushed the buffer.
+  if (loadAllPreview.value.length > 0 &&
+      !loadAllPreview.value.some(x => x.exists)) {
+    const start = new Date()
+    for (let i = 1; i <= 30; i++) {
+      const d = new Date(start)
+      d.setDate(d.getDate() - i)
+      loadAllDate.value = d.toISOString().slice(0, 10)
+      await fetchSensorFilesForDate()
+      if (loadAllPreview.value.some(x => x.exists)) {
+        notificationStore.showSuccess(
+          `No data for today — showing latest available (${loadAllDate.value})`,
+          3500,
+        )
+        return
+      }
+    }
+    // Nothing in the last 30 days either — leave the picker on today
+    // (with all-zeros) so the message is unambiguous.
+    loadAllDate.value = start.toISOString().slice(0, 10)
+    await fetchSensorFilesForDate()
+  }
 }
 
 async function fetchSensorFilesForDate() {
@@ -4239,6 +4285,21 @@ function startEditLabel(sortedIdx: number) {
   labelEnd.value = target.to
   labelClass.value = target.class
   chartMode.value = 'label'  // switch modes so lines are visible
+}
+
+function previewLabel(sortedIdx: number) {
+  // Row-click behaviour: show the two vertical lines on the chart at this
+  // label's range without entering edit mode. Distinct from startEditLabel
+  // (which the pencil button calls) — a preview click that lands you in
+  // "replace mode" would surprise-overwrite the label on the next Apply.
+  const sorted = sortedLabels.value
+  const target = sorted[sortedIdx]
+  if (!target) return
+  editingLabelIndex.value = null
+  labelStart.value = target.from
+  labelEnd.value = target.to
+  labelClass.value = ''  // stays neutral so Apply-without-edit acts as new
+  chartMode.value = 'label'
 }
 
 function deleteLabel(sortedIdx: number) {
