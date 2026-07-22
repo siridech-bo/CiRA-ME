@@ -754,11 +754,27 @@ class DataLoader:
         # Files under one parent → user is picking multiple days of the same
         # sensor → row-concat. Files under different parents → user is picking
         # different sensors for the same machine → JOIN by timestamp.
+        auto_detected_join = False
         if merge_mode is None:
             parent_dirs = {os.path.dirname(fp) for fp in file_paths}
-            merge_mode = 'join' if len(parent_dirs) > 1 else 'concat'
+            if len(parent_dirs) > 1:
+                merge_mode = 'join'
+                auto_detected_join = True
+            else:
+                merge_mode = 'concat'
 
         if merge_mode == 'join':
+            # When we auto-detected JOIN (caller didn't specify alignment
+            # either), default to 'nearest' with a 200 ms tolerance. Real
+            # multi-sensor data almost never has synchronised timestamps
+            # (each sensor publishes at its own cadence + network jitter),
+            # so the 'exact' default the parameter signature carries produces
+            # a 1-row join with nothing matching. This matches what the
+            # frontend merge-alignment dialog offers as its default.
+            if auto_detected_join and alignment == 'exact':
+                alignment = 'nearest'
+                if tolerance_ms is None:
+                    tolerance_ms = 200
             return self._load_csv_multi_join(
                 file_paths,
                 alignment=alignment,
