@@ -112,10 +112,16 @@ class _SimulatedMachine(threading.Thread):
         self._next_due: Dict[str, float] = {
             s.name: 0.0 for s in profile.sensors
         }
-        # Ring buffers for sparklines. Populated on every publish.
-        self._recent_values: Dict[str, deque] = {
-            s.name: deque(maxlen=_RECENT_MAXLEN) for s in profile.sensors
-        }
+        # Ring buffers for sparklines. Single-value sensors keyed by
+        # sensor.name; multi-axis sensors keyed by `<name>.<axis>` so the
+        # UI can render one line per channel instead of a single magnitude.
+        self._recent_values: Dict[str, deque] = {}
+        for s in profile.sensors:
+            if s.channels:
+                for axis in s.channels:
+                    self._recent_values[f'{s.name}.{axis}'] = deque(maxlen=_RECENT_MAXLEN)
+            else:
+                self._recent_values[s.name] = deque(maxlen=_RECENT_MAXLEN)
         # Stats.
         self.messages_published = 0
         self.chaos_events = 0
@@ -168,6 +174,7 @@ class _SimulatedMachine(threading.Thread):
                         'name': s.name,
                         'unit': s.unit,
                         'sample_rate_hz': s.sample_rate_hz,
+                        'channels': list(s.channels) if s.channels else None,
                     }
                     for s in self.profile.sensors
                 ],
@@ -297,15 +304,18 @@ class _SimulatedMachine(threading.Thread):
                            self.name, topic, exc_info=True)
             return
         self.messages_published += 1
-        # Sparkline magnitude for the UI overview card. Not stored per-axis
-        # to keep the payload small; the axis-detail view lives in the
-        # published-app / chart node.
-        try:
-            magnitude = float(sum(v * v for v in values.values()) ** 0.5)
-        except Exception:
-            magnitude = 0.0
+        # Sparkline: one line per channel so the operator can see all axes
+        # move independently on the card (previously stored magnitude only,
+        # which hid gyro roll / pitch / yaw differences and made the accel
+        # look static under gravity).
         with self._lock:
-            self._recent_values[sensor_name].append(magnitude)
+            for axis, v in values.items():
+                buf = self._recent_values.get(f'{sensor_name}.{axis}')
+                if buf is not None:
+                    try:
+                        buf.append(float(v))
+                    except Exception:
+                        pass
         with self._parent._stats_lock:
             self._parent._stats['messages_published'] += 1
 

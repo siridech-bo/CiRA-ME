@@ -90,15 +90,27 @@
           class="sparkline-cell"
         >
           <div class="sparkline-label d-flex align-center justify-space-between">
-            <span class="text-truncate">{{ sensor.name }}</span>
-            <span class="text-caption text-medium-emphasis ml-2">
-              {{ lastValueFor(sensor.name) }}
+            <span class="text-truncate d-flex align-center">
+              {{ sensor.name }}
+              <v-chip
+                v-if="sensor.channels && sensor.channels.length > 1"
+                size="x-small"
+                variant="tonal"
+                color="primary"
+                class="ml-1"
+                style="height: 14px; font-size: 9px;"
+              >
+                {{ sensor.channels.join('/') }}
+              </v-chip>
+            </span>
+            <span class="text-caption text-medium-emphasis ml-2 font-mono">
+              {{ lastValueFor(sensor) }}
             </span>
           </div>
           <div class="sparkline-canvas-wrap">
             <Line
-              v-if="hasValuesFor(sensor.name)"
-              :data="chartDataFor(sensor.name)"
+              v-if="hasValuesFor(sensor)"
+              :data="chartDataFor(sensor)"
               :options="chartOptions"
               class="sparkline-canvas"
             />
@@ -132,7 +144,19 @@ interface SensorInfo {
   name: string
   unit: string
   sample_rate_hz: number
+  channels?: string[] | null
 }
+
+// Distinct hues for the axis lines in a multi-axis sparkline. Match the
+// convention most IMU tools use — X blue, Y green, Z amber.
+const AXIS_COLORS = [
+  'rgb(33, 150, 243)',   // blue
+  'rgb(76, 175, 80)',    // green
+  'rgb(255, 152, 0)',    // amber
+  'rgb(233, 30, 99)',    // pink (4th axis, if any)
+  'rgb(156, 39, 176)',   // purple
+  'rgb(0, 188, 212)',    // cyan
+]
 interface Instance {
   id: string
   profile_id: string
@@ -179,16 +203,35 @@ const uptimeDisplay = computed(() => {
   }
 })
 
-function hasValuesFor(name: string): boolean {
-  const v = props.instance.recent_values?.[name]
-  return Array.isArray(v) && v.length > 0
+// For a single-value sensor the recent_values key is the sensor name;
+// for a multi-axis sensor it's `<name>.<axis>` and there's one entry
+// per channel. This helper enumerates the keys the UI should read.
+function sparklineKeysFor(sensor: SensorInfo): string[] {
+  if (sensor.channels && sensor.channels.length > 0) {
+    return sensor.channels.map((axis) => `${sensor.name}.${axis}`)
+  }
+  return [sensor.name]
 }
 
-function lastValueFor(name: string): string {
-  const arr = props.instance.recent_values?.[name] || []
-  if (arr.length === 0) return '—'
-  const v = arr[arr.length - 1]
-  return typeof v === 'number' ? v.toFixed(2) : '—'
+function hasValuesFor(sensor: SensorInfo): boolean {
+  const keys = sparklineKeysFor(sensor)
+  return keys.some((k) => {
+    const v = props.instance.recent_values?.[k]
+    return Array.isArray(v) && v.length > 0
+  })
+}
+
+function lastValueFor(sensor: SensorInfo): string {
+  // Multi-axis: show last value of each axis separated by pipes, e.g.
+  // "0.02 | -0.01 | 9.80". Single-value: just the number.
+  const keys = sparklineKeysFor(sensor)
+  const parts = keys.map((k) => {
+    const arr = props.instance.recent_values?.[k] || []
+    if (arr.length === 0) return '—'
+    const v = arr[arr.length - 1]
+    return typeof v === 'number' ? v.toFixed(2) : '—'
+  })
+  return parts.join(' | ')
 }
 
 const chartOptions = {
@@ -209,21 +252,38 @@ const chartOptions = {
   },
 } as any
 
-function chartDataFor(name: string) {
-  const arr = props.instance.recent_values?.[name] || []
-  return {
-    labels: arr.map((_, i) => i),
-    datasets: [
-      {
-        data: arr,
-        borderColor: isChaos.value ? 'rgb(255, 152, 0)' : 'rgb(33, 150, 243)',
-        backgroundColor: isChaos.value
-          ? 'rgba(255, 152, 0, 0.15)'
-          : 'rgba(33, 150, 243, 0.15)',
-        fill: true,
-      },
-    ],
-  }
+function chartDataFor(sensor: SensorInfo) {
+  const keys = sparklineKeysFor(sensor)
+  // Longest per-axis buffer sets the x-axis so a lagging channel doesn't
+  // truncate the others.
+  const maxLen = Math.max(
+    0,
+    ...keys.map((k) => (props.instance.recent_values?.[k] || []).length),
+  )
+  const labels = Array.from({ length: maxLen }, (_, i) => i)
+
+  const isMulti = keys.length > 1
+  const datasets = keys.map((k, idx) => {
+    const arr = props.instance.recent_values?.[k] || []
+    // Left-pad with nulls so all series line up on the right (newest sample).
+    const padded = arr.length < maxLen
+      ? [...Array(maxLen - arr.length).fill(null), ...arr]
+      : arr
+    const axisName = k.includes('.') ? k.split('.').pop() : k
+    return {
+      label: axisName,
+      data: padded,
+      borderColor: isChaos.value
+        ? 'rgb(255, 152, 0)'
+        : AXIS_COLORS[idx % AXIS_COLORS.length],
+      backgroundColor: isMulti
+        ? 'transparent'
+        : isChaos.value ? 'rgba(255, 152, 0, 0.15)' : 'rgba(33, 150, 243, 0.15)',
+      fill: !isMulti,
+      spanGaps: true,
+    }
+  })
+  return { labels, datasets }
 }
 
 function onStateChange(v: string) {
