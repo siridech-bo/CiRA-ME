@@ -158,9 +158,16 @@ const chartData = computed(() => {
   const datasets = keys.map((k, idx) => {
     const arr = props.values?.[k] || []
     // Left-pad with nulls so all series line up on the right (newest sample).
+    // CRITICAL: shallow-copy in BOTH branches. Handing Chart.js the raw
+    // reactive array reference (props.values[k]) lets its internal in-place
+    // dataset.push() trip Vue's reactive Proxy → invalidates this computed
+    // → re-renders → Chart.js re-mounts → mutates again → RangeError
+    // "Maximum call stack size exceeded". Simulator card avoided this by
+    // polling every 1s (coalesced frames); MachineLivePanel pushes per
+    // MQTT message so the loop explodes within ~100 msgs.
     const padded = arr.length < maxLen
       ? [...Array(maxLen - arr.length).fill(null), ...arr]
-      : arr
+      : [...arr]
     const axisName = k.includes('.') ? k.split('.').pop() : k
     return {
       label: axisName,
