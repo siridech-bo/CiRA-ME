@@ -565,11 +565,13 @@ async function patchRecording(sensor: AssetNode, body: Record<string, unknown>,
       record_until: r.data?.record_until ?? null,
     }
     intervalDrafts[sensor.id] = meta[sensor.id].min_write_interval_ms
-    // Invalidate the tree store so the next time this tab (or any other)
-    // reads the sensor's cached meta, it gets our just-PATCHed values —
-    // without this, closing + reopening the Live tab reverts the visible
-    // toggle state because seedMeta reads from the store's stale snapshot.
-    assetTreeStore.invalidateTree()
+    // Refresh the tree store so future mounts / other tabs see our just-
+    // PATCHed values. IMPORTANT: use fetchTree(true) not invalidateTree()
+    // — invalidate synchronously clears `tree.value = []`, which collapses
+    // the parent MachineWorkspaceView's currentMachineNode lookup to null
+    // and blanks the entire page for a beat. fetchTree(true) preserves
+    // the old tree until the fresh response lands.
+    assetTreeStore.fetchTree(true).catch(() => { /* soft-fail */ })
     notify.showSuccess(`Recording updated for ${sensor.name}`)
   } catch (e: any) {
     notify.showError(
