@@ -166,7 +166,6 @@
           storage-key="cira.sidebar.globalToolsExpanded"
           :active-routes="[
             'pipeline-data',
-            'simulators',
             'pipeline-windowing',
             'pipeline-features',
             'pipeline-training',
@@ -181,13 +180,6 @@
             :active="route.name === 'pipeline-data'"
             rounded="lg"
             @click="requestNavigateToDataSource"
-          />
-          <v-list-item
-            prepend-icon="mdi-gauge"
-            title="Machine Simulators"
-            value="simulators"
-            :to="{ name: 'simulators' }"
-            rounded="lg"
           />
           <v-list-item
             prepend-icon="mdi-tune-vertical"
@@ -224,6 +216,7 @@
           title="SERVICES"
           storage-key="cira.sidebar.servicesExpanded"
           :active-routes="[
+            'simulators',
             'melab',
             'mqtt-management',
             'app-builder',
@@ -232,6 +225,13 @@
           ]"
           :rail="rail"
         >
+          <v-list-item
+            prepend-icon="mdi-gauge"
+            title="Machine Simulators"
+            value="simulators"
+            :to="{ name: 'simulators' }"
+            rounded="lg"
+          />
           <v-list-item
             prepend-icon="mdi-api"
             title="ME-LAB"
