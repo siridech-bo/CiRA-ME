@@ -835,6 +835,76 @@ def save_benchmark():
         user_id=request.current_user['id']
     )
 
+    # ── Phase I Q4 — ONNX export for client-side inference ─────────────
+    # Try to convert the trained model to ONNX and drop the .onnx as a
+    # sibling of the .pkl. This is DEPLOY-time packaging (the customer sees
+    # this model in App Builder as a bindable endpoint). NEVER blocks the
+    # save — export failure just means the App Builder toggle stays greyed
+    # out for this model with a tooltip explaining why.
+    try:
+        from ..services.model_exporter import export_saved_model_to_onnx
+        onnx_meta = None
+        model_path_for_onnx = session.get('model_path', '')
+        if model_path_for_onnx and os.path.exists(model_path_for_onnx):
+            # Pull a real X sample from the feature session so the parity
+            # check runs on training-distribution data (not random noise).
+            x_sample = None
+            try:
+                feat_sid = session.get('feature_session_id') \
+                    or pipeline_config.get('feature_session_id')
+                if feat_sid:
+                    _fx, _fy, _ = FeatureExtractor.get_features_for_training(feat_sid)
+                    if _fx is not None and len(_fx) > 0:
+                        x_sample = np.asarray(_fx[:100], dtype=np.float32)
+            except Exception as _fx_err:
+                logger.info(
+                    f"[ONNX export] Could not fetch training X for parity "
+                    f"(non-fatal): {_fx_err}"
+                )
+            onnx_meta = export_saved_model_to_onnx(
+                model_path_for_onnx, x_sample=x_sample
+            )
+        # Persist client-inference flag into the SavedModel row's
+        # pipeline_config so downstream App Builder / PublishedApp can read
+        # it without re-attempting the export. `client_inference` is a fresh
+        # section — existing consumers ignore it.
+        client_infer_supported = bool(onnx_meta)
+        try:
+            from ..models import get_db as _gdb
+            import json as _json_ci
+            new_pc = dict(pipeline_config)
+            new_pc['client_inference'] = {
+                'supported': client_infer_supported,
+                'onnx_path': onnx_meta.get('path') if onnx_meta else None,
+                'model_type': onnx_meta.get('model_type') if onnx_meta else None,
+                'opset': onnx_meta.get('opset') if onnx_meta else None,
+                'feature_shape': onnx_meta.get('feature_shape') if onnx_meta else None,
+                'parity_kind': onnx_meta.get('parity_kind') if onnx_meta else None,
+            }
+            with _gdb() as _c:
+                _cur = _c.cursor()
+                _cur.execute(
+                    'UPDATE saved_models SET pipeline_config = ? WHERE id = ?',
+                    (_json_ci.dumps(new_pc), model_id)
+                )
+                _c.commit()
+            logger.info(
+                f"[ONNX export] saved_model {model_id}: "
+                f"client_inference_supported={client_infer_supported}"
+            )
+        except Exception as _pers_err:
+            logger.warning(
+                f"[ONNX export] could not persist client_inference flag "
+                f"for saved_model {model_id}: {_pers_err}"
+            )
+    except Exception as _onnx_err:
+        # Outermost blanket guard — Q4's HARD REQUIREMENT: deploy MUST NOT
+        # fail because ONNX export blew up.
+        logger.warning(
+            f"[ONNX export] unexpected failure for saved_model {model_id}: "
+            f"{_onnx_err}"
+        )
+
     # F4: link saved model to project + advance current_stage
     project_id = data.get('project_id')
     if project_id:

@@ -111,10 +111,10 @@
 <section class="overall" style="--overall: 94;">
   <div class="ring"><span>94%</span></div>
   <div class="stats">
-    <div class="stat"><div class="n">8</div><div class="l">Phases done</div></div>
-    <div class="stat"><div class="n">59</div><div class="l">Subtasks done</div></div>
-    <div class="stat"><div class="n">9</div><div class="l">Phases total</div></div>
-    <div class="stat"><div class="n">63</div><div class="l">Subtasks total</div></div>
+    <div class="stat"><div class="n">9</div><div class="l">Phases done</div></div>
+    <div class="stat"><div class="n">66</div><div class="l">Subtasks done</div></div>
+    <div class="stat"><div class="n">10</div><div class="l">Phases total</div></div>
+    <div class="stat"><div class="n">70</div><div class="l">Subtasks total</div></div>
   </div>
 </section>
 
@@ -269,6 +269,25 @@
     <li><span class="id">H.6</span> <span class="chip done">done</span> Downstream nodes verify multi-channel + sensor.axis naming <span class="time">2026-07-22</span></li>
     <li><span class="id">H.QA</span> <span class="chip done">done</span> QA — 1 blocker + 5 polish. Blocker fixed (mid-day channel schema change now 409's if today's CSV has data). 2 polish fixed (accel/gyro 'off' state silent; partial sensor_meta PATCH preserves unspecified fields). 3 polish deferred (cosmetic: mislabeled files_written counter, DB-context traceback outside Flask, scientific notation on small floats). <span class="time">2026-07-22</span></li>
     <li><span class="id">H.T</span> <span class="chip pending">pending</span> Personal browser test <span class="time">—</span></li>
+  </ul>
+</section>
+
+<!-- ═══════════════════════════════════════════════════ PHASE I ═════ -->
+<section class="phase status-done" id="phase-i">
+  <div class="head">
+    <h2>Phase I · Live viz + record controls + client-side inference</h2>
+    <span class="est">~3.5 days · <span class="chip done">done</span></span>
+  </div>
+  <div class="bar"><i style="width:100%"></i></div>
+  <ul class="subtasks">
+    <li><span class="id">I.0</span> <span class="chip done">done</span> Sidebar move: Machine Simulators GLOBAL TOOLS → SERVICES (Q1) <span class="time">2026-07-25</span></li>
+    <li><span class="id">I.1</span> <span class="chip done">done</span> Recording controls: 3-column migration + router throttle/auto-stop + PATCH + data-stats endpoints <span class="time">2026-07-25</span></li>
+    <li><span class="id">I.2</span> <span class="chip done">done</span> Model exporter (skl2onnx / onnxmltools) + save-benchmark hook + parity check <span class="time">2026-07-25</span></li>
+    <li><span class="id">I.3</span> <span class="chip done">done</span> Machine workspace Live tab with sparklines + admin-gated recording controls <span class="time">2026-07-25</span></li>
+    <li><span class="id">I.4</span> <span class="chip done">done</span> SensorSparkline shared component (SimulatorCard refactored to use it) <span class="time">2026-07-25</span></li>
+    <li><span class="id">I.5</span> <span class="chip done">done</span> App Builder Client Inference toggle + ONNX runtime in PublishedAppView <span class="time">2026-07-25</span></li>
+    <li><span class="id">I.QA</span> <span class="chip done">done</span> QA — 3 blockers + 14 polish. All 3 blockers fixed (multi-model guard, WASM CDN paths, auto-stop dropdown custom entry). 5 real polish fixed (non-sensor guard, resume clears record_until, sim card unit prop, session promise dedup + release on unmount, model_version uses updated_at). Cosmetic polish deferred. <span class="time">2026-07-25</span></li>
+    <li><span class="id">I.T</span> <span class="chip pending">pending</span> Personal browser test <span class="time">—</span></li>
   </ul>
 </section>
 

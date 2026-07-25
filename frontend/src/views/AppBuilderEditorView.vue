@@ -43,6 +43,31 @@
           valid
         </span>
         <span class="status-meta">{{ nodes.length }} nodes</span>
+
+        <!-- Phase I Q4 — Client Inference toggle. Sits next to Save
+             because App Builder has no Fast Mode toggle in the top bar
+             today. Persisted per-flow in localStorage AND included in the
+             app config on Publish. -->
+        <v-tooltip location="bottom">
+          <template #activator="{ props: tooltipProps }">
+            <div v-bind="tooltipProps">
+              <v-btn
+                size="small"
+                :color="clientInferenceEnabled ? 'amber' : 'grey'"
+                :variant="clientInferenceEnabled ? 'tonal' : 'text'"
+                :disabled="!clientInferenceToggleAvailable"
+                @click="toggleClientInference"
+                class="client-inference-btn"
+              >
+                <v-icon start size="14">mdi-flash</v-icon>
+                Client Inference
+                <v-icon v-if="clientInferenceEnabled" end size="12" color="amber">mdi-check-circle</v-icon>
+              </v-btn>
+            </div>
+          </template>
+          <span>{{ clientInferenceTooltip }}</span>
+        </v-tooltip>
+
         <v-btn
           size="small"
           color="primary"
@@ -968,6 +993,74 @@ const publishSettings = ref({
   rateLimit: '100 req / day',
 })
 
+// ── Phase I Q4 — Client Inference toggle state ─────────────────────
+// Persisted per-flow in localStorage on every change AND passed to the
+// backend via saveApp/publishApp so the published URL reflects it.
+const clientInferenceEnabled = ref(false)
+
+// Key format is locked by the spec — do not change without a migration.
+const clientInferenceStorageKey = computed(
+  () => `cira.appbuilder.${appId.value || 'draft'}.clientInference`
+)
+
+// A model node is "unsupported" if its capability payload reports
+// client_inference_supported = false. If any bound model is unsupported the
+// toggle is greyed out with an explanatory tooltip.
+const clientInferenceModelNodes = computed(() =>
+  nodes.value.filter(n => n.type?.startsWith('model.endpoint.'))
+)
+const clientInferenceUnsupportedNodes = computed(() =>
+  clientInferenceModelNodes.value.filter(n => {
+    const cap = capabilities.value[n.type]
+    // Missing capability = endpoint deleted; treat as unsupported so the
+    // toggle disables rather than silently sending to a dead URL.
+    if (!cap) return true
+    return cap.client_inference_supported === false
+  })
+)
+const clientInferenceToggleAvailable = computed(() => {
+  // Spec: "If flow has no model node yet, toggle is enabled by default
+  // (no reason to disable)".
+  if (clientInferenceModelNodes.value.length === 0) return true
+  return clientInferenceUnsupportedNodes.value.length === 0
+})
+const clientInferenceTooltip = computed(() => {
+  if (clientInferenceUnsupportedNodes.value.length > 0) {
+    return "Model type doesn't support client inference; server round-trip will be used."
+  }
+  return 'Run inference in-browser (skip server round-trip). Requires ONNX-exported model.'
+})
+
+function toggleClientInference() {
+  if (!clientInferenceToggleAvailable.value) return
+  clientInferenceEnabled.value = !clientInferenceEnabled.value
+}
+function loadClientInferencePref() {
+  try {
+    const v = localStorage.getItem(clientInferenceStorageKey.value)
+    if (v === '1' || v === 'true') clientInferenceEnabled.value = true
+    else if (v === '0' || v === 'false') clientInferenceEnabled.value = false
+  } catch { /* ignore quota / disabled storage */ }
+}
+function persistClientInferencePref() {
+  try {
+    localStorage.setItem(
+      clientInferenceStorageKey.value,
+      clientInferenceEnabled.value ? '1' : '0'
+    )
+  } catch { /* ignore */ }
+}
+watch(clientInferenceEnabled, () => {
+  persistClientInferencePref()
+})
+// If any bound model becomes unsupported, force the flag off so we don't
+// keep sending an "enabled" state to the backend that we can't honor.
+watch(clientInferenceUnsupportedNodes, (nodesArr) => {
+  if (nodesArr.length > 0 && clientInferenceEnabled.value) {
+    clientInferenceEnabled.value = false
+  }
+})
+
 // ── Capabilities (static + ME-LAB model nodes) ────────────────────
 const capabilities = computed(() => {
   const caps = { ...STATIC_CAPS }
@@ -1550,6 +1643,13 @@ async function loadApp() {
     const data = resp.data
     appName.value = data.name || 'My App'
     nodes.value   = data.nodes || []
+    // Phase I Q4 — hydrate the toggle from the persisted app row FIRST so
+    // it survives being cleared from localStorage. Then the localStorage
+    // read below wins if it exists (edit-time preference).
+    if (typeof data.client_inference !== 'undefined') {
+      clientInferenceEnabled.value = !!data.client_inference
+    }
+    loadClientInferencePref()
   } catch {
     // New app — start empty
   }
@@ -1572,6 +1672,9 @@ async function saveApp() {
       name: appName.value,
       nodes: nodes.value,
       edges: buildEdges(),
+      // Phase I Q4 — persist toggle so a hard reload keeps the choice even
+      // if localStorage is wiped.
+      client_inference: clientInferenceEnabled.value,
     })
   } catch (e) {
     console.error('Save failed', e)
@@ -1590,6 +1693,10 @@ async function publishApp() {
       name: appName.value,
       nodes: nodes.value,
       edges: buildEdges(),
+      // Phase I Q4 — bake the toggle into the persisted app record so the
+      // published URL is deterministic (any user visiting the app URL sees
+      // the setting the publisher chose).
+      client_inference: clientInferenceEnabled.value,
     })
     // Then publish
     const resp = await api.post(`/api/app-builder/apps/${appId.value}/publish`, {

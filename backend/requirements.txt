@@ -49,6 +49,8 @@ skl2onnx>=1.16
 onnx>=1.15
 onnxruntime>=1.17
 onnxscript>=0.1
+# Phase I Q4 — XGBoost / LightGBM ONNX converters for client-side inference
+onnxmltools>=1.12
 
 # HTTP Client (for TI ModelMaker bridge)
 requests>=2.31.0

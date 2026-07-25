@@ -298,6 +298,15 @@ def init_db(db_path: str):
             cursor.execute('ALTER TABLE app_builder_apps ADD COLUMN project_id INTEGER REFERENCES projects(id)')
         except Exception:
             pass
+        # Phase I Q4 — client-side ONNX inference toggle (per app).
+        # 0 = force server round-trip, 1 = prefer browser onnxruntime-web with
+        # server fallback. Default 0 so upgraded databases are unchanged.
+        try:
+            cursor.execute(
+                'ALTER TABLE app_builder_apps ADD COLUMN client_inference INTEGER NOT NULL DEFAULT 0'
+            )
+        except Exception:
+            pass
         try:
             cursor.execute('ALTER TABLE folder_watchers ADD COLUMN project_id INTEGER REFERENCES projects(id)')
         except Exception:
@@ -518,6 +527,23 @@ def init_db(db_path: str):
             )
         except Exception:
             pass  # Column already exists
+
+        # ── Phase I Q3 (2026-07-25) — Per-sensor recording controls ───────
+        # Three new nullable / defaulted columns on asset_sensor_meta so the
+        # ingest router can gate CSV writes without changing the topic-level
+        # routing behaviour. All idempotent; existing rows default to
+        # `ingest_enabled=1, min_write_interval_ms=NULL, record_until=NULL`
+        # which reproduces the pre-Phase-I "always record every message"
+        # semantic — zero regression on existing sensors.
+        for _alter in (
+            "ALTER TABLE asset_sensor_meta ADD COLUMN ingest_enabled INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE asset_sensor_meta ADD COLUMN min_write_interval_ms INTEGER",
+            "ALTER TABLE asset_sensor_meta ADD COLUMN record_until TEXT",
+        ):
+            try:
+                cursor.execute(_alter)
+            except Exception:
+                pass  # Column already exists (second-and-later boots)
 
         # Create default admin user if not exists
         cursor.execute('SELECT id FROM users WHERE username = ?', ('admin',))
@@ -1529,7 +1555,7 @@ class AppBuilderApp:
         with get_db() as conn:
             cursor = conn.cursor()
             allowed_fields = ['name', 'nodes', 'edges', 'access', 'status', 'slug',
-                              'published_at']
+                              'published_at', 'client_inference']
             updates = {}
             for k, v in kwargs.items():
                 if k in allowed_fields:
@@ -2011,6 +2037,19 @@ class AssetNode:
                         sensor_meta['channels'] = None
                 else:
                     sensor_meta['channels'] = None
+                # Phase I Q3 — normalise recording-control fields so the
+                # frontend sees crisp types (bool / int / str-or-null) rather
+                # than sqlite3's raw Row values. Defensive against pre-migration
+                # rows where the ALTER hasn't yet added the column (SELECT *
+                # then returns nothing for it and .get() returns None).
+                raw_ie = sensor_meta.get('ingest_enabled')
+                sensor_meta['ingest_enabled'] = (
+                    True if raw_ie is None else bool(raw_ie)
+                )
+                if 'min_write_interval_ms' not in sensor_meta:
+                    sensor_meta['min_write_interval_ms'] = None
+                if 'record_until' not in sensor_meta:
+                    sensor_meta['record_until'] = None
                 n['sensor_meta'] = sensor_meta
 
         roots = []
@@ -2027,6 +2066,18 @@ class AssetNode:
         return roots
 
 
+# Sentinel used by AssetSensorMeta.upsert() so Phase I Q3 recording-control
+# fields can express three states unambiguously:
+#   - _UNCHANGED (default) → preserve whatever's in the DB (partial-PATCH)
+#   - None                 → explicitly clear (nullable columns only)
+#   - value                → set to that value
+# The pre-existing fields (unit, sample_rate_hz, …) keep their historical
+# "None means None-in-DB" semantic so callers written before Phase I don't
+# see a behavior change; only the three new recording fields opt into the
+# sentinel-based preserve.
+_UNCHANGED = object()
+
+
 class AssetSensorMeta:
     """Sensor metadata (unit, sample rate, etc.) for leaf asset nodes.
 
@@ -2034,6 +2085,11 @@ class AssetSensorMeta:
     publishes multiple axes in ONE MQTT payload (e.g. accelerometer with
     ``{"x", "y", "z"}``), and the ingest router demultiplexes into a
     multi-column CSV.
+
+    Phase I Q3 (2026-07-25): added `ingest_enabled` (bool, default True),
+    `min_write_interval_ms` (int, nullable) and `record_until` (ISO ts,
+    nullable). The router checks these per message to gate CSV writes
+    without affecting broker traffic.
     """
 
     @staticmethod
@@ -2063,18 +2119,42 @@ class AssetSensorMeta:
                     d['channels'] = None
             else:
                 d['channels'] = None
+            # Phase I Q3 — normalize the three new recording-control fields.
+            # `ingest_enabled` defaults to True when the column is missing
+            # (older rows on a mid-upgrade DB where the ALTER already ran
+            # but this row predates it — SQLite hands back None for such
+            # ghost columns). Bool coerce keeps the type crisp for JSON.
+            raw_ingest = d.get('ingest_enabled')
+            d['ingest_enabled'] = True if raw_ingest is None else bool(raw_ingest)
+            # min_write_interval_ms + record_until: leave as-is (int / str
+            # / None). Callers get None back for absent values.
+            if 'min_write_interval_ms' not in d:
+                d['min_write_interval_ms'] = None
+            if 'record_until' not in d:
+                d['record_until'] = None
             return d
 
     @staticmethod
     def upsert(asset_id: int, unit: str = None, sample_rate_hz: float = None,
                expected_min: float = None, expected_max: float = None,
-               data_type: str = None, channels=None):
+               data_type: str = None, channels=None,
+               ingest_enabled=_UNCHANGED,
+               min_write_interval_ms=_UNCHANGED,
+               record_until=_UNCHANGED):
         """Insert or update a sensor_meta row.
 
         `channels` (optional, Phase H): iterable of strings. Stored as a
         JSON-encoded array. Pass None or an empty list to clear.
         Existing callers that pass no `channels` argument leave the
         column NULL (== single-value behavior — no regression).
+
+        Phase I Q3 recording-control fields (`ingest_enabled`,
+        `min_write_interval_ms`, `record_until`): use the `_UNCHANGED`
+        sentinel semantics — pass no value to preserve the existing DB
+        cell (partial-PATCH-friendly, matches Phase H polish #2 intent),
+        pass None to explicitly clear (nullable columns only), or pass
+        the actual value to set. `ingest_enabled` never stores NULL
+        (schema DEFAULT 1); passing None is coerced to True.
         """
         import json
         # Normalize channels to a JSON string (or None). Accept list-like;
@@ -2087,6 +2167,50 @@ class AssetSensorMeta:
                     channels_json = json.dumps(cleaned)
             except Exception:
                 channels_json = None
+        # ── Phase I Q3 — resolve preserve-vs-set for the 3 new fields ──
+        # Fetch existing row ONCE if any of the new fields wants to
+        # preserve; skip the extra read when the caller passed explicit
+        # values for all three (the create-node path).
+        needs_existing = any(
+            v is _UNCHANGED for v in
+            (ingest_enabled, min_write_interval_ms, record_until)
+        )
+        existing_meta = None
+        if needs_existing:
+            with get_db() as conn:
+                cursor = conn.cursor()
+                row = cursor.execute(
+                    'SELECT ingest_enabled, min_write_interval_ms, record_until '
+                    'FROM asset_sensor_meta WHERE asset_id = ?',
+                    (asset_id,)
+                ).fetchone()
+                existing_meta = dict(row) if row else None
+
+        def _resolve(new_val, key, fallback):
+            if new_val is _UNCHANGED:
+                if existing_meta is not None and existing_meta.get(key) is not None:
+                    return existing_meta.get(key)
+                return fallback
+            return new_val
+
+        # ingest_enabled coerces to 0/1 int for SQLite; NULL → default True.
+        raw_ie = _resolve(ingest_enabled, 'ingest_enabled', 1)
+        if raw_ie is None:
+            raw_ie = 1
+        ie_int = 1 if bool(raw_ie) else 0
+        # min_write_interval_ms: keep int / None as-is; explicit None means clear.
+        mwi = _resolve(min_write_interval_ms, 'min_write_interval_ms', None)
+        if mwi is not None:
+            try:
+                mwi = int(mwi)
+            except (TypeError, ValueError):
+                mwi = None
+        # record_until: keep string / None as-is; caller is expected to have
+        # already parsed / normalized the ISO 8601 format at the route layer.
+        ru = _resolve(record_until, 'record_until', None)
+        if ru is not None and not isinstance(ru, str):
+            ru = str(ru)
+
         with get_db() as conn:
             cursor = conn.cursor()
             existing = cursor.execute(
@@ -2097,19 +2221,23 @@ class AssetSensorMeta:
                 cursor.execute(
                     '''UPDATE asset_sensor_meta
                        SET unit = ?, sample_rate_hz = ?, expected_min = ?,
-                           expected_max = ?, data_type = ?, channels = ?
+                           expected_max = ?, data_type = ?, channels = ?,
+                           ingest_enabled = ?, min_write_interval_ms = ?,
+                           record_until = ?
                        WHERE asset_id = ?''',
                     (unit, sample_rate_hz, expected_min, expected_max,
-                     data_type, channels_json, asset_id)
+                     data_type, channels_json, ie_int, mwi, ru, asset_id)
                 )
             else:
                 cursor.execute(
                     '''INSERT INTO asset_sensor_meta
                        (asset_id, unit, sample_rate_hz, expected_min,
-                        expected_max, data_type, channels)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)''',
+                        expected_max, data_type, channels,
+                        ingest_enabled, min_write_interval_ms, record_until)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
                     (asset_id, unit, sample_rate_hz, expected_min,
-                     expected_max, data_type, channels_json)
+                     expected_max, data_type, channels_json,
+                     ie_int, mwi, ru)
                 )
             conn.commit()
 

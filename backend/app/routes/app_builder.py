@@ -389,7 +389,82 @@ def get_app_by_slug(slug):
     result['algorithm'] = 'multi-model' if is_multi else algorithm
     result['sensor_columns'] = sensor_columns
     result['multi_model'] = is_multi
+
+    # Phase I Q4 — expose client-inference config so PublishedAppView can
+    # decide whether to load onnxruntime-web at all. `client_inference_endpoints`
+    # is a map {endpoint_id: {supported, onnx_url, model_version}} for every
+    # model.endpoint.* node in the pipeline. Server-side inference is always
+    # the fallback if the browser can't load onnxruntime-web.
+    result['client_inference_enabled'] = bool(app.get('client_inference'))
+    endpoint_ids_in_flow = []
+    for node in nodes:
+        ntype = node.get('type', '') if isinstance(node, dict) else ''
+        if ntype.startswith('model.endpoint.'):
+            endpoint_ids_in_flow.append(ntype.replace('model.endpoint.', ''))
+        if ntype == 'output.multi_model_compare':
+            for eidStr in node.get('config', {}).get('endpoint_ids', []):
+                endpoint_ids_in_flow.append(eidStr.split(':')[0])
+    ci_endpoints = {}
+    for _eid in endpoint_ids_in_flow:
+        ci_endpoints[_eid] = _get_endpoint_client_inference_info(_eid, slug)
+    result['client_inference_endpoints'] = ci_endpoints
+    # Convenience: aggregated "all bound models support client inference"
+    # so the frontend can quickly gate the toggle.
+    result['client_inference_all_supported'] = (
+        bool(ci_endpoints)
+        and all(v.get('supported') for v in ci_endpoints.values())
+    )
     return jsonify(result)
+
+
+def _get_endpoint_client_inference_info(endpoint_id, slug):
+    """Return per-endpoint client-inference metadata for the published app.
+
+    Reads the flag written by save-benchmark (see backend/app/services/
+    model_exporter.py + routes/training.py). Returns a dict even when the
+    endpoint / saved-model is missing so the frontend can render a
+    'not supported' state instead of null-crashing.
+    """
+    info = {
+        'supported': False,
+        'onnx_url': None,
+        'model_version': None,
+        'reason': None,
+    }
+    try:
+        ep = MeLabEndpoint.get_by_id(endpoint_id)
+        if not ep:
+            info['reason'] = 'endpoint_not_found'
+            return info
+        saved = SavedModel.get_by_id(ep.get('saved_model_id'))
+        if not saved:
+            info['reason'] = 'saved_model_not_found'
+            return info
+        pc = saved.get('pipeline_config', {}) or {}
+        if isinstance(pc, str):
+            try: pc = json.loads(pc)
+            except: pc = {}
+        ci = pc.get('client_inference') or {}
+        if not ci.get('supported'):
+            info['reason'] = 'model_type_unsupported_or_export_failed'
+            info['supported'] = False
+        else:
+            info['supported'] = True
+            # URL served by the published-app runtime route below. The browser
+            # never sees the on-disk path — the backend streams the .onnx.
+            info['onnx_url'] = f'/api/app-builder/run/{slug}/onnx/{endpoint_id}'
+            info['model_type'] = ci.get('model_type')
+            info['feature_shape'] = ci.get('feature_shape')
+        # Cache-buster: browser refetches when the model changes. Use
+        # updated_at (or created_at as fallback) so a retrain-in-place
+        # that keeps the same saved_model id ALSO invalidates the browser's
+        # cached ONNX session — QA P8. Compose "<id>@<updated_at>" so a
+        # brand-new saved_model row also busts.
+        version_key = saved.get('updated_at') or saved.get('created_at') or ''
+        info['model_version'] = f"{saved.get('id')}@{version_key}"
+    except Exception as _e:
+        info['reason'] = f'lookup_error: {_e}'
+    return info
 
 
 @app_builder_bp.route('/apps/<int:app_id>', methods=['PUT'])
@@ -415,6 +490,10 @@ def update_app(app_id):
         allowed['edges'] = data['edges']
     if 'access' in data:
         allowed['access'] = data['access']
+    # Phase I Q4 — client-side inference toggle. Persisted per app so a
+    # published URL is deterministic (browser reads this on load).
+    if 'client_inference' in data:
+        allowed['client_inference'] = 1 if bool(data['client_inference']) else 0
 
     AppBuilderApp.update(app_id, **allowed)
 
@@ -505,6 +584,63 @@ def publish_app(app_id):
 
 
 # ─── Runtime (API Key or Session Auth) ───────────────────────────
+
+@app_builder_bp.route('/run/<slug>/onnx/<endpoint_id>', methods=['GET'])
+def get_onnx_model(slug, endpoint_id):
+    """Stream the .onnx bytes for a published app's endpoint (Phase I Q4).
+
+    Auth mirrors /run/<slug>: public → open, team → login, private → owner.
+    Returns 404 if the app / endpoint / .onnx are missing so the frontend
+    falls back to the server inference path cleanly.
+    """
+    from flask import send_file, abort
+    app = AppBuilderApp.get_by_slug(slug)
+    if not app or app['status'] != 'published':
+        abort(404)
+
+    # Access check mirrors run_app / get_inference_config.
+    access = app.get('access', 'private')
+    user_id = _auth_from_session_or_apikey()
+    if access == 'team' and not user_id:
+        return jsonify({'error': 'Login required'}), 401
+    if access == 'private':
+        if not user_id:
+            return jsonify({'error': 'Auth required'}), 401
+        if app['user_id'] != user_id:
+            return jsonify({'error': 'Access denied'}), 403
+
+    # Verify the endpoint is actually part of this app's pipeline (defence
+    # in depth — otherwise any published app could act as a directory
+    # traversal for another user's .onnx files).
+    nodes = app.get('nodes', [])
+    valid_ids = set()
+    for node in nodes:
+        ntype = node.get('type', '') if isinstance(node, dict) else ''
+        if ntype.startswith('model.endpoint.'):
+            valid_ids.add(ntype.replace('model.endpoint.', ''))
+        if ntype == 'output.multi_model_compare':
+            for eidStr in node.get('config', {}).get('endpoint_ids', []):
+                valid_ids.add(eidStr.split(':')[0])
+    if endpoint_id not in valid_ids:
+        abort(404)
+
+    ep = MeLabEndpoint.get_by_id(endpoint_id)
+    if not ep:
+        abort(404)
+    saved = SavedModel.get_by_id(ep.get('saved_model_id'))
+    if not saved:
+        abort(404)
+    model_path = saved.get('model_path') or ''
+    if not model_path:
+        abort(404)
+    # .onnx sits next to the .pkl (same stem). Resolve to an absolute path
+    # so Flask's send_file doesn't re-anchor relative paths against the app
+    # root (SavedModel.model_path is stored as './models/<uuid>.pkl').
+    onnx_path = os.path.abspath(os.path.splitext(model_path)[0] + '.onnx')
+    if not os.path.exists(onnx_path):
+        abort(404)
+    return send_file(onnx_path, mimetype='application/octet-stream')
+
 
 @app_builder_bp.route('/run/<slug>/inference-config', methods=['GET'])
 def get_inference_config(slug):
@@ -1252,8 +1388,11 @@ def get_capabilities():
     endpoints = MeLabEndpoint.get_all(request.current_user['id'])
     for ep in endpoints:
         if ep.get('status') == 'active':
-            # Get target_column from saved model's pipeline_config
+            # Get target_column + client-inference support from saved model's
+            # pipeline_config. Phase I Q4 flag lives at pipeline_config
+            # ['client_inference']['supported'].
             target_col = None
+            client_inference_supported = False
             try:
                 saved = SavedModel.get_by_id(ep['saved_model_id'])
                 if saved:
@@ -1261,6 +1400,8 @@ def get_capabilities():
                     if isinstance(pc, str):
                         pc = json.loads(pc)
                     target_col = pc.get('target_column')
+                    _ci = pc.get('client_inference') or {}
+                    client_inference_supported = bool(_ci.get('supported'))
             except Exception:
                 pass
 
@@ -1275,6 +1416,7 @@ def get_capabilities():
                 'n_features': ep.get('n_features', 0),
                 'feature_names': ep.get('feature_names', []),
                 'target_column': target_col,
+                'client_inference_supported': client_inference_supported,
             })
 
     return jsonify(catalog)

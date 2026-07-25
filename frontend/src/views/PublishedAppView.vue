@@ -913,6 +913,23 @@
             <div class="live-stat-label">Inferences</div>
             <div class="live-stat-value">{{ liveInferenceCount }}</div>
           </div>
+          <!-- Phase I Q4 — inference latency badge. Shows the last
+               inference's mode (client / server) and its measured latency.
+               Green for client (single-digit ms typical), grey for server. -->
+          <div
+            v-if="lastInferenceLatencyMs != null"
+            class="live-stat client-inference-badge"
+            :class="{ 'is-client': lastInferenceMode === 'client' }"
+          >
+            <div class="live-stat-label">Latency</div>
+            <div class="live-stat-value">
+              <v-icon size="12" class="mr-1">{{ lastInferenceMode === 'client' ? 'mdi-flash' : 'mdi-server' }}</v-icon>
+              {{ Math.round(lastInferenceLatencyMs) }}ms
+              <span style="opacity: 0.7; font-size: 10px; margin-left: 4px;">
+                {{ lastInferenceMode === 'client' ? 'client' : 'server' }}
+              </span>
+            </div>
+          </div>
           <div
             v-if="isRecordingPredictions"
             class="live-stat"
@@ -1967,6 +1984,14 @@ onUnmounted(() => {
   document.removeEventListener('fullscreenchange', updateFullscreenState)
   // Clean up the Fast Mode worker if it's still running (page navigation)
   terminateFastModeWorker()
+  // QA P7: release every cached ONNX InferenceSession so their backing
+  // WASM memory is freed on nav. Without this each visit to a published
+  // app with client inference leaks a couple MB of WASM heap.
+  for (const cached of onnxSessions.values()) {
+    try { cached.session.release() } catch { /* ignore */ }
+  }
+  onnxSessions.clear()
+  onnxSessionPromises.clear()
 })
 
 // Multi-model comparison
@@ -2604,6 +2629,236 @@ watch(fastModeEnabled, (val) => {
     fastInferenceConfig.value = null
   }
 })
+
+// ── Phase I Q4 — Client-side ONNX inference ────────────────────────
+// When enabled AND the app has a client-inference-capable model AND
+// Fast Mode is also on (so the browser has the model's expected feature
+// vector), we run inference in-browser via onnxruntime-web. Any failure
+// (WASM unsupported, .onnx missing, session error) falls back to the
+// server round-trip silently — the user just sees a slightly higher
+// latency badge. Never produces silently-wrong predictions.
+const clientInferenceEnabled = computed(() => !!appData.value?.client_inference_enabled)
+const clientInferenceEndpoints = computed(() => appData.value?.client_inference_endpoints || {})
+const clientInferenceAllSupported = computed(() => !!appData.value?.client_inference_all_supported)
+// Runtime: dynamically imported onnxruntime-web module (null until first use).
+let ort = null
+// One InferenceSession per endpoint_id — models are typically <1 MB but
+// creating a session parses the WASM every time so we cache aggressively.
+const onnxSessions = new Map()   // endpoint_id → { session, version }
+// QA P6: dedupe concurrent session-create requests for the same endpoint —
+// without this, two overlapping live windows both find the cache empty and
+// each spin up their own InferenceSession, orphaning the loser's WASM
+// memory. Store the in-flight promise so the second caller awaits the
+// first's result.
+const onnxSessionPromises = new Map()  // endpoint_id → Promise<Session|null>
+// Latency badge state (last successful inference).
+const lastInferenceLatencyMs = ref(null)
+const lastInferenceMode = ref(null)   // 'client' | 'server' | null
+
+async function ensureOnnxRuntimeLoaded() {
+  if (ort) return ort
+  try {
+    // Dynamic import — onnxruntime-web is ~2 MB gzipped and only pays the
+    // cost when actually used. Vite splits this into its own chunk.
+    const mod = await import('onnxruntime-web')
+    ort = mod
+
+    // QA B2 — explicit WASM asset paths. ORT tries to fetch its .wasm
+    // files by hardcoded filename at runtime; Vite emits them with hashed
+    // names under /assets/ which ORT can't guess, so
+    // InferenceSession.create() otherwise fails silently and every
+    // client-inference call falls back to the server. Point ORT at the
+    // jsdelivr CDN as a first-choice source that always has the exact
+    // filenames the runtime expects. Air-gapped installs where the CDN
+    // is blocked will silently fall back to server inference (which is
+    // the same behaviour we had before this feature — no regression).
+    // TODO for offline installs: `postbuild` copy of the .wasm files from
+    // node_modules to dist/ort-wasm/ + set wasmPaths to '/ort-wasm/'.
+    try {
+      const version = (ort.env && ort.env.versions && ort.env.versions.web)
+                     || ort.version
+                     || '1.27.0'
+      ort.env.wasm.wasmPaths = `https://cdn.jsdelivr.net/npm/onnxruntime-web@${version}/dist/`
+    } catch {
+      // If we can't even set the path, ORT's default same-origin lookup
+      // will run and fail with a 404 → runLiveInference catches it and
+      // falls back to server. Not worth guarding here.
+    }
+    return ort
+  } catch (e) {
+    console.warn('[client-inference] onnxruntime-web import failed:', e?.message || e)
+    ort = null
+    return null
+  }
+}
+
+async function ensureOnnxSession(endpointId) {
+  const info = clientInferenceEndpoints.value[endpointId]
+  if (!info || !info.supported || !info.onnx_url) return null
+
+  const cached = onnxSessions.get(endpointId)
+  if (cached && cached.version === info.model_version) {
+    return cached.session
+  }
+  // Version mismatch → drop the old session (spec: refetch on model change)
+  if (cached) {
+    try { cached.session.release() } catch { /* ignore */ }
+    onnxSessions.delete(endpointId)
+  }
+
+  // QA P6: if a session for this endpoint is already being created, await
+  // the existing promise instead of racing a duplicate.
+  const inFlight = onnxSessionPromises.get(endpointId)
+  if (inFlight) return inFlight
+
+  const buildPromise = (async () => {
+    const rt = await ensureOnnxRuntimeLoaded()
+    if (!rt) return null
+    try {
+      const resp = await fetch(info.onnx_url, { credentials: 'same-origin' })
+      if (!resp.ok) {
+        console.warn(`[client-inference] fetch ${info.onnx_url} → ${resp.status}`)
+        return null
+      }
+      const bytes = new Uint8Array(await resp.arrayBuffer())
+      const session = await rt.InferenceSession.create(bytes, {
+        executionProviders: ['wasm'],
+        graphOptimizationLevel: 'all',
+      })
+      onnxSessions.set(endpointId, { session, version: info.model_version })
+      console.log(
+        `[client-inference] loaded model.onnx endpoint=${endpointId} ` +
+        `inputs=${session.inputNames} outputs=${session.outputNames}`
+      )
+      return session
+    } catch (e) {
+      console.warn(`[client-inference] session create failed for ${endpointId}:`, e?.message || e)
+      return null
+    } finally {
+      onnxSessionPromises.delete(endpointId)
+    }
+  })()
+  onnxSessionPromises.set(endpointId, buildPromise)
+  return buildPromise
+}
+
+/**
+ * Run inference client-side using onnxruntime-web.
+ *
+ * Args:
+ *   endpointId    — MeLab endpoint UUID the pipeline is bound to.
+ *   featureVector — 2D number[][] shape [numWindows, numFeatures] (same as
+ *                   Fast Mode worker output).
+ * Returns:
+ *   { predictions: any[], latency_ms: number } on success, null on any failure.
+ */
+async function runOnnxClientInference(endpointId, featureVector) {
+  if (!Array.isArray(featureVector) || featureVector.length === 0) return null
+  const nRows = featureVector.length
+  const nFeat = featureVector[0].length
+
+  const session = await ensureOnnxSession(endpointId)
+  if (!session) return null
+
+  const rt = ort
+  if (!rt) return null
+
+  try {
+    // Flatten to Float32 in row-major order — this is what ONNX expects.
+    const flat = new Float32Array(nRows * nFeat)
+    for (let r = 0; r < nRows; r++) {
+      const row = featureVector[r]
+      for (let c = 0; c < nFeat; c++) flat[r * nFeat + c] = Number(row[c]) || 0
+    }
+    const tensor = new rt.Tensor('float32', flat, [nRows, nFeat])
+    const inputName = session.inputNames[0]
+
+    const t0 = performance.now()
+    const outputs = await session.run({ [inputName]: tensor })
+    const latency = performance.now() - t0
+
+    // sklearn/XGBoost ONNX classifiers usually emit two outputs:
+    //   [0] label   (int64 or string, shape [N])
+    //   [1] scores/probabilities (float, shape [N, num_classes])
+    // Regressors emit a single float tensor of shape [N] or [N, 1].
+    // We pick the first output's data and reshape it back to per-row scalars.
+    const firstName = session.outputNames[0]
+    const firstOut = outputs[firstName]
+    const raw = firstOut.data
+    const preds = new Array(nRows)
+    // Detect regression vs classification by output tensor shape/type.
+    // BigInt64Array (int64 labels) → classifier; Float32Array → regressor unless
+    // the model was a LogisticRegression which also emits int64 labels.
+    const isLabel = raw instanceof BigInt64Array || firstOut.type === 'string'
+    if (isLabel && raw instanceof BigInt64Array) {
+      // Some ONNX classifiers emit numeric string labels as int64 codes; we
+      // pass them through as-is and let the caller stringify.
+      for (let i = 0; i < nRows; i++) preds[i] = Number(raw[i])
+    } else if (firstOut.type === 'string') {
+      // rt returns a plain array of strings — no conversion needed.
+      for (let i = 0; i < nRows; i++) preds[i] = raw[i]
+    } else {
+      // Regression / probability output. If shape is [N, K], take the last
+      // dim's argmax for a classifier score tensor — but we already have the
+      // label from the first output, so this branch is only regressors.
+      const dim = firstOut.dims && firstOut.dims.length > 1 ? firstOut.dims[1] : 1
+      for (let i = 0; i < nRows; i++) {
+        if (dim === 1) preds[i] = raw[i]
+        else preds[i] = raw[i * dim]   // best-effort — most regressors are 1-D
+      }
+    }
+    return { predictions: preds, latency_ms: latency }
+  } catch (e) {
+    console.warn('[client-inference] session.run failed:', e?.message || e)
+    return null
+  }
+}
+
+/**
+ * Try client-side ONNX inference for a Fast Mode payload.
+ *
+ * Returns a "server-shaped" response object on success (so the caller can
+ * drop it into the same downstream code that consumes /run/<slug> output),
+ * or null on any failure — caller MUST fall back to the server round-trip.
+ */
+async function tryClientInferenceForLive(fastPayload) {
+  if (!clientInferenceEnabled.value || !clientInferenceAllSupported.value) return null
+  if (!fastPayload || !Array.isArray(fastPayload.feature_vector)) return null
+
+  // Multi-model comparison apps: run every endpoint through the server so
+  // the comparison table + per-model panels stay populated. Client inference
+  // for multi-model is a v2 conversation (would need to run N sessions
+  // client-side + build a multi_model-shaped response). QA B1: without this
+  // guard we silently collapsed multi-model apps to model #1 only.
+  if (isMultiModelApp.value) return null
+
+  // Single-model app: exactly one model.endpoint.* node.
+  const modelNode = parsedNodes.value.find(n => n.type?.startsWith('model.endpoint.'))
+  if (!modelNode) return null
+  const endpointId = modelNode.type.replace('model.endpoint.', '')
+  const info = clientInferenceEndpoints.value[endpointId]
+  if (!info || !info.supported) return null
+
+  const t0 = performance.now()
+  const res = await runOnnxClientInference(endpointId, fastPayload.feature_vector)
+  if (!res) return null
+  const totalMs = performance.now() - t0
+
+  // Build a response that matches the server /run/<slug> single-model shape
+  // so runLiveInference's downstream (charts, tables, prediction sink) can
+  // consume it identically.
+  return {
+    app: appData.value.name || '',
+    slug: slug.value,
+    mode: appData.value.mode || null,
+    predictions: res.predictions,
+    predictions_full: [],
+    actual: fastPayload.target_values || null,
+    count: res.predictions.length,
+    latency_ms: totalMs,
+    _client_inference: true,
+  }
+}
 
 // ── Signal Recorder live preview ──────────────────────────────
 const previewWindowSec = ref(10)
@@ -3572,16 +3827,42 @@ async function runLiveInference(windowData) {
     }
   }
 
+  // ── Phase I Q4: Client-side ONNX inference ──────────────────────
+  // If the app has client inference enabled AND we produced a feature
+  // vector locally, try to run the model in the browser. On success we
+  // synthesize a response shaped exactly like /run/<slug>'s single-model
+  // output so the downstream code path is unchanged. Any failure = silent
+  // fallback to the server round-trip.
+  let clientResp = null
+  if (usedFastMode) {
+    try {
+      clientResp = await tryClientInferenceForLive(fastPayload)
+    } catch (ciErr) {
+      console.warn('[client-inference] fallback to server:', ciErr?.message || ciErr)
+      clientResp = null
+    }
+  }
+
   try {
-    const resp = await api.post(
-      `/api/app-builder/run/${slug.value}`,
-      usedFastMode ? fastPayload : {
-        data: csvRows,
-        channels: channels,
-        target_values: targetColValues,
-      },
-      { timeout: 30000 },
-    )
+    const resp = clientResp
+      ? { data: clientResp }
+      : await api.post(
+          `/api/app-builder/run/${slug.value}`,
+          usedFastMode ? fastPayload : {
+            data: csvRows,
+            channels: channels,
+            target_values: targetColValues,
+          },
+          { timeout: 30000 },
+        )
+    // Latency badge — populate for BOTH paths so the user can compare.
+    if (clientResp) {
+      lastInferenceMode.value = 'client'
+      lastInferenceLatencyMs.value = clientResp.latency_ms
+    } else if (resp?.data?.latency_ms != null) {
+      lastInferenceMode.value = 'server'
+      lastInferenceLatencyMs.value = resp.data.latency_ms
+    }
 
     liveInferenceCount.value++
     liveLastUpdated.value = Date.now()
@@ -4114,6 +4395,17 @@ async function runPipeline() {
   border: 1px solid #21262d;
   border-radius: 6px;
   padding: 6px 8px;
+}
+
+/* Phase I Q4 — client-inference latency badge. Coloured amber (matches
+   `mdi-flash`) when the last inference ran in the browser. */
+.client-inference-badge.is-client {
+  border-color: rgba(255, 179, 0, 0.4);
+  background: rgba(255, 179, 0, 0.08);
+}
+.client-inference-badge.is-client .live-stat-label,
+.client-inference-badge.is-client .live-stat-value {
+  color: #ffb300;
 }
 
 .live-stat {

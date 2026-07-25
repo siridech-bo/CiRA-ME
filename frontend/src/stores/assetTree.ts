@@ -37,6 +37,11 @@ export interface SensorMeta {
   // publishes multiple axes in ONE MQTT payload (e.g. accelerometer with
   // `{"x", "y", "z"}`). The router demultiplexes into a multi-column CSV.
   channels?: string[] | null
+  // Phase I Q3 (2026-07-25) — per-sensor recording controls. Router uses
+  // these to gate CSV writes without affecting broker/live-viz traffic.
+  ingest_enabled?: boolean
+  min_write_interval_ms?: number | null
+  record_until?: string | null
 }
 
 export interface AssetNode {

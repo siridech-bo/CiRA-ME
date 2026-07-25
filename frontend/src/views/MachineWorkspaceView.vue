@@ -40,6 +40,8 @@
     <v-tabs v-model="activeTab" density="compact" class="mb-3">
       <v-tab value="overview" prepend-icon="mdi-view-dashboard-outline">Overview</v-tab>
       <v-tab value="data" prepend-icon="mdi-database">Data</v-tab>
+      <!-- Phase I Q3 (2026-07-25): Live tab between Data and History-family. -->
+      <v-tab value="live" prepend-icon="mdi-pulse">Live</v-tab>
       <v-tab value="models" prepend-icon="mdi-brain">Models</v-tab>
       <v-tab value="deploy" prepend-icon="mdi-rocket-launch">Deploy</v-tab>
       <v-tab value="labels" prepend-icon="mdi-tag-outline">Labels</v-tab>
@@ -55,6 +57,19 @@
       </v-window-item>
       <v-window-item value="data">
         <MachineDataTab v-if="machine" :machine="machine" />
+      </v-window-item>
+      <v-window-item value="live">
+        <!-- MachineLivePanel manages its own mqtt.js client. Guarded on
+             `activeTab==='live'` so the client only connects while the
+             tab is visible — otherwise every workspace visit would open
+             a stale WebSocket regardless of whether the user cares. -->
+        <MachineLivePanel
+          v-if="machine && activeTab === 'live'"
+          :machine-topic="machine.topic_path"
+          :machine-node-id="machine.id"
+          :sensors="(machine.children || [])"
+          :is-admin="isAdmin"
+        />
       </v-window-item>
       <v-window-item value="models">
         <MachineModelsTab v-if="machine" :machine="machine" />
@@ -113,6 +128,7 @@ import { useNotificationStore } from '@/stores/notification'
 import api from '@/services/api'
 import MachineOverviewTab from '@/components/machine/MachineOverviewTab.vue'
 import MachineDataTab from '@/components/machine/MachineDataTab.vue'
+import MachineLivePanel from '@/components/machine/MachineLivePanel.vue'
 import MachineModelsTab from '@/components/machine/MachineModelsTab.vue'
 import MachineDeployTab from '@/components/machine/MachineDeployTab.vue'
 import MachineLabelsTab from '@/components/machine/MachineLabelsTab.vue'
@@ -126,7 +142,7 @@ const notify = useNotificationStore()
 
 const isAdmin = computed(() => authStore.user?.role === 'admin')
 
-const VALID_TABS = ['overview', 'data', 'models', 'deploy', 'labels', 'history']
+const VALID_TABS = ['overview', 'data', 'live', 'models', 'deploy', 'labels', 'history']
 const activeTab = ref<string>(readTabFromRoute())
 
 function readTabFromRoute(): string {

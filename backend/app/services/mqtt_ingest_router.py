@@ -62,6 +62,31 @@ def _today_utc() -> str:
     return datetime.now(timezone.utc).strftime('%Y-%m-%d')
 
 
+def _parse_iso_utc(s: str) -> Optional[datetime]:
+    """Parse an ISO 8601 timestamp into an aware UTC datetime.
+
+    Accepts the router's own `_iso_now()` output (`Z`-suffixed millisecond
+    precision) as well as bare `YYYY-MM-DDTHH:MM:SS[.fff][+HH:MM|Z]`. Returns
+    None on any parse failure so callers can fail-open. Kept module-private
+    because it's a one-line helper we don't want to leak.
+    """
+    if not s or not isinstance(s, str):
+        return None
+    raw = s.strip()
+    if not raw:
+        return None
+    # Python's fromisoformat prior to 3.11 doesn't understand 'Z' suffix.
+    if raw.endswith('Z'):
+        raw = raw[:-1] + '+00:00'
+    try:
+        dt = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
 class MqttIngestRouter:
     """Subscribes to `#`, routes by topic_path, buffers per-sensor CSVs.
 
@@ -120,6 +145,12 @@ class MqttIngestRouter:
             # can see the fan-out volume separately from `messages_routed`
             # (which stays a per-message counter).
             'channels_written': 0,
+            # Phase I Q3 — messages that passed routing but were suppressed
+            # by per-sensor recording controls (ingest_enabled=False, or
+            # min_write_interval throttle, or record_until expiry). Silent
+            # drop; NOT counted in messages_rejected because the topic is
+            # legitimate — we just chose not to persist the row.
+            'messages_ingest_skipped': 0,
             'last_message_at': None,
             'last_message_topic': None,
             'last_connected_at': None,
@@ -128,6 +159,20 @@ class MqttIngestRouter:
             'started_at': None,
         }
         self._stats_lock = threading.Lock()
+
+        # ── Phase I Q3 — per-topic throttle state ────────────────────────
+        # topic_path → time.monotonic() timestamp of the last accepted write.
+        # Compared against sensor's `min_write_interval_ms` to enforce
+        # sample-rate throttling. Cleaned lazily — retired sensors leave a
+        # stale entry until the next `_refresh_cache_and_config` cycle,
+        # which is fine (bounded size = cache size).
+        self._last_write_ts: Dict[str, float] = {}
+        self._last_write_lock = threading.Lock()
+        # Guards `_schedule_auto_stop` re-entry so a burst of messages after
+        # a record_until expiry doesn't spawn N duplicate DB updates before
+        # the first one lands. Cleared inside the thread's finally clause.
+        self._auto_stop_pending: set = set()
+        self._auto_stop_lock = threading.Lock()
 
         # ── Threads / shutdown flag ─────────────────────────────────────
         self._stop_flag = threading.Event()
@@ -337,6 +382,9 @@ class MqttIngestRouter:
         # messages against a retired sensor rejection-log rather than routing.
         # Phase H — also fetch sensor_meta.channels so the router can
         # demultiplex multi-axis payloads without a per-message DB read.
+        # Phase I Q3 — also fetch ingest_enabled / min_write_interval_ms /
+        # record_until so the recording-controls checks in _route() are a
+        # pure dict lookup (no DB per message).
         with get_db() as conn:
             cursor = conn.cursor()
             cursor.execute(
@@ -344,29 +392,66 @@ class MqttIngestRouter:
                 "FROM asset_nodes WHERE status = 'active'"
             )
             rows = [dict(r) for r in cursor.fetchall()]
-            cursor.execute(
-                'SELECT asset_id, channels FROM asset_sensor_meta'
-            )
-            meta_rows = cursor.fetchall()
-        # asset_id → channels list (or None). Decoded from stored JSON here
-        # so the message-thread hot path is a plain dict lookup.
-        channels_by_asset: Dict[int, Optional[list]] = {}
+            # Query sensor_meta defensively — the 3 Phase I Q3 columns may
+            # not exist yet on a DB where the migration hasn't run (fresh
+            # boot ordering). Fall back to the pre-Phase-I column set so
+            # the router still starts.
+            try:
+                cursor.execute(
+                    'SELECT asset_id, channels, ingest_enabled, '
+                    'min_write_interval_ms, record_until '
+                    'FROM asset_sensor_meta'
+                )
+                meta_rows = [dict(r) for r in cursor.fetchall()]
+                has_recording_cols = True
+            except Exception:
+                cursor.execute(
+                    'SELECT asset_id, channels FROM asset_sensor_meta'
+                )
+                meta_rows = [dict(r) for r in cursor.fetchall()]
+                has_recording_cols = False
+        # asset_id → per-sensor cache dict. Decoded once here so the
+        # message-thread hot path is a plain dict lookup.
+        meta_by_asset: Dict[int, dict] = {}
         for mr in meta_rows:
-            raw = mr['channels'] if isinstance(mr, dict) else mr[1]
-            asset_id = mr['asset_id'] if isinstance(mr, dict) else mr[0]
-            if raw:
+            raw_channels = mr.get('channels') if isinstance(mr, dict) else None
+            channels_list: Optional[list] = None
+            if raw_channels:
                 try:
-                    parsed = json.loads(raw)
+                    parsed = json.loads(raw_channels)
                     if isinstance(parsed, list) and parsed:
-                        channels_by_asset[asset_id] = [str(c) for c in parsed]
-                        continue
+                        channels_list = [str(c) for c in parsed]
                 except Exception:
                     pass
-            channels_by_asset[asset_id] = None
-        # Attach channels directly onto each cached node dict so the route
-        # hot path is a single lookup.
+            if has_recording_cols:
+                raw_ie = mr.get('ingest_enabled')
+                ingest_enabled = True if raw_ie is None else bool(raw_ie)
+                raw_mwi = mr.get('min_write_interval_ms')
+                try:
+                    min_write_interval_ms = int(raw_mwi) if raw_mwi is not None else None
+                except (TypeError, ValueError):
+                    min_write_interval_ms = None
+                record_until = mr.get('record_until')
+                if record_until is not None and not isinstance(record_until, str):
+                    record_until = str(record_until)
+            else:
+                ingest_enabled = True
+                min_write_interval_ms = None
+                record_until = None
+            meta_by_asset[mr['asset_id']] = {
+                'channels': channels_list,
+                'ingest_enabled': ingest_enabled,
+                'min_write_interval_ms': min_write_interval_ms,
+                'record_until': record_until,
+            }
+        # Attach the sensor-meta bag directly onto each cached node dict so
+        # the route hot path is a single lookup.
         for r in rows:
-            r['_channels'] = channels_by_asset.get(r['id'])
+            meta = meta_by_asset.get(r['id']) or {}
+            r['_channels'] = meta.get('channels')
+            r['_ingest_enabled'] = meta.get('ingest_enabled', True)
+            r['_min_write_interval_ms'] = meta.get('min_write_interval_ms')
+            r['_record_until'] = meta.get('record_until')
         new_cache: Dict[str, dict] = {r['topic_path']: r for r in rows}
         with self._cache_lock:
             self._path_cache = new_cache
@@ -530,6 +615,11 @@ class MqttIngestRouter:
                     f'payload has no channel keys (expected: {expected})',
                 )
                 return
+            # Phase I Q3 — recording-controls gate (post-parse so parse
+            # errors still surface as rejections; a suppressed sensor
+            # shouldn't hide "sensor sending malformed payloads" alerts).
+            if not self._recording_allowed(node, canonical_path):
+                return
             self._append_multi_row(
                 canonical_path, _iso_now(), row_values, channels,
             )
@@ -540,6 +630,9 @@ class MqttIngestRouter:
             with self._stats_lock:
                 self._stats['messages_parse_errors'] += 1
             self._reject(topic, 'unparseable payload')
+            return
+        # 4.5 Phase I Q3 — recording-controls gate (single-value path).
+        if not self._recording_allowed(node, canonical_path):
             return
         # 5. Buffer for the writer thread. topic_path may differ from `topic`
         #    only in weird edge cases (learn mode); use the node's canonical
@@ -558,6 +651,125 @@ class MqttIngestRouter:
                 self._flush_buffer(force=True)
             except Exception:
                 logger.exception('[ingest] force flush failed')
+
+    # ── Phase I Q3 — recording controls gate ─────────────────────────────
+
+    def _recording_allowed(self, node: dict, canonical_path: str) -> bool:
+        """Return True if the router should persist the current message.
+
+        Called AFTER payload parsing has succeeded so parse errors still
+        surface as rejections. Three gates, applied in this order:
+          1. `ingest_enabled=False`   → silently drop (user chose not to store)
+          2. `record_until` expired   → auto-flip ingest_enabled=False + drop
+          3. `min_write_interval_ms`  → drop if last write was too recent
+
+        Never raises; on any error, fail-open (allow write) to avoid data
+        loss from a router-internal bug.
+        """
+        try:
+            ingest_enabled = node.get('_ingest_enabled', True)
+            record_until = node.get('_record_until')
+            min_interval = node.get('_min_write_interval_ms')
+            node_id = node.get('id')
+
+            # 1) Master toggle.
+            if not ingest_enabled:
+                with self._stats_lock:
+                    self._stats['messages_ingest_skipped'] += 1
+                return False
+
+            # 2) Auto-stop: record_until passed → flip enabled=False in DB
+            #    asynchronously so we don't block this message thread on an
+            #    UPDATE + reload. The in-memory cache flip is done inline
+            #    so subsequent messages (before the reload completes) also
+            #    see the disabled state and don't hammer _auto_stop_sensor.
+            if record_until:
+                try:
+                    ru_dt = _parse_iso_utc(record_until)
+                except Exception:
+                    ru_dt = None
+                if ru_dt is not None and datetime.now(timezone.utc) > ru_dt:
+                    # Inline cache flip (best-effort — cache is a dict copy
+                    # under a lock; mutating a value in place is safe for
+                    # the reader's dict lookup path).
+                    node['_ingest_enabled'] = False
+                    if node_id is not None:
+                        self._schedule_auto_stop(node_id, canonical_path)
+                    with self._stats_lock:
+                        self._stats['messages_ingest_skipped'] += 1
+                    return False
+
+            # 3) Sample-rate throttle.
+            if min_interval and min_interval > 0:
+                now_mono = time.monotonic()
+                with self._last_write_lock:
+                    last = self._last_write_ts.get(canonical_path)
+                if last is not None:
+                    elapsed_ms = (now_mono - last) * 1000.0
+                    if elapsed_ms < min_interval:
+                        with self._stats_lock:
+                            self._stats['messages_ingest_skipped'] += 1
+                        return False
+                with self._last_write_lock:
+                    self._last_write_ts[canonical_path] = now_mono
+            return True
+        except Exception:
+            logger.exception('[ingest] _recording_allowed crashed; fail-open')
+            return True
+
+    def _schedule_auto_stop(self, node_id: int, topic_path: str) -> None:
+        """Fire off a background thread that flips ingest_enabled=False in
+        the DB and refreshes the router cache. Must NOT block the message
+        thread — a long UPDATE + reload would drop broker messages under
+        load. Serialised through a module-scope set so the same node isn't
+        scheduled twice while the first flip is in flight."""
+        with self._auto_stop_lock:
+            if node_id in self._auto_stop_pending:
+                return
+            self._auto_stop_pending.add(node_id)
+
+        def _run():
+            try:
+                # Import lazily so a broken import at module-load time can't
+                # take out the whole ingest thread.
+                from ..models import AssetSensorMeta, AssetTreeAudit
+                AssetSensorMeta.upsert(
+                    asset_id=node_id, ingest_enabled=False,
+                )
+                try:
+                    AssetTreeAudit.log(
+                        actor_user_id=0,
+                        event_type='sensor_recording_auto_stop',
+                        target_type='node',
+                        target_id=node_id,
+                        payload={
+                            'topic_path': topic_path,
+                            'actor': 'mqtt_ingest_router',
+                            'reason': 'record_until expired',
+                        },
+                    )
+                except Exception:
+                    logger.warning('[ingest] auto-stop audit failed', exc_info=True)
+                logger.info(
+                    '[ingest] auto-stopped recording on %s (node_id=%s) — record_until expired',
+                    topic_path, node_id,
+                )
+                # Refresh cache so subsequent messages see the DB flip AND
+                # any other sensors on the same node also pick up any
+                # concurrent changes.
+                try:
+                    self._refresh_cache_and_config()
+                except Exception:
+                    logger.exception('[ingest] auto-stop cache reload failed')
+            except Exception:
+                logger.exception('[ingest] auto-stop DB update failed for %s', node_id)
+            finally:
+                with self._auto_stop_lock:
+                    self._auto_stop_pending.discard(node_id)
+
+        threading.Thread(
+            target=_run, name=f'ingest-auto-stop-{node_id}', daemon=True,
+        ).start()
 
     # ── Multi-axis payload path (Phase H) ────────────────────────────────
 

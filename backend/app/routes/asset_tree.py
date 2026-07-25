@@ -1678,3 +1678,300 @@ def run_ingest_janitor():
     except Exception as e:
         logger.exception('[asset-tree] janitor run-now failed')
         return jsonify({'error': str(e)}), 500
+
+
+# ── Phase I Q3 (2026-07-25) — Per-sensor recording controls ──────────────
+# Two endpoints:
+#   PATCH /nodes/<id>/recording  — admin-only, gates CSV writes without
+#                                  affecting broker/live-viz traffic.
+#   GET   /nodes/<id>/data-stats — any authed user, reads today's CSV file
+#                                  metadata so users can see storage impact.
+# All changes are strictly additive — Phase D + Phase H endpoints stay
+# byte-for-byte identical.
+
+# Absolute cap on min_write_interval_ms — 86_400_000 ms = 24 h. Longer
+# throttle windows should use record_until instead.
+_MIN_WRITE_INTERVAL_MAX_MS = 86_400_000
+
+
+def _parse_iso_utc_for_recording(s: str):
+    """Return an aware UTC datetime, or None if unparseable. Route-layer
+    helper mirroring the router's own `_parse_iso_utc` — kept local so
+    the routes module doesn't depend on router internals for validation."""
+    if not s or not isinstance(s, str):
+        return None
+    raw = s.strip()
+    if not raw:
+        return None
+    if raw.endswith('Z'):
+        raw = raw[:-1] + '+00:00'
+    try:
+        dt = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+@asset_tree_bp.route('/nodes/<int:node_id>/recording', methods=['PATCH'])
+@login_required
+def patch_sensor_recording(node_id):
+    """Admin-only per-sensor recording controls.
+
+    Body (all fields optional; absent keys leave the current value alone;
+    an explicit JSON null on a nullable field clears it):
+      {
+        "ingest_enabled":         true | false,
+        "min_write_interval_ms":  int (1..86_400_000) | null,
+        "record_until":           "2026-07-25T16:00:00Z" | null
+      }
+
+    Fires `_reload_ingest_router()` so changes take effect within a beat
+    (router cache reload is async — worst-case a few messages leak on the
+    old settings before the reload lands; the router's per-message check
+    catches the update on the very next flush cycle anyway).
+    """
+    guard = _admin_only()
+    if guard is not None:
+        return guard
+    node = AssetNode.get_by_id(node_id)
+    if not node:
+        return jsonify({'error': 'Node not found'}), 404
+    if node.get('status') == 'retired':
+        return jsonify({
+            'error': 'Cannot change recording on a retired node.'
+        }), 400
+    # QA P1: sensor-level guard. Recording controls only apply to sensor
+    # leaf nodes (max_depth). Applying to a machine/plant/root node used
+    # to succeed and insert a bogus asset_sensor_meta row (router doesn't
+    # route non-leaf topics so no runtime harm, but the schema was
+    # polluted and any "sensors with overrides" UI would list the machine).
+    cfg = AssetTreeConfig.get() or {}
+    level_names = cfg.get('level_names') or []
+    sensor_level = max(0, len(level_names) - 1)
+    if node.get('level') != sensor_level:
+        return jsonify({
+            'error': (
+                f"Recording controls apply to sensor nodes only "
+                f"(level {sensor_level}); node {node_id!r} is at "
+                f"level {node.get('level')}."
+            )
+        }), 400
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({'error': 'Body must be a JSON object'}), 400
+
+    # Validate each field independently so a bad value on one doesn't
+    # commit a valid value on another.
+    from ..models import _UNCHANGED as _UC  # local import — sentinel is private
+    ingest_enabled = _UC
+    if 'ingest_enabled' in data:
+        v = data['ingest_enabled']
+        if not isinstance(v, bool):
+            return jsonify({
+                'error': 'ingest_enabled must be a boolean'
+            }), 400
+        ingest_enabled = v
+
+    min_write_interval_ms = _UC
+    if 'min_write_interval_ms' in data:
+        v = data['min_write_interval_ms']
+        if v is None:
+            min_write_interval_ms = None
+        else:
+            if isinstance(v, bool) or not isinstance(v, int):
+                return jsonify({
+                    'error': 'min_write_interval_ms must be an integer or null'
+                }), 400
+            if v < 1 or v > _MIN_WRITE_INTERVAL_MAX_MS:
+                return jsonify({
+                    'error': (
+                        f'min_write_interval_ms out of range '
+                        f'(1..{_MIN_WRITE_INTERVAL_MAX_MS})'
+                    )
+                }), 400
+            min_write_interval_ms = v
+
+    record_until = _UC
+    if 'record_until' in data:
+        v = data['record_until']
+        if v is None:
+            record_until = None
+        elif isinstance(v, str):
+            parsed = _parse_iso_utc_for_recording(v)
+            if parsed is None:
+                return jsonify({
+                    'error': 'record_until must be a parseable ISO 8601 timestamp'
+                }), 400
+            # Re-emit in the canonical Z-suffix format the router understands.
+            record_until = parsed.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
+        else:
+            return jsonify({
+                'error': 'record_until must be a string or null'
+            }), 400
+
+    if (ingest_enabled is _UC and min_write_interval_ms is _UC
+            and record_until is _UC):
+        return jsonify({'error': 'No recording fields to update'}), 400
+
+    before = AssetSensorMeta.get(node_id) or {}
+    AssetSensorMeta.upsert(
+        asset_id=node_id,
+        ingest_enabled=ingest_enabled,
+        min_write_interval_ms=min_write_interval_ms,
+        record_until=record_until,
+    )
+    after = AssetSensorMeta.get(node_id) or {}
+
+    AssetTreeAudit.log(
+        actor_user_id=request.current_user['id'],
+        event_type='sensor_recording_patch',
+        target_type='node',
+        target_id=node_id,
+        payload={
+            'topic_path': node.get('topic_path'),
+            'before': {
+                'ingest_enabled': before.get('ingest_enabled'),
+                'min_write_interval_ms': before.get('min_write_interval_ms'),
+                'record_until': before.get('record_until'),
+            },
+            'after': {
+                'ingest_enabled': after.get('ingest_enabled'),
+                'min_write_interval_ms': after.get('min_write_interval_ms'),
+                'record_until': after.get('record_until'),
+            },
+            'requested': {
+                k: data[k] for k in
+                ('ingest_enabled', 'min_write_interval_ms', 'record_until')
+                if k in data
+            },
+        },
+    )
+    _reload_ingest_router()
+    return jsonify({
+        'node_id': node_id,
+        'topic_path': node.get('topic_path'),
+        'ingest_enabled': after.get('ingest_enabled'),
+        'min_write_interval_ms': after.get('min_write_interval_ms'),
+        'record_until': after.get('record_until'),
+    })
+
+
+@asset_tree_bp.route('/nodes/<int:node_id>/data-stats', methods=['GET'])
+@login_required
+def get_sensor_data_stats(node_id):
+    """Storage-impact stats for a sensor's CSV on a given date. Read-only,
+    open to any authenticated user (matches other read endpoints in this
+    module — non-admins on the Live tab need this to see the throttle
+    impact of their admin colleagues' recording choices).
+
+    Query params:
+      date — YYYY-MM-DD (default: today UTC).
+
+    Response:
+      {
+        "date": "...",
+        "bytes": 42000,
+        "row_count": 2063,
+        "first_ts": "...",
+        "last_ts":  "...",
+        "per_hour_counts": [0, 0, ..., 512, 480, ...]   # 24 slots
+      }
+
+    File-missing → all zeros (empty stats, still 200). Sensor node missing
+    → 404. Row counting uses a line-count (streaming; no full-file parse)
+    so a 100 MB CSV doesn't OOM the backend.
+    """
+    node = AssetNode.get_by_id(node_id)
+    if not node:
+        return jsonify({'error': 'Node not found'}), 404
+
+    date = (request.args.get('date') or '').strip() or datetime.now(
+        timezone.utc
+    ).strftime('%Y-%m-%d')
+    # Sanitise date — used as a filename segment.
+    try:
+        datetime.strptime(date, '%Y-%m-%d')
+    except ValueError:
+        return jsonify({'error': "date must be YYYY-MM-DD"}), 400
+
+    zeros = {
+        'date': date,
+        'bytes': 0,
+        'row_count': 0,
+        'first_ts': None,
+        'last_ts': None,
+        'per_hour_counts': [0] * 24,
+    }
+
+    topic_path = node.get('topic_path')
+    if not topic_path:
+        return jsonify(zeros)
+    # Path-safety: split on '/', reject any segment that could path-traverse
+    # (matches the guard used by ingest_router.list_rejected).
+    segments = topic_path.split('/')
+    for seg in segments:
+        if not seg or '..' in seg or '/' in seg or '\\' in seg:
+            return jsonify({'error': 'Invalid topic_path segment'}), 400
+
+    try:
+        datasets_root = current_app.config['DATASETS_ROOT_PATH']
+    except Exception:
+        datasets_root = os.environ.get('DATASETS_ROOT_PATH')
+    if not datasets_root:
+        return jsonify(zeros)
+
+    csv_path = os.path.join(datasets_root, *segments, f'{date}.csv')
+    if not os.path.isfile(csv_path):
+        return jsonify(zeros)
+
+    try:
+        bytes_count = os.path.getsize(csv_path)
+    except OSError:
+        bytes_count = 0
+
+    row_count = 0
+    per_hour = [0] * 24
+    first_ts = None
+    last_ts = None
+    try:
+        with open(csv_path, 'r', encoding='utf-8', errors='replace') as fh:
+            # Skip header (Phase D writes `timestamp_iso,value` or the
+            # Phase H multi-axis `timestamp_iso,<axis>,<axis>,…` variant).
+            first_line = fh.readline()
+            if not first_line:
+                return jsonify(zeros)
+            for line in fh:
+                if not line.strip():
+                    continue
+                row_count += 1
+                # Extract hour from the timestamp cell (first comma).
+                comma_idx = line.find(',')
+                ts_cell = line[:comma_idx] if comma_idx >= 0 else line.rstrip()
+                if first_ts is None:
+                    first_ts = ts_cell
+                last_ts = ts_cell
+                # Timestamps look like 2026-07-25T14:07:32.123Z. Hour is
+                # cheap to slice out — chars 11..13.
+                if len(ts_cell) >= 13 and ts_cell[10] == 'T':
+                    try:
+                        hr = int(ts_cell[11:13])
+                        if 0 <= hr < 24:
+                            per_hour[hr] += 1
+                    except ValueError:
+                        pass
+    except Exception as e:
+        logger.warning(
+            '[asset-tree] data-stats read failed for %s: %s', csv_path, e,
+        )
+        return jsonify(zeros)
+
+    return jsonify({
+        'date': date,
+        'bytes': bytes_count,
+        'row_count': row_count,
+        'first_ts': first_ts,
+        'last_ts': last_ts,
+        'per_hour_counts': per_hour,
+    })
