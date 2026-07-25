@@ -238,8 +238,10 @@ import api from '@/services/api'
 import type { AssetNode } from '@/stores/assetTree'
 import { useNotificationStore } from '@/stores/notification'
 import SensorSparkline from '@/components/SensorSparkline.vue'
+import { useAssetTreeStore } from '@/stores/assetTree'
 
 const notify = useNotificationStore()
+const assetTreeStore = useAssetTreeStore()
 
 const props = defineProps<{
   machineTopic: string
@@ -563,6 +565,11 @@ async function patchRecording(sensor: AssetNode, body: Record<string, unknown>,
       record_until: r.data?.record_until ?? null,
     }
     intervalDrafts[sensor.id] = meta[sensor.id].min_write_interval_ms
+    // Invalidate the tree store so the next time this tab (or any other)
+    // reads the sensor's cached meta, it gets our just-PATCHed values —
+    // without this, closing + reopening the Live tab reverts the visible
+    // toggle state because seedMeta reads from the store's stale snapshot.
+    assetTreeStore.invalidateTree()
     notify.showSuccess(`Recording updated for ${sensor.name}`)
   } catch (e: any) {
     notify.showError(
@@ -692,11 +699,24 @@ watch(() => props.machineNodeId, async () => {
 })
 
 onMounted(async () => {
+  // Force-refresh the tree store so a tab-switch-and-return picks up any
+  // recording-state changes that landed elsewhere (other admin session,
+  // router auto-stop, our own PATCH from an earlier mount). Without this
+  // the tab reads a cached snapshot and shows stale toggle positions.
+  // seedMeta re-runs via the props watcher below once the store settles.
+  try { await assetTreeStore.fetchTree(true) } catch { /* soft-fail — seed with what we have */ }
   await seedMeta()
   startMqtt()
   refreshStats()
   statsInterval = setInterval(refreshStats, 30_000)
 })
+
+// When the parent recomputes `sensors` (post-fetchTree), re-seed local
+// recording state from the fresh sensor_meta values so the toggle UI
+// mirrors the DB.
+watch(() => props.sensors, async () => {
+  await seedMeta()
+}, { deep: true })
 
 onBeforeUnmount(() => {
   stopMqtt()
