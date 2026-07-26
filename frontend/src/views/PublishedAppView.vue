@@ -2597,14 +2597,29 @@ function extractWindowFeaturesFast(csvRows, channels) {
     // handing it to the worker so features match server-side pipeline output.
     // No-op when the model was trained without normalization.
     const normRows = normalizeWindowForFastMode(csvRows, channels)
-    worker.postMessage({
-      type: 'extract',
-      windows: [normRows],   // single-window batch (already normalized)
-      channelNames: channels,
-      selectedFeatures: modelFeatureNames.value,
-      samplingRate: 100,    // used only by spectral features; matches Phase 2 default
-      sessionId,
-    })
+    // Worker.postMessage requires structured-cloneable data. Vue reactive
+    // Proxies (which `csvRows` / `channels` / `modelFeatureNames.value`
+    // often are, because they're sliced from reactive state) fail the
+    // clone with "[object Array] could not be cloned" and Fast Mode falls
+    // back to server extraction on EVERY window. JSON round-trip strips
+    // the Proxy wrapping — safe for our payload (arrays of numbers +
+    // strings, no functions, dates, or class instances).
+    let payload
+    try {
+      payload = JSON.parse(JSON.stringify({
+        type: 'extract',
+        windows: [normRows],
+        channelNames: channels,
+        selectedFeatures: modelFeatureNames.value,
+        samplingRate: 100,
+        sessionId,
+      }))
+    } catch (serErr) {
+      fastPending.delete(sessionId)
+      reject(new Error(`payload serialize failed: ${serErr?.message || serErr}`))
+      return
+    }
+    worker.postMessage(payload)
     // Safety: if the worker never responds within 15s, reject and let the
     // caller fall back to raw so a stuck window doesn't block inference.
     setTimeout(() => {
