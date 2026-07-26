@@ -445,6 +445,25 @@
               <div class="live-stat-label">Inferences</div>
               <div class="live-stat-value">{{ liveInferenceCount }}</div>
             </div>
+            <!-- Phase I Q4 — mirror the sidebar-layout latency badge here
+                 so the fullscreen dashboard also shows client vs server
+                 inference mode. Prior version had no latency tile → the
+                 badge appeared to "disappear" when the dashboard flipped
+                 to fullscreen. -->
+            <div
+              v-if="lastInferenceLatencyMs != null"
+              class="live-stat client-inference-badge"
+              :class="{ 'is-client': lastInferenceMode === 'client' }"
+            >
+              <div class="live-stat-label">Latency</div>
+              <div class="live-stat-value">
+                <v-icon size="12" class="mr-1">{{ lastInferenceMode === 'client' ? 'mdi-flash' : 'mdi-server' }}</v-icon>
+                {{ Math.round(lastInferenceLatencyMs) }}ms
+                <span style="opacity: 0.7; font-size: 10px; margin-left: 4px;">
+                  {{ lastInferenceMode === 'client' ? 'client' : 'server' }}
+                </span>
+              </div>
+            </div>
             <div
               v-if="isRecordingPredictions"
               class="live-stat"
