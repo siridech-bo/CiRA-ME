@@ -868,6 +868,29 @@
           Update your App Builder MQTT node to future-proof.
         </v-alert>
 
+        <!-- Fast Mode incompatibility notice — model uses features the
+             browser worker can't compute (e.g. tsfresh coefficients outside
+             the 47-feature portable set). Only shown when we KNOW Fast Mode
+             would be useless; the toggle stays hidden in this case. -->
+        <v-alert
+          v-if="isLiveStream && fastModeIncompatible"
+          type="info"
+          variant="tonal"
+          density="compact"
+          class="mb-3"
+          icon="mdi-server-outline"
+        >
+          <div class="text-body-2">
+            <strong>Server-side feature extraction only.</strong>
+            This model was trained with
+            <strong>{{ fastModeCompatibility.total }}</strong> features
+            (e.g. full tsfresh output) — none are in the browser worker's
+            portable 47-feature set. Fast Mode + client-side inference are
+            unavailable. To enable them, retrain the model selecting
+            features from the Fast-Mode-supported list.
+          </div>
+        </v-alert>
+
         <!-- Fast Mode toggle (P2 Phase 3) — only for MQTT apps with a
              feature_extract node; CSV-upload / raw-mode apps never see it. -->
         <div v-if="fastModeAvailable" class="fast-mode-card mb-3">
@@ -1622,6 +1645,7 @@ import api from '@/services/api'
 import { Line } from 'vue-chartjs'
 import MqttTestPublisher from '@/components/MqttTestPublisher.vue'
 import { useAuthStore } from '@/stores/auth'
+import { partitionFeatures } from '@/lib/featureExtraction'
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -2428,8 +2452,32 @@ const modelFeatureNames = computed(() => {
   return Array.isArray(feats) ? feats : []
 })
 const hasFeatureExtractNode = computed(() => modelFeatureNames.value.length > 0)
-// Only meaningful for MQTT-live apps; toggle stays hidden for CSV-upload apps.
-const fastModeAvailable = computed(() => isLiveStream.value && hasFeatureExtractNode.value)
+// Compatibility: how many of the model's features can the Fast Mode Worker
+// actually compute? Zero = every window will fall back to server extraction,
+// which used to spam the console + still send raw payloads. Better to
+// disable Fast Mode entirely + explain why.
+const fastModeCompatibility = computed(() => {
+  const { supported, unsupported } = partitionFeatures(modelFeatureNames.value)
+  return {
+    total: modelFeatureNames.value.length,
+    supported: supported.length,
+    unsupported: unsupported.length,
+    supportedNames: supported,
+  }
+})
+const fastModeIncompatible = computed(() => (
+  hasFeatureExtractNode.value && fastModeCompatibility.value.supported === 0
+))
+// Only meaningful for MQTT-live apps; toggle stays hidden for CSV-upload
+// apps AND for models whose feature set has zero client-portable overlap.
+const fastModeAvailable = computed(() => (
+  isLiveStream.value
+  && hasFeatureExtractNode.value
+  && !fastModeIncompatible.value
+))
+// One-shot warning latch so we log the fallback reason once at MQTT
+// connect, not per-window.
+let _fastModeIncompatibilityLogged = false
 // One long-lived worker for the whole MQTT session. Spawned when Fast Mode is
 // enabled + MQTT connects; torn down on disable / disconnect / unmount.
 let fastModeWorker = null
@@ -3838,7 +3886,17 @@ async function runLiveInference(windowData) {
       }
       usedFastMode = true
     } catch (fmErr) {
-      console.warn('[Fast Mode] falling back to raw for this window:', fmErr?.message || fmErr)
+      // Log the FIRST fallback in detail so it's visible in devtools,
+      // then rate-limit — otherwise a 5-message/sec MQTT stream floods
+      // the console with the same message. Common causes: Worker rejected
+      // the payload shape (Vue Proxy — fixed), no supported features in
+      // the selected list (retrain needed), or the Worker crashed
+      // outright (bundle mismatch).
+      if (!_fastModeIncompatibilityLogged) {
+        console.warn('[Fast Mode] falling back to server extraction:', fmErr?.message || fmErr,
+                     '(further fallbacks suppressed for this session)')
+        _fastModeIncompatibilityLogged = true
+      }
     }
   }
 
