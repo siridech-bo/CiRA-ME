@@ -266,6 +266,27 @@
               {{ mqttError }}
             </v-alert>
 
+            <!-- Fast Mode is unavailable because the model's feature set has
+                 no overlap with the browser worker's portable list. Show a
+                 compact notice in the rail so users know why the toggle
+                 they saw last time is missing. -->
+            <div
+              v-if="isLiveStream && fastModeIncompatible"
+              class="rail-fast-mode mt-3"
+              style="border-color: rgba(var(--v-theme-info), 0.35);"
+            >
+              <div class="d-flex align-center gap-1">
+                <v-icon size="14" color="info">mdi-server-outline</v-icon>
+                <span class="text-caption" style="font-weight: 600;">Server extraction only</span>
+              </div>
+              <div class="text-caption text-medium-emphasis mt-1" style="font-size: 10px; line-height: 1.35;">
+                Model uses {{ fastModeCompatibility.total }} features
+                incompatible with browser extraction. Retrain from the
+                Lightweight feature set to enable ⚡ Fast Mode + client
+                inference here.
+              </div>
+            </div>
+
             <!-- Fast Mode toggle (dashboard rail) — P2 Phase 3 -->
             <div v-if="fastModeAvailable" class="rail-fast-mode mt-3">
               <div class="d-flex align-center gap-1">
