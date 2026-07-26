@@ -458,7 +458,7 @@
               <div class="live-stat-label">Latency</div>
               <div class="live-stat-value">
                 <v-icon size="12" class="mr-1">{{ lastInferenceMode === 'client' ? 'mdi-flash' : 'mdi-server' }}</v-icon>
-                {{ Math.round(lastInferenceLatencyMs) }}ms
+                {{ formatLatency(lastInferenceLatencyMs) }}
                 <span style="opacity: 0.7; font-size: 10px; margin-left: 4px;">
                   {{ lastInferenceMode === 'client' ? 'client' : 'server' }}
                 </span>
@@ -2799,6 +2799,22 @@ const onnxSessions = new Map()   // endpoint_id → { session, version }
 const onnxSessionPromises = new Map()  // endpoint_id → Promise<Session|null>
 // Latency badge state (last successful inference).
 const lastInferenceLatencyMs = ref(null)
+
+// Adaptive-unit formatter — client inference on tiny RF/XGB models
+// often runs in <1 ms which used to round to "0ms" and hid the actual
+// win. performance.now() gives us fractional ms (μs resolution on
+// modern browsers), so display accordingly:
+//   <  1 ms  → 'X µs'   (integer microseconds)
+//   < 10 ms  → 'X.XX ms' (2 decimals — captures 0.34 ms distinctly)
+//   < 100 ms → 'X.X ms'  (1 decimal)
+//   ≥ 100 ms → 'X ms'    (integer — server round-trips read cleaner)
+function formatLatency(ms) {
+  if (ms == null || !Number.isFinite(ms)) return '—'
+  if (ms < 1)   return `${Math.round(ms * 1000)} µs`
+  if (ms < 10)  return `${ms.toFixed(2)} ms`
+  if (ms < 100) return `${ms.toFixed(1)} ms`
+  return `${Math.round(ms)} ms`
+}
 const lastInferenceMode = ref(null)   // 'client' | 'server' | null
 
 async function ensureOnnxRuntimeLoaded() {
