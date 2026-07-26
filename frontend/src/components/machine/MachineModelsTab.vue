@@ -43,6 +43,7 @@
             <th>Name</th>
             <th>Algorithm</th>
             <th>Mode</th>
+            <th>ONNX</th>
             <th>Endpoints</th>
             <th>Created</th>
             <th style="width: 130px" class="text-right"></th>
@@ -58,6 +59,21 @@
               <v-chip size="x-small" variant="tonal" :color="modeColor(m.mode)">
                 {{ m.mode }}
               </v-chip>
+            </td>
+            <td>
+              <v-tooltip location="top" :text="onnxTooltip(m)">
+                <template #activator="{ props: tipProps }">
+                  <v-chip
+                    v-bind="tipProps"
+                    size="x-small"
+                    variant="tonal"
+                    :color="onnxChipColor(m)"
+                    :prepend-icon="onnxChipIcon(m)"
+                  >
+                    {{ onnxChipLabel(m) }}
+                  </v-chip>
+                </template>
+              </v-tooltip>
             </td>
             <td>
               <span v-if="!m.endpoints || m.endpoints.length === 0" class="text-caption text-medium-emphasis">
@@ -110,6 +126,7 @@
             <th>Name</th>
             <th>Group</th>
             <th>Algorithm</th>
+            <th>ONNX</th>
             <th>Endpoints</th>
             <th>Created</th>
             <th style="width: 130px" class="text-right"></th>
@@ -125,6 +142,21 @@
             </td>
             <td>
               <v-chip size="x-small" variant="tonal">{{ m.algorithm }}</v-chip>
+            </td>
+            <td>
+              <v-tooltip location="top" :text="onnxTooltip(m)">
+                <template #activator="{ props: tipProps }">
+                  <v-chip
+                    v-bind="tipProps"
+                    size="x-small"
+                    variant="tonal"
+                    :color="onnxChipColor(m)"
+                    :prepend-icon="onnxChipIcon(m)"
+                  >
+                    {{ onnxChipLabel(m) }}
+                  </v-chip>
+                </template>
+              </v-tooltip>
             </td>
             <td>
               <span v-if="!m.endpoints || m.endpoints.length === 0" class="text-caption text-medium-emphasis">
@@ -241,6 +273,50 @@ function modeColor(m: string) {
   if (m === 'regression') return 'blue'
   if (m === 'classification') return 'purple'
   return undefined
+}
+
+// Phase I Q4 status: the save-benchmark hook writes ONNX export result
+// into pipeline_config.client_inference = {supported, model_type, opset,
+// feature_shape, onnx_path, parity_kind}. Older models (deployed before
+// Phase I) have no such key → show as "not exported".
+function _clientInferenceInfo(m: any): any | null {
+  let pc = m?.pipeline_config
+  if (typeof pc === 'string') {
+    try { pc = JSON.parse(pc) } catch { return null }
+  }
+  return pc?.client_inference ?? null
+}
+function onnxChipLabel(m: any): string {
+  const ci = _clientInferenceInfo(m)
+  if (!ci) return 'not exported'
+  return ci.supported ? 'ready' : 'unsupported'
+}
+function onnxChipColor(m: any): string | undefined {
+  const ci = _clientInferenceInfo(m)
+  if (!ci) return undefined  // grey
+  return ci.supported ? 'success' : 'warning'
+}
+function onnxChipIcon(m: any): string {
+  const ci = _clientInferenceInfo(m)
+  if (!ci) return 'mdi-help-circle-outline'
+  return ci.supported ? 'mdi-flash' : 'mdi-alert-circle-outline'
+}
+function onnxTooltip(m: any): string {
+  const ci = _clientInferenceInfo(m)
+  if (!ci) {
+    return 'ONNX export not attempted — this model was deployed before ' +
+           'client inference was added (Phase I, 2026-07-25). Retrain to ' +
+           'get an ONNX sibling and enable client-side inference in the ' +
+           'App Builder.'
+  }
+  if (ci.supported) {
+    const shape = ci.feature_shape ? ` · features=${ci.feature_shape}` : ''
+    const parity = ci.parity_kind ? ` · parity=${ci.parity_kind}` : ''
+    return `Client inference available. Model type: ${ci.model_type || m.algorithm}` +
+           shape + parity + ' · Enable via ⚡ Client Inference toggle in App Builder.'
+  }
+  return `ONNX export failed or model type unsupported (${ci.model_type || m.algorithm}). ` +
+         'Falls back to server inference.'
 }
 function formatTime(s: string): string {
   if (!s) return '—'
