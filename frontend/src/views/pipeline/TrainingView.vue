@@ -38,11 +38,21 @@
       >
         <v-radio value="machine">
           <template #label>
-            <div class="d-flex align-center">
-              <span class="font-weight-medium mr-2">Just this machine</span>
-              <span class="text-caption text-medium-emphasis">
-                — {{ currentMachineName || 'no machine selected' }}
-              </span>
+            <div class="d-flex align-center flex-wrap ga-2">
+              <span class="font-weight-medium">Just this machine</span>
+              <v-select
+                v-model="selectedMachineId"
+                :items="machineOptions"
+                item-title="label"
+                item-value="value"
+                :disabled="scopeMode !== 'machine'"
+                density="compact"
+                hide-details
+                variant="outlined"
+                style="min-width: 220px; max-width: 320px;"
+                placeholder="Choose a machine"
+                @update:model-value="onSelectedMachineChange"
+              />
             </div>
           </template>
         </v-radio>
@@ -2124,6 +2134,40 @@ const currentMachineName = computed(() => {
   const n = assetTreeStore.currentMachineNode
   return n?.display_name || n?.name || null
 })
+
+// Inline machine picker (2026-07-26): user reported it was awkward to
+// have to navigate back to a machine's workspace just to pick one for
+// training — round-trip loses the pipeline session. Now the "Just this
+// machine" radio has its own dropdown that writes through to the store.
+const selectedMachineId = computed({
+  get: () => assetTreeStore.currentMachineId,
+  set: (v: number | null) => assetTreeStore.setCurrentMachineId(v),
+})
+const machineOptions = computed<Array<{ label: string; value: number }>>(() => {
+  const out: Array<{ label: string; value: number }> = []
+  const mLevel = assetTreeStore.machineLevel
+  const walk = (nodes: any[]) => {
+    for (const n of nodes) {
+      if (n.status === 'active' && n.level === mLevel) {
+        // Show topic path so operators disambiguate similarly-named
+        // machines across different plants (e.g. plant_A/compressor_01
+        // vs plant_B/compressor_01).
+        const label = `${n.display_name || n.name} — ${n.topic_path}`
+        out.push({ label, value: n.id })
+      }
+      if (n.children?.length) walk(n.children)
+    }
+  }
+  walk(assetTreeStore.tree || [])
+  // Sort by topic path so the list has a stable order regardless of how
+  // the tree was built.
+  out.sort((a, b) => a.label.localeCompare(b.label))
+  return out
+})
+function onSelectedMachineChange(_id: number | null) {
+  // The setter already writes through the store; this handler is just a
+  // placeholder for any future side-effects (analytics, invalidations).
+}
 
 // Group scope state.
 const groups = ref<any[]>([])
