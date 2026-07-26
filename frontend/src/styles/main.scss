@@ -30,6 +30,45 @@ html, body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+// ── Light-mode contrast overrides (2026-07-26 customer feedback) ────────
+// Vuetify's defaults for light theme use very faint dividers (border
+// opacity 0.12) + a mid-grey text-medium-emphasis that gets washed out
+// against white backgrounds. Bump both so tables/cards read cleanly
+// under fluorescent light or projector conditions. Dark mode stays
+// untouched — its defaults already have enough contrast.
+.v-theme--light {
+  // Divider / border color for tables, cards, dropdowns, etc.
+  // Vuetify default: 0.12 → too subtle. Doubling gets us a visible
+  // hairline without turning every layout into a grid of boxes.
+  --v-border-opacity: 0.22;
+
+  // Medium-emphasis text (captions, table subheaders, muted labels).
+  // Vuetify default: 0.60 → looks grey-on-white. Bump to 0.72 for a
+  // slightly darker read while keeping the visual hierarchy vs
+  // full-emphasis text at 0.87.
+  --v-medium-emphasis-opacity: 0.72;
+
+  // Data-table row separators specifically. The row hover state uses
+  // --v-hover-opacity so this only touches the resting divider.
+  .v-data-table__td,
+  .v-data-table__th {
+    border-bottom-color: rgba(0, 0, 0, 0.15) !important;
+  }
+
+  // v-list-item separators (used by dropdowns + long lists) — same treatment.
+  .v-list-item + .v-list-item {
+    border-top-color: rgba(0, 0, 0, 0.10);
+  }
+
+  // Muted subtitles / captions — a tiny nudge toward true black so the
+  // secondary line under app names ("372", "168" call counts) doesn't
+  // vanish. Selector matches Vuetify's typography helper without
+  // affecting positioning.
+  .text-medium-emphasis {
+    color: rgba(0, 0, 0, 0.72) !important;
+  }
+}
+
 // Code/monospace elements
 code, pre, .mono {
   font-family: var(--font-mono);
