@@ -67,6 +67,24 @@ html, body {
   .text-medium-emphasis {
     color: rgba(0, 0, 0, 0.72) !important;
   }
+
+  // Sidebar section headers (GLOBAL TOOLS, SERVICES, SETTINGS, LEGACY
+  // TOOLS) + the "Collapse" affordance. Uppercase + small + tonal grey
+  // stacks against a white drawer to near-invisibility. Push these to
+  // near-full-opacity black so the section structure is legible even
+  // under projector conditions.
+  .v-navigation-drawer {
+    .v-list-subheader,
+    .sidebar-collapsible-group .group-header .v-list-item-title,
+    .sidebar-legacy-group .v-list-item-title {
+      color: rgba(0, 0, 0, 0.85) !important;
+      font-weight: 600;
+    }
+    // Muted "Collapse" label at the drawer footer.
+    .v-list-item .v-list-item-title {
+      color: rgba(0, 0, 0, 0.87);
+    }
+  }
 }
 
 // Code/monospace elements
