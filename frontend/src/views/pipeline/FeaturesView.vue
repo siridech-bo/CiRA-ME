@@ -111,6 +111,23 @@
                 <v-alert type="info" variant="tonal" class="mb-4">
                   <strong>TSFresh Library</strong> - Extract comprehensive time-series features using the real tsfresh library with hypothesis-tested feature extraction.
                 </v-alert>
+                <v-alert
+                  type="warning"
+                  variant="tonal"
+                  density="compact"
+                  class="mb-4"
+                  icon="mdi-server-outline"
+                >
+                  <div class="text-body-2">
+                    <strong>Not compatible with Fast Mode or client-side
+                    inference.</strong> Every tsfresh preset (minimal /
+                    efficient / comprehensive) produces feature names outside
+                    the browser worker's portable {{ SUPPORTED_FEATURES_COUNT }}-feature
+                    set — inference will always require the server. Switch
+                    back to <strong>Lightweight</strong> mode and pick features
+                    marked with ⚡ if client-side inference matters.
+                  </div>
+                </v-alert>
 
                 <v-select
                   v-model="tsfreshFeatureSet"
@@ -167,8 +184,33 @@
                 label="Search features..."
                 hide-details
                 density="compact"
-                class="mb-4"
+                class="mb-2"
               />
+
+              <!-- Fast-Mode-only filter — helps operators picking features
+                   for a model they intend to deploy with client-side
+                   inference. Compatible features get a ⚡ chip regardless
+                   of this filter's state, so users always see which are
+                   portable. -->
+              <div class="d-flex align-center mb-3">
+                <v-checkbox
+                  v-model="onlyFastModeCompatible"
+                  color="success"
+                  density="compact"
+                  hide-details
+                  :label="`Show only Fast Mode compatible (${SUPPORTED_FEATURES_COUNT} features)`"
+                />
+                <v-tooltip
+                  location="top"
+                  text="Only these features can run in the browser. Client-side inference in App Builder requires all selected features to be in this set."
+                >
+                  <template #activator="{ props: tp }">
+                    <v-icon v-bind="tp" size="small" class="ml-1 text-medium-emphasis">
+                      mdi-help-circle-outline
+                    </v-icon>
+                  </template>
+                </v-tooltip>
+              </div>
 
               <!-- Feature List -->
               <v-list
@@ -196,6 +238,17 @@
                   </template>
                   <v-list-item-title>{{ feature }}</v-list-item-title>
                   <template #append>
+                    <v-chip
+                      v-if="isFastModeSupported(feature)"
+                      size="x-small"
+                      color="success"
+                      variant="tonal"
+                      prepend-icon="mdi-flash"
+                      class="mr-1"
+                      title="Runs in the browser (Fast Mode + client inference compatible)"
+                    >
+                      Fast
+                    </v-chip>
                     <v-chip size="x-small" color="info" variant="flat">TSFresh</v-chip>
                   </template>
                 </v-list-item>
@@ -221,6 +274,17 @@
                   </template>
                   <v-list-item-title>{{ feature }}</v-list-item-title>
                   <template #append>
+                    <v-chip
+                      v-if="isFastModeSupported(feature)"
+                      size="x-small"
+                      color="success"
+                      variant="tonal"
+                      prepend-icon="mdi-flash"
+                      class="mr-1"
+                      title="Runs in the browser (Fast Mode + client inference compatible)"
+                    >
+                      Fast
+                    </v-chip>
                     <v-chip size="x-small" color="secondary" variant="flat">DSP</v-chip>
                   </template>
                 </v-list-item>
@@ -228,8 +292,36 @@
 
                 <!-- Selection Summary -->
                 <v-alert type="info" variant="tonal" class="mt-4">
-                  <strong>{{ selectedFeatures.length }}</strong> features selected
-                  ({{ selectedFeatures.length * sensorColumns }} total with {{ sensorColumns }} sensor channels)
+                  <div>
+                    <strong>{{ selectedFeatures.length }}</strong> features selected
+                    ({{ selectedFeatures.length * sensorColumns }} total with {{ sensorColumns }} sensor channels)
+                  </div>
+                  <div class="text-caption mt-1 d-flex align-center">
+                    <v-icon
+                      size="14"
+                      :color="fastFeatureCount === selectedFeatures.length && selectedFeatures.length > 0 ? 'success' : 'grey'"
+                      class="mr-1"
+                    >
+                      mdi-flash
+                    </v-icon>
+                    <span v-if="selectedFeatures.length === 0">
+                      No features selected yet.
+                    </span>
+                    <span v-else-if="fastFeatureCount === selectedFeatures.length">
+                      All selected features are Fast Mode compatible —
+                      client-side inference will be available on this model.
+                    </span>
+                    <span v-else-if="fastFeatureCount === 0">
+                      None of the selected features are Fast Mode compatible —
+                      inference will require the server. Pick from the ⚡
+                      chipped features to enable client-side inference.
+                    </span>
+                    <span v-else>
+                      Only {{ fastFeatureCount }} of {{ selectedFeatures.length }}
+                      selected features are Fast Mode compatible — client-side
+                      inference needs ALL features to be compatible.
+                    </span>
+                  </div>
                 </v-alert>
               </div>
             </v-card>
@@ -1129,6 +1221,16 @@ const tsfreshFeatureSets = [
 ]
 
 const searchQuery = ref('')
+// Filter: show only features that can run in the browser worker.
+// Complements the ⚡ chip — chip tells you WHICH are compatible,
+// checkbox filters the list to only those. Toggle persists in
+// localStorage so the choice sticks across pipeline navigation.
+const onlyFastModeCompatible = ref(
+  (() => { try { return localStorage.getItem('cira.features.onlyFastMode') === '1' } catch { return false } })(),
+)
+watch(onlyFastModeCompatible, (v) => {
+  try { localStorage.setItem('cira.features.onlyFastMode', v ? '1' : '0') } catch { /* ignore */ }
+})
 const selectedFeatures = ref<string[]>([])
 const recommendations = ref<any>(null)
 // Restore from pipeline store if available (persists across navigation)
@@ -1341,12 +1443,18 @@ function toggleRawSignal(col: string) {
   pipelineStore.rawSignals = sigs
 }
 
+function _passesFeatureFilters(f: string): boolean {
+  if (!f.toLowerCase().includes(searchQuery.value.toLowerCase())) return false
+  if (onlyFastModeCompatible.value && !isFastModeSupported(f)) return false
+  return true
+}
+
 const filteredTSFreshFeatures = computed(() =>
-  tsfreshFeatures.filter(f => f.toLowerCase().includes(searchQuery.value.toLowerCase()))
+  tsfreshFeatures.filter(_passesFeatureFilters),
 )
 
 const filteredDSPFeatures = computed(() =>
-  dspFeatures.filter(f => f.toLowerCase().includes(searchQuery.value.toLowerCase()))
+  dspFeatures.filter(_passesFeatureFilters),
 )
 
 // Available features for visualization (from extracted data)
