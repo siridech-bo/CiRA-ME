@@ -681,12 +681,37 @@ export const SUPPORTED_FEATURES: string[] = [
 export function partitionFeatures(
   selectedFeatures: string[],
 ): { supported: string[]; unsupported: string[] } {
+  // Feature names come in two shapes:
+  //   1. Base name only: 'mean', 'std' (used at feature-selection time)
+  //   2. Base + channel suffix: 'mean_accX', 'spectral_entropy_pressure'
+  //      (used in the trained model's saved feature_names)
+  // Exact-match only misses shape 2 → falsely reports "no supported
+  // features" for models that actually use portable base features on
+  // per-sensor channels.
+  //
+  // Match longest base name first so `mean_abs_change_pressure` binds to
+  // `mean_abs_change` rather than the shorter `mean` (both would prefix-
+  // match otherwise).
+  const supportedSet = new Set(SUPPORTED_FEATURES)
+  const supportedSorted = [...SUPPORTED_FEATURES].sort(
+    (a, b) => b.length - a.length,
+  )
   const supported: string[] = []
   const unsupported: string[] = []
-  const supportedSet = new Set(SUPPORTED_FEATURES)
   for (const f of selectedFeatures) {
-    if (supportedSet.has(f)) supported.push(f)
-    else unsupported.push(f)
+    if (supportedSet.has(f)) {
+      supported.push(f)
+      continue
+    }
+    let matched = false
+    for (const base of supportedSorted) {
+      if (f.startsWith(base + '_')) {
+        supported.push(f)
+        matched = true
+        break
+      }
+    }
+    if (!matched) unsupported.push(f)
   }
   return { supported, unsupported }
 }

@@ -1666,7 +1666,7 @@ import api from '@/services/api'
 import { Line } from 'vue-chartjs'
 import MqttTestPublisher from '@/components/MqttTestPublisher.vue'
 import { useAuthStore } from '@/stores/auth'
-import { partitionFeatures } from '@/lib/featureExtraction'
+import { partitionFeatures, SUPPORTED_FEATURES } from '@/lib/featureExtraction'
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -2661,25 +2661,68 @@ function extractWindowFeaturesFast(csvRows, channels) {
       return
     }
     const sessionId = `fastlive_${++fastSessionCounter}`
-    fastPending.set(sessionId, { resolve, reject })
+
+    // The worker's `computeWindowFeatures` iterates channels internally
+    // for each BASE feature name it recognizes. `modelFeatureNames` holds
+    // already-EXPANDED names like `mean_accX` (base + '_' + channel).
+    // Passing those verbatim makes the worker's `selected.has('mean_accX')`
+    // check miss every time → no features computed → empty vector →
+    // silent fallback to server. Extract the base names first + then
+    // re-order the worker's output back into the model's expected order.
+    const supportedSorted = [...SUPPORTED_FEATURES].sort((a, b) => b.length - a.length)
+    const baseSet = new Set()
+    const expandedList = [...modelFeatureNames.value]
+    for (const expanded of expandedList) {
+      if (SUPPORTED_FEATURES.includes(expanded)) {
+        baseSet.add(expanded); continue
+      }
+      for (const base of supportedSorted) {
+        if (expanded.startsWith(base + '_')) { baseSet.add(base); break }
+      }
+    }
+    const baseList = Array.from(baseSet)
+
+    // Wrap the worker's resolve so we can re-order values into the model's
+    // expected column order (ONNX/sklearn models eat feature vectors
+    // positionally — a mismatch produces silently-wrong predictions).
+    fastPending.set(sessionId, {
+      resolve: (workerRes) => {
+        const wNames = workerRes.feature_names || []
+        const wValues = (workerRes.feature_vector || [])[0] || []
+        const idx = new Map()
+        wNames.forEach((n, i) => idx.set(n, i))
+        const reordered = expandedList.map((expected) => {
+          const i = idx.get(expected)
+          return i !== undefined ? wValues[i] : NaN
+        })
+        // NaN in the output means the worker didn't produce a value for
+        // one of the expected names — fail out so the caller falls back.
+        if (reordered.some((v) => Number.isNaN(v))) {
+          reject(new Error('worker output missing one or more expected features'))
+          return
+        }
+        resolve({
+          feature_vector: [reordered],
+          feature_names: expandedList,
+        })
+      },
+      reject,
+    })
     // Apply the model's training normalization to the raw window before
     // handing it to the worker so features match server-side pipeline output.
     // No-op when the model was trained without normalization.
     const normRows = normalizeWindowForFastMode(csvRows, channels)
     // Worker.postMessage requires structured-cloneable data. Vue reactive
-    // Proxies (which `csvRows` / `channels` / `modelFeatureNames.value`
-    // often are, because they're sliced from reactive state) fail the
-    // clone with "[object Array] could not be cloned" and Fast Mode falls
-    // back to server extraction on EVERY window. JSON round-trip strips
-    // the Proxy wrapping — safe for our payload (arrays of numbers +
-    // strings, no functions, dates, or class instances).
+    // Proxies (which `csvRows` / `channels` are, sliced from reactive
+    // state) fail the clone with "[object Array] could not be cloned".
+    // JSON round-trip strips the Proxy wrapping.
     let payload
     try {
       payload = JSON.parse(JSON.stringify({
         type: 'extract',
         windows: [normRows],
         channelNames: channels,
-        selectedFeatures: modelFeatureNames.value,
+        selectedFeatures: baseList,  // BASE names — not the expanded ones
         samplingRate: 100,
         sessionId,
       }))
