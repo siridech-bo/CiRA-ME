@@ -222,7 +222,25 @@
                 class="mb-2"
                 style="font-size: 12px;"
                 :disabled="mqttConnected"
-              />
+              >
+                <!-- Custom chip rendering: show the short label (last
+                     path segment) since a sensor set like the CNC's 6
+                     topics all share the same prefix and the full path
+                     just gets truncated to `factory/plant_A/cnc_spi…`
+                     for every chip — indistinguishable. Full path in
+                     the tooltip on hover. -->
+                <template #chip="{ props: chipProps, item }">
+                  <v-chip
+                    v-bind="chipProps"
+                    :title="item.raw"
+                    size="small"
+                    variant="tonal"
+                    closable
+                  >
+                    {{ _topicShortLabel(item.raw) }}
+                  </v-chip>
+                </template>
+              </v-combobox>
               <div v-if="topicsDirty" class="d-flex align-center ga-1 mb-2">
                 <v-btn
                   size="x-small"
