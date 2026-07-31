@@ -90,8 +90,9 @@ def browse_directory():
         # For admins, default to datasets root
         path = datasets_root
 
-    # Validate path access
-    if not validate_path(path, user, datasets_root, shared_folder):
+    # Validate path access — read-mode so annotators can browse asset-tree
+    # paths (Machine workspace Data tab). Writes stay strict via /upload.
+    if not validate_path(path, user, datasets_root, shared_folder, for_read=True):
         return jsonify({'error': 'Access denied to this path'}), 403
 
     if not os.path.exists(path):
@@ -558,7 +559,7 @@ def sensor_files_for_date():
 
     datasets_root = current_app.config['DATASETS_ROOT_PATH']
     shared_folder = current_app.config['SHARED_FOLDER_PATH']
-    if not validate_path(folder_path, request.current_user, datasets_root, shared_folder):
+    if not validate_path(folder_path, request.current_user, datasets_root, shared_folder, for_read=True):
         return jsonify({'error': 'Access denied to this path'}), 403
     if not os.path.isdir(folder_path):
         return jsonify({'error': 'Not a directory'}), 404
@@ -605,7 +606,7 @@ def scan_dataset():
     datasets_root = current_app.config['DATASETS_ROOT_PATH']
     shared_folder = current_app.config['SHARED_FOLDER_PATH']
 
-    if not validate_path(folder_path, request.current_user, datasets_root, shared_folder):
+    if not validate_path(folder_path, request.current_user, datasets_root, shared_folder, for_read=True):
         return jsonify({'error': 'Access denied to this path'}), 403
 
     try:
@@ -633,7 +634,7 @@ def ingest_csv():
     datasets_root = current_app.config['DATASETS_ROOT_PATH']
     shared_folder = current_app.config['SHARED_FOLDER_PATH']
 
-    if not validate_path(file_path, request.current_user, datasets_root, shared_folder):
+    if not validate_path(file_path, request.current_user, datasets_root, shared_folder, for_read=True):
         return jsonify({'error': 'Access denied to this file'}), 403
 
     try:
@@ -662,7 +663,7 @@ def ingest_csv_multiple():
     shared_folder = current_app.config['SHARED_FOLDER_PATH']
 
     for fp in file_paths:
-        if not validate_path(fp, request.current_user, datasets_root, shared_folder):
+        if not validate_path(fp, request.current_user, datasets_root, shared_folder, for_read=True):
             return jsonify({'error': f'Access denied to: {fp}'}), 403
 
     # Cross-sensor JOIN parameters (all optional). When merge_mode is
@@ -704,7 +705,7 @@ def ingest_edge_impulse_json():
     datasets_root = current_app.config['DATASETS_ROOT_PATH']
     shared_folder = current_app.config['SHARED_FOLDER_PATH']
 
-    if not validate_path(file_path, request.current_user, datasets_root, shared_folder):
+    if not validate_path(file_path, request.current_user, datasets_root, shared_folder, for_read=True):
         return jsonify({'error': 'Access denied to this file'}), 403
 
     try:
@@ -732,7 +733,7 @@ def ingest_edge_impulse_cbor():
     datasets_root = current_app.config['DATASETS_ROOT_PATH']
     shared_folder = current_app.config['SHARED_FOLDER_PATH']
 
-    if not validate_path(file_path, request.current_user, datasets_root, shared_folder):
+    if not validate_path(file_path, request.current_user, datasets_root, shared_folder, for_read=True):
         return jsonify({'error': 'Access denied to this file'}), 403
 
     try:
@@ -760,7 +761,7 @@ def ingest_cira_cbor():
     datasets_root = current_app.config['DATASETS_ROOT_PATH']
     shared_folder = current_app.config['SHARED_FOLDER_PATH']
 
-    if not validate_path(file_path, request.current_user, datasets_root, shared_folder):
+    if not validate_path(file_path, request.current_user, datasets_root, shared_folder, for_read=True):
         return jsonify({'error': 'Access denied to this file'}), 403
 
     try:
@@ -805,7 +806,7 @@ def preview_data():
         # Multi-CSV preview — same cross-sensor JOIN params as /ingest/csv-multiple.
         if file_paths and isinstance(file_paths, list) and len(file_paths) > 1:
             for fp in file_paths:
-                if not validate_path(fp, request.current_user, datasets_root, shared_folder):
+                if not validate_path(fp, request.current_user, datasets_root, shared_folder, for_read=True):
                     return jsonify({'error': f'Access denied to: {fp}'}), 403
             result = loader.load_csv_multiple(
                 file_paths,
@@ -820,7 +821,7 @@ def preview_data():
                 result['preview'] = session['data'].head(rows).to_dict(orient='records')
             return jsonify(result)
 
-        if not validate_path(file_path, request.current_user, datasets_root, shared_folder):
+        if not validate_path(file_path, request.current_user, datasets_root, shared_folder, for_read=True):
             return jsonify({'error': 'Access denied to this path'}), 403
 
         # Text format — always go through load_text with wizard settings.
@@ -1036,7 +1037,7 @@ def text_sniff():
     datasets_root = current_app.config['DATASETS_ROOT_PATH']
     shared_folder = current_app.config['SHARED_FOLDER_PATH']
 
-    if not validate_path(file_path, request.current_user, datasets_root, shared_folder):
+    if not validate_path(file_path, request.current_user, datasets_root, shared_folder, for_read=True):
         return jsonify({'error': 'Access denied to this path'}), 403
 
     if not os.path.isfile(file_path):
@@ -1106,7 +1107,7 @@ def load_full_dataset():
     datasets_root = current_app.config['DATASETS_ROOT_PATH']
     shared_folder = current_app.config['SHARED_FOLDER_PATH']
 
-    if not validate_path(folder_path, request.current_user, datasets_root, shared_folder):
+    if not validate_path(folder_path, request.current_user, datasets_root, shared_folder, for_read=True):
         return jsonify({'error': 'Access denied to this path'}), 403
 
     try:
@@ -1291,7 +1292,7 @@ def download_file():
     datasets_root = current_app.config['DATASETS_ROOT_PATH']
     shared_folder = current_app.config['SHARED_FOLDER_PATH']
 
-    if not validate_path(file_path, request.current_user, datasets_root, shared_folder):
+    if not validate_path(file_path, request.current_user, datasets_root, shared_folder, for_read=True):
         return jsonify({'error': 'Access denied to this file'}), 403
 
     if not os.path.isfile(file_path):

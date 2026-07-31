@@ -65,10 +65,18 @@ def _is_path_within(child: str, parent: str) -> bool:
     return c == p or c.startswith(p + os.sep)
 
 
-def validate_path(path: str, user: dict, datasets_root: str, shared_folder: str) -> bool:
+def validate_path(path: str, user: dict, datasets_root: str, shared_folder: str,
+                  for_read: bool = False) -> bool:
     """
     Validate that a user has access to the given path.
     Prevents directory traversal attacks.
+
+    `for_read=True` grants annotators read-only access to asset-tree
+    paths (anything under `datasets_root/<root_name>/…` where root_name
+    is the configured tree root). Machine-workspace Data / Live / etc.
+    tabs need this so annotators can view the sensor data the ingest
+    router wrote — write endpoints (upload, delete) leave `for_read`
+    at its default False so annotators still can't mutate tree data.
     """
     import os
 
@@ -95,6 +103,26 @@ def validate_path(path: str, user: dict, datasets_root: str, shared_folder: str)
         private_path = os.path.normpath(os.path.join(datasets_root, private_folder))
         if _is_path_within(path, private_path):
             return True
+
+    # Asset-tree read bypass: any authed user can READ paths that belong
+    # to the tree the ingest router owns. Machine workspace tabs (Data /
+    # Live / History) all live here. Import lazily so this module has
+    # no top-level dependency on models (auth is imported very early).
+    if for_read:
+        try:
+            from .models import AssetTreeConfig
+            cfg = AssetTreeConfig.get() or {}
+            root_name = cfg.get('root_name')
+            if root_name:
+                tree_root = os.path.normpath(
+                    os.path.join(datasets_root, str(root_name))
+                )
+                if _is_path_within(path, tree_root):
+                    return True
+        except Exception:
+            # Tree unavailable during boot / test setup — fall through
+            # to the strict deny below rather than crash.
+            pass
 
     return False
 
