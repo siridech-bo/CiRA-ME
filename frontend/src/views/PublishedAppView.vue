@@ -201,7 +201,30 @@
               style="font-size: 12px;"
               :disabled="mqttConnected"
             />
+            <!-- Multi-topic display: show each subscribed topic as a
+                 read-only chip so the operator sees every topic the app
+                 is publishing, not just the first (Phase J follow-up).
+                 Single-topic apps keep the classic text-field so the
+                 layout doesn't shift. -->
+            <template v-if="mqttTopics.length > 1">
+              <div class="text-caption text-medium-emphasis mb-1" style="font-size: 11px;">
+                Topics ({{ mqttTopics.length }})
+              </div>
+              <div class="d-flex flex-wrap ga-1 mb-2" style="max-height: 150px; overflow-y: auto;">
+                <v-chip
+                  v-for="t in mqttTopics"
+                  :key="t"
+                  size="x-small"
+                  variant="tonal"
+                  :color="mqttConnected ? 'success' : 'default'"
+                  style="font-size: 10px; max-width: 100%;"
+                >
+                  <span class="text-truncate" :title="t">{{ t }}</span>
+                </v-chip>
+              </div>
+            </template>
             <v-text-field
+              v-else
               v-model="mqttTopic"
               label="Topic"
               variant="outlined"
@@ -815,7 +838,29 @@
             style="max-width: 300px; font-size: 12px;"
             :disabled="mqttConnected"
           />
+          <!-- Multi-topic runtime display (Phase J follow-up): shows every
+               subscribed topic as chips so the operator isn't misled into
+               thinking the app is only recording one. Single-topic apps
+               keep the compact text field. -->
+          <template v-if="mqttTopics.length > 1">
+            <div class="d-flex align-center flex-wrap gap-1" style="max-width: 480px;">
+              <span class="text-caption text-medium-emphasis mr-1" style="font-size: 11px;">
+                Topics ({{ mqttTopics.length }}):
+              </span>
+              <v-chip
+                v-for="t in mqttTopics"
+                :key="t"
+                size="x-small"
+                variant="tonal"
+                :color="mqttConnected ? 'success' : 'default'"
+                style="font-size: 10px;"
+              >
+                <span class="text-truncate" :title="t" style="max-width: 220px;">{{ t }}</span>
+              </v-chip>
+            </div>
+          </template>
           <v-text-field
+            v-else
             v-model="mqttTopic"
             label="Topic"
             variant="outlined"
