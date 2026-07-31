@@ -170,4 +170,26 @@ def get_user_folders(user: dict, datasets_root: str, shared_folder: str) -> list
                     'type': 'private'
                 })
 
+        # Asset-tree root — read-only for annotators. Matches the
+        # validate_path(for_read=True) behavior so the folder shown in
+        # the virtual-root browser is actually drillable. Without this
+        # the Data Source page hid `factory/` from annotators even
+        # though they had permission to read it.
+        try:
+            from .models import AssetTreeConfig
+            cfg = AssetTreeConfig.get() or {}
+            root_name = cfg.get('root_name')
+            if root_name:
+                tree_root_path = os.path.join(datasets_root, str(root_name))
+                if os.path.isdir(tree_root_path):
+                    folders.append({
+                        'name': str(root_name),
+                        'path': tree_root_path,
+                        'type': 'asset_tree',
+                    })
+        except Exception:
+            # Tree unavailable (boot / test setup) — silently omit; user
+            # still gets shared + private.
+            pass
+
     return folders
