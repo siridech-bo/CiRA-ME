@@ -3727,6 +3727,7 @@ async function startLiveStream() {
             if (elapsed < maxDur) {
               recorderState.value.samples.push({
                 ...sample,
+                _topic,           // needed for multi-topic wide-CSV export
                 label: recorderState.value.currentLabel,
                 _ts: Date.now(),
               })
@@ -4263,23 +4264,71 @@ const recorderSegments = computed(() => {
 function downloadRecordedCSV() {
   const samples = recorderState.value.samples
   if (samples.length === 0) return
-  const channels = liveChannels.value
   const prefix = recorderConfig.value.file_prefix || 'sensor_data'
+  const dateStr = new Date().toISOString().slice(0,10)
 
-  // Build CSV
+  // Multi-topic recorder: emit a WIDE CSV — one column per topic (short
+  // label used as the column header), one row per sample. Each row has
+  // the topic's value in its own column + empty for others. Downstream
+  // pipelines can forward-fill or resample; this preserves the raw
+  // per-topic timing without lossy alignment. Previous single-column
+  // behaviour collapsed every topic's `{value: N}` into one `value`
+  // column, mixing scales and hiding which topic each row came from.
+  if (isMultiTopicRecorder.value) {
+    const topics = [...(mqttTopics.value || [])]
+    const shortLabels = topics.map((t) => _topicShortLabel(t))
+    // Disambiguate the rare case where two topics share the same last
+    // segment (e.g. plant_A/machine_1/pressure + plant_B/machine_1/pressure).
+    const seen = new Map()
+    const colNames = shortLabels.map((s, i) => {
+      const n = seen.get(s) || 0
+      seen.set(s, n + 1)
+      return n === 0 ? s : `${s}_${n + 1}`
+    })
+    const topicToCol = new Map(topics.map((t, i) => [t, colNames[i]]))
+
+    const header = ['timestamp', ...colNames, 'label'].join(',')
+    const t0 = samples[0]?._ts || Date.now()
+    const rows = samples.map((s) => {
+      const tsSec = (((s._ts || Date.now()) - t0) / 1000).toFixed(3)
+      const col = topicToCol.get(s._topic)
+      // Pick the first numeric field of the sample payload as this
+      // topic's value. Multi-axis (x/y/z) collapses to `x` here — the
+      // server-side per-topic CSVs (Phase J) keep full multi-axis
+      // fidelity for training; this browser download is the demo
+      // convenience path.
+      let v = ''
+      for (const [k, val] of Object.entries(s)) {
+        if (k === '_ts' || k === '_topic' || k === 'label') continue
+        if (typeof val === 'number' && Number.isFinite(val)) { v = val; break }
+      }
+      const cells = colNames.map((n) => (n === col ? v : ''))
+      return [tsSec, ...cells, s.label].join(',')
+    })
+    const csv = [header, ...rows].join('\n')
+    const blob = new Blob([csv], { type: 'text/csv' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${prefix}_${dateStr}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+    return
+  }
+
+  // Single-topic path (unchanged): one column per payload channel.
+  const channels = liveChannels.value
   const header = ['timestamp', ...channels, 'label'].join(',')
   const rows = samples.map((s, i) => {
     const vals = channels.map(ch => s[ch] ?? 0)
     return [i * (1.0 / (recorderConfig.value.target_sample_rate || 62.5)), ...vals, s.label].join(',')
   })
   const csv = [header, ...rows].join('\n')
-
-  // Download
   const blob = new Blob([csv], { type: 'text/csv' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
-  a.download = `${prefix}_${new Date().toISOString().slice(0,10)}.csv`
+  a.download = `${prefix}_${dateStr}.csv`
   a.click()
   URL.revokeObjectURL(url)
 }
