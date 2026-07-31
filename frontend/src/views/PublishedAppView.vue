@@ -201,26 +201,51 @@
               style="font-size: 12px;"
               :disabled="mqttConnected"
             />
-            <!-- Multi-topic display: show each subscribed topic as a
-                 read-only chip so the operator sees every topic the app
-                 is publishing, not just the first (Phase J follow-up).
-                 Single-topic apps keep the classic text-field so the
-                 layout doesn't shift. -->
-            <template v-if="mqttTopics.length > 1">
-              <div class="text-caption text-medium-emphasis mb-1" style="font-size: 11px;">
-                Topics ({{ mqttTopics.length }})
-              </div>
-              <div class="d-flex flex-wrap ga-1 mb-2" style="max-height: 150px; overflow-y: auto;">
-                <v-chip
-                  v-for="t in mqttTopics"
-                  :key="t"
+            <!-- Editable multi-topic combobox: add / remove chips inline
+                 without going back to App Builder. Disabled while connected
+                 (subscription state locked). "Save changes to app" appears
+                 when the local list diverges from the app's persisted
+                 config — writes back via PATCH so the change survives the
+                 next page load. Owner-only per the update_app auth. -->
+            <template v-if="mqttTopics.length > 1 || isRecorderMode">
+              <v-combobox
+                v-model="mqttTopics"
+                :items="[]"
+                label="Topics"
+                multiple
+                chips
+                closable-chips
+                hide-no-data
+                variant="outlined"
+                density="compact"
+                hide-details
+                class="mb-2"
+                style="font-size: 12px;"
+                :disabled="mqttConnected"
+              />
+              <div v-if="topicsDirty" class="d-flex align-center ga-1 mb-2">
+                <v-btn
                   size="x-small"
                   variant="tonal"
-                  :color="mqttConnected ? 'success' : 'default'"
-                  style="font-size: 10px; max-width: 100%;"
+                  color="primary"
+                  :loading="savingTopics"
+                  :disabled="mqttConnected"
+                  prepend-icon="mdi-content-save"
+                  @click="saveTopicsToApp"
                 >
-                  <span class="text-truncate" :title="t">{{ t }}</span>
-                </v-chip>
+                  Save to app
+                </v-btn>
+                <v-btn
+                  size="x-small"
+                  variant="text"
+                  :disabled="mqttConnected || savingTopics"
+                  @click="resetTopicsToApp"
+                >
+                  Reset
+                </v-btn>
+                <span class="text-caption text-warning" style="font-size: 10px;">
+                  unsaved
+                </span>
               </div>
             </template>
             <v-text-field
@@ -2120,6 +2145,11 @@ onMounted(async () => {
     // `sensors/#` subscribe was too surprising — recorder would capture
     // every unrelated topic on the broker.
     mqttTopics.value = topicList
+    // Snapshot for dirty-state detection so the "Save to app" button
+    // only appears when the user's live edits diverge from what's on
+    // the server. Cloning so future mutations to mqttTopics don't
+    // shift the baseline.
+    persistedTopics.value = [...topicList]
     mqttTopic.value = topicList[0] || ''
   }
   // Load Fast Mode preference (per-app localStorage key). If it was ON from a
@@ -2562,6 +2592,64 @@ const mqttTopic = ref('')
 // or [cfg.topic] (legacy). Used by the multi-subscribe path AND the
 // Signal Recorder's per-topic buffering.
 const mqttTopics = ref([])
+// Snapshot of the topics as they exist in the persisted app config —
+// used to detect local edits (dirty state) vs the on-disk truth so we
+// can show a "Save changes to app" button only when they diverge.
+const persistedTopics = ref([])
+const savingTopics = ref(false)
+const topicsDirty = computed(() => {
+  const a = [...(mqttTopics.value || [])].sort().join('')
+  const b = [...(persistedTopics.value || [])].sort().join('')
+  return a !== b
+})
+
+async function saveTopicsToApp() {
+  if (!appData.value) return
+  savingTopics.value = true
+  try {
+    // Deep-clone nodes + find the LIVE STREAM node + rewrite its topics.
+    const nodes = JSON.parse(JSON.stringify(appData.value.nodes || []))
+    const targetIdx = nodes.findIndex((n) => (
+      n?.type === 'input.mqtt.live_stream' || n?.type === 'input.live_stream'
+    ))
+    if (targetIdx < 0) {
+      mqttError.value = 'No MQTT input node found in app config'
+      return
+    }
+    if (!nodes[targetIdx].config) nodes[targetIdx].config = {}
+    // Filter empties, dedupe.
+    const cleaned = Array.from(new Set(
+      (mqttTopics.value || [])
+        .map((t) => (typeof t === 'string' ? t.trim() : ''))
+        .filter((t) => t.length > 0),
+    ))
+    if (cleaned.length === 0) {
+      mqttError.value = 'Add at least one topic before saving'
+      return
+    }
+    nodes[targetIdx].config.topics = cleaned
+    // Drop the legacy single-topic field once we have the multi-topic
+    // shape stored (matches the editor's migration behaviour).
+    if ('topic' in nodes[targetIdx].config) {
+      delete nodes[targetIdx].config.topic
+    }
+    await api.put(`/api/app-builder/apps/${appData.value.id}`, { nodes })
+    // Reflect the write locally + update the dirty baseline.
+    appData.value.nodes = nodes
+    persistedTopics.value = [...cleaned]
+    mqttTopics.value = [...cleaned]
+  } catch (e) {
+    const msg = e?.response?.data?.error || e?.message || 'Save failed'
+    mqttError.value = `Save topics failed: ${msg}`
+  } finally {
+    savingTopics.value = false
+  }
+}
+
+function resetTopicsToApp() {
+  mqttTopics.value = [...persistedTopics.value]
+  mqttError.value = null
+}
 const mqttConnected = ref(false)
 const mqttError = ref(null)
 const mqttMessageCount = ref(0)
