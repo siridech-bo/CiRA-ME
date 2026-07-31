@@ -1652,6 +1652,65 @@ def get_rejected_topics():
         return jsonify({'date': date, 'entries': [], 'count': 0}), 200
 
 
+@asset_tree_bp.route('/recent-topics', methods=['GET'])
+@login_required
+def get_recent_topics():
+    """Phase J — list MQTT topics seen recently by the ingest router.
+
+    Powers the multi-topic combobox on the App Builder's Live Stream node.
+    Any authed user (same tier as /rejected-topics). Reads the router's
+    in-memory last-seen map; a topic that hasn't been published within
+    `window_s` seconds is omitted.
+
+    Query params:
+      window_s — lookback window, seconds. Default 900 (15 min); cap 3600.
+      limit    — max entries. Default 100; cap 500.
+    """
+    # Coerce with hard caps. Refuse negative / malformed with 400 rather
+    # than silently defaulting — the frontend catches the 400 and shows
+    # tree suggestions only, matching the "silent-fail on error" spec.
+    def _coerce(name, default, cap):
+        raw = request.args.get(name)
+        if raw is None:
+            return default
+        try:
+            n = int(raw)
+        except (TypeError, ValueError):
+            return None  # signal caller to 400
+        if n < 1:
+            return None
+        return min(n, cap)
+
+    window_s = _coerce('window_s', 900, 3600)
+    if window_s is None:
+        return jsonify({'error': 'window_s must be a positive integer'}), 400
+    limit = _coerce('limit', 100, 500)
+    if limit is None:
+        return jsonify({'error': 'limit must be a positive integer'}), 400
+
+    try:
+        from ..services.mqtt_ingest_router import router as _ingest_router
+        topics = _ingest_router.list_recent_topics(
+            window_s=window_s, limit=limit,
+        )
+        return jsonify({
+            'topics': topics,
+            'window_s': window_s,
+            'limit': limit,
+            'count': len(topics),
+        })
+    except Exception as e:
+        logger.warning('[asset-tree] recent-topics failed: %s', e)
+        # Fail-open — return empty list so the combobox still renders
+        # tree suggestions when the router is down / not yet imported.
+        return jsonify({
+            'topics': [],
+            'window_s': window_s,
+            'limit': limit,
+            'count': 0,
+        }), 200
+
+
 @asset_tree_bp.route('/ingest-janitor/run-now', methods=['POST'])
 @login_required
 def run_ingest_janitor():

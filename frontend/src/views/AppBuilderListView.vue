@@ -359,7 +359,8 @@ const TEMPLATES = [
     nodeLabels: ['MQTT', 'Normalize', 'Window', 'Model', 'Table'],
     requiresDl: true,
     nodes: [
-      { id: 'n1', type: 'input.live_stream', config: { broker_url: 'ws://localhost:9001/mqtt', topic: 'sensors/machine1/#', channels: '' } },
+      // Phase J — multi-topic input; inference apps use only the first topic.
+      { id: 'n1', type: 'input.live_stream', config: { broker_url: 'ws://localhost:9001/mqtt', topics: ['sensors/machine1/#'], channels: '' } },
       { id: 'n2', type: 'transform.normalize', config: { method: 'minmax' } },
       { id: 'n3', type: 'transform.window', config: { window_size: 128, step: 64 } },
       { id: 'n6', type: 'output.table', config: { max_rows: 100, show_confidence: true } },
@@ -374,7 +375,8 @@ const TEMPLATES = [
     color: '#a78bfa',
     nodeLabels: ['MQTT', 'Normalize', 'Window', 'Features', 'Model', 'Chart'],
     nodes: [
-      { id: 'n1', type: 'input.live_stream', config: { broker_url: 'ws://localhost:9001/mqtt', topic: 'sensors/machine1/#', channels: '' } },
+      // Phase J — multi-topic input; inference apps use only the first topic.
+      { id: 'n1', type: 'input.live_stream', config: { broker_url: 'ws://localhost:9001/mqtt', topics: ['sensors/machine1/#'], channels: '' } },
       { id: 'n2', type: 'transform.normalize', config: { method: 'minmax' } },
       { id: 'n3', type: 'transform.window', config: { window_size: 32, step: 16 } },
       { id: 'n4', type: 'transform.feature_extract', config: { features: [] } },
@@ -389,7 +391,8 @@ const TEMPLATES = [
     color: '#f87171',
     nodeLabels: ['MQTT', 'Normalize', 'Window', 'Features', 'Model', 'Alert'],
     nodes: [
-      { id: 'n1', type: 'input.live_stream', config: { broker_url: 'ws://localhost:9001/mqtt', topic: 'sensors/machine1/#', channels: '' } },
+      // Phase J — multi-topic input; inference apps use only the first topic.
+      { id: 'n1', type: 'input.live_stream', config: { broker_url: 'ws://localhost:9001/mqtt', topics: ['sensors/machine1/#'], channels: '' } },
       { id: 'n2', type: 'transform.normalize', config: { method: 'minmax' } },
       { id: 'n3', type: 'transform.window', config: { window_size: 32, step: 16 } },
       { id: 'n4', type: 'transform.feature_extract', config: { features: [] } },
@@ -404,7 +407,8 @@ const TEMPLATES = [
     color: '#34d399',
     nodeLabels: ['MQTT', 'Normalize', 'Window', 'Features', 'Model', 'Table'],
     nodes: [
-      { id: 'n1', type: 'input.live_stream', config: { broker_url: 'ws://localhost:9001/mqtt', topic: 'sensors/machine1/#', channels: '' } },
+      // Phase J — multi-topic input; inference apps use only the first topic.
+      { id: 'n1', type: 'input.live_stream', config: { broker_url: 'ws://localhost:9001/mqtt', topics: ['sensors/machine1/#'], channels: '' } },
       { id: 'n2', type: 'transform.normalize', config: { method: 'minmax' } },
       { id: 'n3', type: 'transform.window', config: { window_size: 128, step: 64 } },
       { id: 'n4', type: 'transform.feature_extract', config: { features: [] } },
@@ -420,7 +424,11 @@ const TEMPLATES = [
     color: '#ef4444',
     nodeLabels: ['MQTT', 'Recorder'],
     nodes: [
-      { id: 'n1', type: 'input.live_stream', config: { broker_url: 'ws://localhost:9001/mqtt', topic: 'sensors/#', channels: '' } },
+      // Phase J (2026-07-31) — recorder template now uses `topics: [...]`
+      // (multi-topic combobox). The editor auto-migrates `topic:` if you
+      // paste in an old exported config, but new apps start with an empty
+      // list so users can pick from the asset tree / recent topics.
+      { id: 'n1', type: 'input.live_stream', config: { broker_url: 'ws://localhost:9001/mqtt', topics: [], channels: '' } },
       { id: 'n6', type: 'output.signal_recorder', config: { labels: 'idle, wave, snake, updown', target_sample_rate: 62.5, max_duration: 300, file_prefix: 'sensor_data' } },
     ],
   },
@@ -465,7 +473,8 @@ const TEMPLATES = [
     color: '#f59e0b',
     nodeLabels: ['MQTT', 'Normalize', 'Window', 'Features', 'Multi-Compare', 'Chart'],
     nodes: [
-      { id: 'n1', type: 'input.live_stream', config: { broker_url: 'ws://localhost:9001/mqtt', topic: 'sensors/#', channels: '' } },
+      // Phase J — multi-topic input; inference apps use only the first topic.
+      { id: 'n1', type: 'input.live_stream', config: { broker_url: 'ws://localhost:9001/mqtt', topics: ['sensors/#'], channels: '' } },
       { id: 'n2', type: 'transform.normalize', config: { method: 'minmax' } },
       { id: 'n3', type: 'transform.window', config: { window_size: 32, step: 16 } },
       { id: 'n4', type: 'transform.feature_extract', config: { features: [] } },
@@ -481,7 +490,8 @@ const TEMPLATES = [
     color: '#f59e0b',
     nodeLabels: ['MQTT', 'Normalize', 'Window', 'Features', 'Multi-Compare', 'Table'],
     nodes: [
-      { id: 'n1', type: 'input.live_stream', config: { broker_url: 'ws://localhost:9001/mqtt', topic: 'sensors/#', channels: '' } },
+      // Phase J — multi-topic input; inference apps use only the first topic.
+      { id: 'n1', type: 'input.live_stream', config: { broker_url: 'ws://localhost:9001/mqtt', topics: ['sensors/#'], channels: '' } },
       { id: 'n2', type: 'transform.normalize', config: { method: 'minmax' } },
       { id: 'n3', type: 'transform.window', config: { window_size: 128, step: 64 } },
       { id: 'n4', type: 'transform.feature_extract', config: { features: [] } },

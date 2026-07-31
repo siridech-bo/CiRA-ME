@@ -160,6 +160,20 @@ class MqttIngestRouter:
         }
         self._stats_lock = threading.Lock()
 
+        # ── Phase J — per-topic last-seen timestamps ────────────────────
+        # Two parallel maps: monotonic seconds for the LRU purge (immune to
+        # wall-clock jumps) and real-time epoch seconds for the API's ISO
+        # 8601 formatting. Kept in sync on every _route call.
+        #   monotonic  → used ONLY for internal ordering / LRU
+        #   epoch      → used ONLY for API response formatting
+        # Capped at ~500 entries via a lazy LRU purge triggered every
+        # 100 writes (see `_maybe_purge_topic_last_seen`). Hot path is a
+        # single dict assign; the sort only runs on the 100th write.
+        self._topic_last_seen: Dict[str, float] = {}
+        self._topic_last_seen_epoch: Dict[str, float] = {}
+        self._topic_last_seen_lock = threading.Lock()
+        self._topic_last_seen_write_counter = 0
+
         # ── Phase I Q3 — per-topic throttle state ────────────────────────
         # topic_path → time.monotonic() timestamp of the last accepted write.
         # Compared against sensor's `min_write_interval_ms` to enforce
@@ -574,6 +588,14 @@ class MqttIngestRouter:
     # ── Routing pipeline ────────────────────────────────────────────────
 
     def _route(self, topic: str, payload: bytes) -> None:
+        # Phase J — record last-seen for /recent-topics BEFORE any routing
+        # decision so the endpoint surfaces topics even when they'd be
+        # rejected (unknown topic in strict mode is a common early-config
+        # symptom the autocomplete list is meant to help debug).
+        try:
+            self._touch_topic_last_seen(topic)
+        except Exception:
+            logger.exception('[ingest] _touch_topic_last_seen failed')
         segments = topic.split('/')
         # 1. Root check
         if not segments or segments[0] != self._root_name:
@@ -651,6 +673,93 @@ class MqttIngestRouter:
                 self._flush_buffer(force=True)
             except Exception:
                 logger.exception('[ingest] force flush failed')
+
+    # ── Phase J — recent-topics tail ─────────────────────────────────────
+
+    def _touch_topic_last_seen(self, topic: str) -> None:
+        """Update `_topic_last_seen` + `_topic_last_seen_epoch` for a topic.
+
+        Called from every message on the hot path — must be O(1) amortised.
+        The LRU purge runs at most once per 100 writes and sorts the map
+        (bounded to 500 entries) so the amortised cost stays well under 1 ms.
+        """
+        if not topic or not isinstance(topic, str):
+            return
+        # Skip $SYS heartbeats — they'd dominate the recent list without
+        # telling anyone anything useful for the autocomplete.
+        if topic.startswith('$SYS'):
+            return
+        now_mono = time.monotonic()
+        now_epoch = time.time()
+        need_purge = False
+        with self._topic_last_seen_lock:
+            self._topic_last_seen[topic] = now_mono
+            self._topic_last_seen_epoch[topic] = now_epoch
+            self._topic_last_seen_write_counter += 1
+            if self._topic_last_seen_write_counter >= 100:
+                self._topic_last_seen_write_counter = 0
+                if len(self._topic_last_seen) > 500:
+                    need_purge = True
+        if need_purge:
+            self._purge_topic_last_seen()
+
+    def _purge_topic_last_seen(self) -> None:
+        """Drop the oldest 100 entries from `_topic_last_seen`.
+
+        Called at most once per 100 writes to keep the hot path cheap. Sort
+        + slice on a 500-entry dict is well under 1 ms on any modern CPU.
+        """
+        try:
+            with self._topic_last_seen_lock:
+                items = sorted(self._topic_last_seen.items(), key=lambda kv: kv[1])
+                to_drop = items[:100]
+                for k, _ in to_drop:
+                    self._topic_last_seen.pop(k, None)
+                    self._topic_last_seen_epoch.pop(k, None)
+        except Exception:
+            logger.exception('[ingest] _purge_topic_last_seen failed')
+
+    def list_recent_topics(self, window_s: float = 900.0,
+                           limit: int = 100) -> list:
+        """Snapshot of topics seen in the last `window_s` seconds.
+
+        Returned entries are dicts:
+            {'topic': str, 'last_seen': iso8601Z, 'seconds_ago': float}
+        Ordered newest-first. Cap at `limit`.
+        """
+        try:
+            window_s = float(window_s)
+            limit = int(limit)
+        except (TypeError, ValueError):
+            return []
+        if window_s <= 0 or limit <= 0:
+            return []
+        now_mono = time.monotonic()
+        now_epoch = time.time()
+        with self._topic_last_seen_lock:
+            # Snapshot both maps under the lock (they're always updated
+            # together, so keys align).
+            snap_mono = dict(self._topic_last_seen)
+            snap_epoch = dict(self._topic_last_seen_epoch)
+        recent = []
+        for topic, mono_ts in snap_mono.items():
+            elapsed = now_mono - mono_ts
+            if elapsed > window_s:
+                continue
+            epoch_ts = snap_epoch.get(topic)
+            # Estimate wall-clock ts from now - elapsed if epoch missing
+            # (shouldn't happen — belt-and-braces).
+            if epoch_ts is None:
+                epoch_ts = now_epoch - elapsed
+            iso = datetime.fromtimestamp(epoch_ts, tz=timezone.utc)\
+                .strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
+            recent.append({
+                'topic': topic,
+                'last_seen': iso,
+                'seconds_ago': round(elapsed, 3),
+            })
+        recent.sort(key=lambda e: e['seconds_ago'])
+        return recent[:limit]
 
     # ── Phase I Q3 — recording controls gate ─────────────────────────────
 

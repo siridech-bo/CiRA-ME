@@ -1376,6 +1376,253 @@ def detect_channels():
     return jsonify({'channels': channels})
 
 
+# ─── Phase J — Signal Recorder multi-topic sessions ─────────────
+# The Signal Recorder buffers messages client-side (see PublishedAppView.vue)
+# and POSTs the accumulated per-topic buffers here on Disconnect. Server
+# writes one CSV per topic + a session.json under
+# <DATASETS_ROOT>/_recordings/<session_id>/.
+#
+# Payload contract (POST /api/app-builder/recorder-sessions):
+#   {
+#     "session_id": "abc123",              # client-generated (URL-safe)
+#     "app_slug":   "my-recorder-app",     # for provenance
+#     "started_at": "2026-07-31T13:00:00Z",
+#     "ended_at":   "2026-07-31T13:05:32Z",
+#     "status":     "complete" | "interrupted",
+#     "topics":     ["factory/plant/machine/pressure", ...],
+#     "topics_data": {
+#       "<topic>": {
+#         "columns": ["value"] | ["x","y","z"],
+#         "rows": [
+#           ["2026-07-31T13:00:00.000Z", 5.2],
+#           ...
+#         ]
+#       }
+#     }
+#   }
+#
+# Response:
+#   { "session_id", "path", "row_counts": {topic: N}, "per_topic_files": [...] }
+
+_SESSION_ID_REGEX = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
+_RECORDER_MAX_ROWS_PER_TOPIC = 500_000  # ≈50 MB per topic worst case
+_RECORDER_MAX_TOPICS = 64
+
+
+def _recordings_root(app):
+    """Return the absolute path to the recorder session storage folder.
+
+    Kept under DATASETS_ROOT so File Manager can browse the outputs and
+    janitor / disk-usage tooling picks them up alongside other datasets.
+    Underscore prefix keeps them out of the asset tree walk (which only
+    picks up nodes matching the configured root_name).
+    """
+    try:
+        root = app.config['DATASETS_ROOT_PATH']
+    except Exception:
+        root = os.environ.get(
+            'DATASETS_ROOT_PATH',
+            os.path.join(os.path.dirname(os.path.dirname(__file__)), 'datasets'),
+        )
+    return os.path.join(root, '_recordings')
+
+
+def _topic_to_slug(topic):
+    """Convert an MQTT topic to a safe filename component.
+
+    Per spec: replace `/` with `_`. Also strip characters that filesystems
+    trip on (backslash, colon, etc.) — a defence-in-depth measure since
+    the combobox validator ought to have caught anything malicious.
+    """
+    if not topic:
+        return 'unknown'
+    slug = str(topic).replace('/', '_')
+    slug = re.sub(r'[^A-Za-z0-9_\-\+\#]', '_', slug)
+    return slug[:200] or 'unknown'
+
+
+def _csv_escape_cell(v):
+    """Minimal CSV escaping matching mqtt_ingest_router._flush_buffer."""
+    if v is None:
+        return ''
+    s = v if isinstance(v, str) else str(v)
+    if ',' in s or '"' in s or '\n' in s:
+        return '"' + s.replace('"', '""') + '"'
+    return s
+
+
+@app_builder_bp.route('/recorder-sessions', methods=['POST'])
+@login_required
+def create_recorder_session():
+    """Phase J — persist a multi-topic Signal Recorder session to disk.
+
+    Silent-fail on individual topic write errors — we always return a
+    row_counts map so the client can show a "wrote N/M topics" toast.
+    Broker disconnect mid-session → client sends status="interrupted".
+    """
+    data = request.get_json(silent=True) or {}
+    session_id = str(data.get('session_id') or '').strip()
+    if not session_id or not _SESSION_ID_REGEX.match(session_id):
+        return jsonify({
+            'error': 'session_id required, ^[A-Za-z0-9_-]{1,64}$',
+        }), 400
+
+    started_at = str(data.get('started_at') or '')
+    ended_at = str(data.get('ended_at') or '')
+    # QA J.P1: 'tab_closed' is a new status set by the browser's pagehide
+    # sendBeacon — it means "user closed the tab without hitting Disconnect,
+    # save what we have as best-effort". A subsequent normal Disconnect
+    # POST with status='complete' from the SAME session_id supersedes.
+    status = str(data.get('status') or 'complete')
+    if status not in ('complete', 'interrupted', 'tab_closed'):
+        status = 'complete'
+    app_slug = str(data.get('app_slug') or '')[:128]
+
+    topics_data = data.get('topics_data') or {}
+    if not isinstance(topics_data, dict) or not topics_data:
+        return jsonify({
+            'error': 'topics_data (non-empty object) required',
+        }), 400
+    if len(topics_data) > _RECORDER_MAX_TOPICS:
+        return jsonify({
+            'error': f'too many topics (max {_RECORDER_MAX_TOPICS})',
+        }), 400
+
+    session_dir = os.path.join(_recordings_root(current_app), session_id)
+    # QA J.P1: refuse to overwrite an existing session so a duplicate POST
+    # can't orphan the previous run's CSVs. Two paths converge here in
+    # production: the beacon on pagehide + a normal Disconnect POST that
+    # follows if the tab wasn't actually closed. The beacon is best-
+    # effort; we accept its data first and treat the second POST as a
+    # duplicate. Exception: allow overwrite when status is 'tab_closed'
+    # (pagehide beacon) so a follow-up 'complete' status can supersede.
+    if os.path.isdir(session_dir) and os.path.exists(os.path.join(session_dir, 'session.json')):
+        try:
+            with open(os.path.join(session_dir, 'session.json'), 'r', encoding='utf-8') as fh:
+                existing = json.load(fh) or {}
+            existing_status = existing.get('status')
+        except Exception:
+            existing_status = None
+        incoming_status = (data.get('status') or 'complete')
+        if existing_status != 'tab_closed' or incoming_status == 'tab_closed':
+            return jsonify({
+                'error': f'session_id {session_id!r} already exists',
+                'existing_status': existing_status,
+            }), 409
+        # else: pagehide beacon landed first; allow this Disconnect POST
+        # to supersede + rewrite the folder cleanly.
+        try:
+            for name in os.listdir(session_dir):
+                fp = os.path.join(session_dir, name)
+                if os.path.isfile(fp):
+                    os.remove(fp)
+        except OSError:
+            pass
+    try:
+        os.makedirs(session_dir, exist_ok=True)
+    except OSError as e:
+        logger.exception('[recorder] mkdir failed: %s', session_dir)
+        return jsonify({'error': f'mkdir failed: {e}'}), 500
+
+    row_counts = {}
+    per_topic_files = []
+    write_errors = []
+    valid_topics = []
+
+    for topic, bucket in topics_data.items():
+        if not isinstance(bucket, dict):
+            write_errors.append({'topic': topic, 'error': 'bucket not dict'})
+            continue
+        columns = bucket.get('columns') or ['value']
+        rows = bucket.get('rows') or []
+        if not isinstance(columns, list) or not all(isinstance(c, str) for c in columns):
+            write_errors.append({'topic': topic, 'error': 'columns must be list of strings'})
+            continue
+        if not isinstance(rows, list):
+            write_errors.append({'topic': topic, 'error': 'rows must be list'})
+            continue
+        if len(rows) > _RECORDER_MAX_ROWS_PER_TOPIC:
+            # Truncate rather than reject — partial data is better than none
+            # for interrupted sessions.
+            rows = rows[:_RECORDER_MAX_ROWS_PER_TOPIC]
+            write_errors.append({
+                'topic': topic,
+                'error': f'row count clamped to {_RECORDER_MAX_ROWS_PER_TOPIC}',
+            })
+
+        fname = _topic_to_slug(topic) + '.csv'
+        fpath = os.path.join(session_dir, fname)
+        try:
+            with open(fpath, 'w', encoding='utf-8', newline='\n') as fh:
+                fh.write('timestamp_iso,' + ','.join(columns) + '\n')
+                for row in rows:
+                    if not isinstance(row, (list, tuple)) or len(row) < 1:
+                        continue
+                    # First cell is the timestamp. Remainder aligns with
+                    # columns (missing tail → empty cells).
+                    ts = _csv_escape_cell(row[0])
+                    vals = list(row[1:])
+                    while len(vals) < len(columns):
+                        vals.append(None)
+                    cells = [_csv_escape_cell(v) for v in vals[:len(columns)]]
+                    fh.write(f'{ts},' + ','.join(cells) + '\n')
+            row_counts[topic] = len(rows)
+            per_topic_files.append(fname)
+            valid_topics.append(topic)
+        except OSError as e:
+            logger.exception('[recorder] write failed for %s', topic)
+            write_errors.append({'topic': topic, 'error': str(e)})
+
+    session_meta = {
+        'session_id': session_id,
+        'app_slug': app_slug,
+        'started_at': started_at,
+        'ended_at': ended_at,
+        'status': status,
+        'topics': valid_topics,
+        'row_counts': row_counts,
+        'per_topic_files': per_topic_files,
+        'created_by': (request.current_user or {}).get('id'),
+    }
+    if write_errors:
+        session_meta['write_errors'] = write_errors
+
+    try:
+        with open(os.path.join(session_dir, 'session.json'),
+                  'w', encoding='utf-8') as fh:
+            json.dump(session_meta, fh, indent=2)
+    except OSError as e:
+        logger.exception('[recorder] session.json write failed')
+        return jsonify({'error': f'session.json write failed: {e}'}), 500
+
+    return jsonify({
+        'session_id': session_id,
+        'path': session_dir,
+        'row_counts': row_counts,
+        'per_topic_files': per_topic_files,
+        'status': status,
+        'write_errors': write_errors,
+    }), 201
+
+
+@app_builder_bp.route('/recorder-sessions/<session_id>', methods=['GET'])
+@login_required
+def get_recorder_session(session_id):
+    """Phase J — read the metadata for a recorded session. QA aid."""
+    if not _SESSION_ID_REGEX.match(session_id or ''):
+        return jsonify({'error': 'invalid session_id'}), 400
+    session_dir = os.path.join(_recordings_root(current_app), session_id)
+    meta_path = os.path.join(session_dir, 'session.json')
+    if not os.path.isfile(meta_path):
+        return jsonify({'error': 'session not found'}), 404
+    try:
+        with open(meta_path, 'r', encoding='utf-8') as fh:
+            meta = json.load(fh)
+    except (OSError, json.JSONDecodeError) as e:
+        return jsonify({'error': f'session.json unreadable: {e}'}), 500
+    return jsonify(meta)
+
+
 # ─── Capabilities ────────────────────────────────────────────────
 
 @app_builder_bp.route('/capabilities', methods=['GET'])

@@ -108,13 +108,13 @@
   </div>
 </header>
 
-<section class="overall" style="--overall: 94;">
-  <div class="ring"><span>94%</span></div>
+<section class="overall" style="--overall: 95;">
+  <div class="ring"><span>95%</span></div>
   <div class="stats">
-    <div class="stat"><div class="n">9</div><div class="l">Phases done</div></div>
-    <div class="stat"><div class="n">66</div><div class="l">Subtasks done</div></div>
-    <div class="stat"><div class="n">10</div><div class="l">Phases total</div></div>
-    <div class="stat"><div class="n">70</div><div class="l">Subtasks total</div></div>
+    <div class="stat"><div class="n">10</div><div class="l">Phases done</div></div>
+    <div class="stat"><div class="n">73</div><div class="l">Subtasks done</div></div>
+    <div class="stat"><div class="n">11</div><div class="l">Phases total</div></div>
+    <div class="stat"><div class="n">76</div><div class="l">Subtasks total</div></div>
   </div>
 </section>
 
@@ -288,6 +288,24 @@
     <li><span class="id">I.5</span> <span class="chip done">done</span> App Builder Client Inference toggle + ONNX runtime in PublishedAppView <span class="time">2026-07-25</span></li>
     <li><span class="id">I.QA</span> <span class="chip done">done</span> QA — 3 blockers + 14 polish. All 3 blockers fixed (multi-model guard, WASM CDN paths, auto-stop dropdown custom entry). 5 real polish fixed (non-sensor guard, resume clears record_until, sim card unit prop, session promise dedup + release on unmount, model_version uses updated_at). Cosmetic polish deferred. <span class="time">2026-07-25</span></li>
     <li><span class="id">I.T</span> <span class="chip pending">pending</span> Personal browser test <span class="time">—</span></li>
+  </ul>
+</section>
+
+<!-- ═══════════════════════════════════════════════════ PHASE J ═════ -->
+<section class="phase status-done" id="phase-j">
+  <div class="head">
+    <h2>Phase J · Multi-topic Live Stream + Signal Recorder</h2>
+    <span class="est">~1.5 days · <span class="chip done">done</span></span>
+  </div>
+  <div class="bar"><i style="width:100%"></i></div>
+  <ul class="subtasks">
+    <li><span class="id">J.1</span> <span class="chip done">done</span> Backend: /recent-topics endpoint + router _topic_last_seen map <span class="time">2026-07-31</span></li>
+    <li><span class="id">J.2</span> <span class="chip done">done</span> Backend: Signal Recorder multi-topic capture + session.json <span class="time">2026-07-31</span></li>
+    <li><span class="id">J.3</span> <span class="chip done">done</span> Frontend: multi-topic combobox on Live Stream node <span class="time">2026-07-31</span></li>
+    <li><span class="id">J.4</span> <span class="chip done">done</span> Frontend: "Load from machine" button + tree picker <span class="time">2026-07-31</span></li>
+    <li><span class="id">J.5</span> <span class="chip done">done</span> Backward-compat migration of single-topic apps <span class="time">2026-07-31</span></li>
+    <li><span class="id">J.QA</span> <span class="chip done">done</span> QA — 1 blocker + 7 polish. Blocker fixed (auto-reconnect wipe). 5 polish fixed (POST-failure buffer wipe, publish gate on invalid/empty topics, sensors/# fallback removal, same-session_id 409, client row cap). 2 follow-ups fixed (pagehide/sendBeacon tab-close save, wildcards blocked in chip grammar). <span class="time">2026-07-31</span></li>
+    <li><span class="id">J.T</span> <span class="chip done">done</span> My final smoke test — /recent-topics validation, dup-POST 409, tab-closed supersede, multi-topic CSV + session.json shape all verified <span class="time">2026-07-31</span></li>
   </ul>
 </section>
 

@@ -2027,7 +2027,25 @@ onMounted(async () => {
       } catch { /* leave URL unchanged */ }
     }
     mqttBrokerUrl.value = brokerUrl
-    mqttTopic.value = cfg.topic || 'sensors/#'
+    // Phase J — normalize into the multi-topic shape. Legacy apps have
+    // `topic: string`; new apps have `topics: string[]`. Keep mqttTopic
+    // populated for legacy single-topic subscribe paths (Machine Live
+    // Stream node still uses it), and populate mqttTopics for the
+    // per-topic recorder branch + explicit multi-subscribe.
+    let topicList = []
+    if (Array.isArray(cfg.topics) && cfg.topics.length > 0) {
+      topicList = cfg.topics.filter(t => typeof t === 'string' && t.length > 0)
+    } else if (typeof cfg.topic === 'string' && cfg.topic) {
+      topicList = [cfg.topic]
+    }
+    // QA J.P7: no wildcard fallback. Editor validation now blocks
+    // publishing with zero topics; if we still see empty here (legacy
+    // app authored before the gate), leave the list empty and let
+    // startLiveStream refuse to subscribe with a clear error. Silent
+    // `sensors/#` subscribe was too surprising — recorder would capture
+    // every unrelated topic on the broker.
+    mqttTopics.value = topicList
+    mqttTopic.value = topicList[0] || ''
   }
   // Load Fast Mode preference (per-app localStorage key). If it was ON from a
   // previous session, fetch the inference-config now so the first live window
@@ -2043,9 +2061,50 @@ onMounted(async () => {
   document.addEventListener('fullscreenchange', updateFullscreenState)
 })
 
+// QA J follow-up: tab-close mid-recording used to silently discard the
+// buffered rows because finalizeRecorderSession only runs from Disconnect.
+// pagehide + sendBeacon is the last-ditch save: browser guarantees
+// delivery of a beacon POST even during page teardown. Skips the axios
+// stack (which can be torn down mid-flight); sendBeacon keeps a queue.
+function _sendRecorderBeacon() {
+  try {
+    if (!isRecorderMode.value) return
+    const buckets = perTopicRecorderBuckets.value
+    const topicNames = Object.keys(buckets)
+    const totalRows = topicNames.reduce((n, t) => n + (buckets[t].rows?.length || 0), 0)
+    if (totalRows === 0) return
+    const topics_data = {}
+    for (const t of topicNames) {
+      const b = buckets[t]
+      if (!b.columns) continue
+      topics_data[t] = { columns: b.columns, rows: b.rows }
+    }
+    if (Object.keys(topics_data).length === 0) return
+    const body = JSON.stringify({
+      session_id: recorderSessionId.value,
+      app_slug: slug.value || '',
+      started_at: recorderSessionStartedAt.value,
+      ended_at: new Date().toISOString(),
+      status: 'tab_closed',
+      topics: topicNames,
+      topics_data,
+    })
+    // sendBeacon uses a Blob so we set the content-type explicitly.
+    const blob = new Blob([body], { type: 'application/json' })
+    navigator.sendBeacon('/api/app-builder/recorder-sessions', blob)
+  } catch {
+    /* nothing to do on teardown — beacon is best-effort */
+  }
+}
+window.addEventListener('pagehide', _sendRecorderBeacon)
+
 onUnmounted(() => {
   window.removeEventListener('resize', onResize)
   document.removeEventListener('fullscreenchange', updateFullscreenState)
+  window.removeEventListener('pagehide', _sendRecorderBeacon)
+  // Route change or SPA navigation also loses the recording if we don't
+  // beacon here — mirror the pagehide behaviour.
+  _sendRecorderBeacon()
   // Clean up the Fast Mode worker if it's still running (page navigation)
   terminateFastModeWorker()
   // QA P7: release every cached ONNX InferenceSession so their backing
@@ -2424,6 +2483,10 @@ const liveChannels = computed(() => {
 
 const mqttBrokerUrl = ref('')
 const mqttTopic = ref('')
+// Phase J — multi-topic subscription list. Populated from cfg.topics (new)
+// or [cfg.topic] (legacy). Used by the multi-subscribe path AND the
+// Signal Recorder's per-topic buffering.
+const mqttTopics = ref([])
 const mqttConnected = ref(false)
 const mqttError = ref(null)
 const mqttMessageCount = ref(0)
@@ -3258,6 +3321,17 @@ let tickerInterval = null
 
 async function startLiveStream() {
   mqttError.value = null
+  // QA J.P7: refuse to connect with an empty topic list — otherwise
+  // mqtt.js would open a broker session that receives nothing (or worse,
+  // subscribe to a stale fallback). Editor validation gates this too but
+  // published apps with legacy zero-topic config still land here.
+  const configuredTopics = (Array.isArray(mqttTopics.value) && mqttTopics.value.length > 0)
+    ? mqttTopics.value.filter(t => typeof t === 'string' && t.length > 0)
+    : (mqttTopic.value ? [mqttTopic.value] : [])
+  if (configuredTopics.length === 0) {
+    mqttError.value = 'No topics configured. Edit the app in the App Builder to add at least one topic.'
+    return
+  }
   try {
     // Dynamic import — only load mqtt when needed
     if (!mqtt) {
@@ -3271,10 +3345,33 @@ async function startLiveStream() {
       reconnectPeriod: 3000,
     })
 
+    // QA J.B1: track whether this is the FIRST connect (user hit Connect)
+    // vs a mqtt.js auto-reconnect after a transient drop. Recorder buffers
+    // must survive auto-reconnects, otherwise a 500ms network hiccup on a
+    // 4-min recording silently wipes 24k rows and starts a new session_id.
+    let _hasInitialConnect = false
+
     mqttClient.on('connect', () => {
       mqttConnected.value = true
       mqttError.value = null
-      mqttClient.subscribe(mqttTopic.value, { qos: 0 })
+      // Phase J — subscribe to each configured topic explicitly (spec
+      // §J.2 forbids wildcard fan-out in v1). Machine Live Stream still
+      // uses the mqttTopic single-value + wildcard because its whole
+      // point is to fan in every sensor child; recorder + multi-topic
+      // Live Stream go through mqttTopics.
+      const subs = (Array.isArray(mqttTopics.value) && mqttTopics.value.length > 0)
+        ? mqttTopics.value
+        : [mqttTopic.value]
+      for (const t of subs) {
+        if (t) mqttClient.subscribe(t, { qos: 0 })
+      }
+      // Reset per-topic recorder session ONLY on the initial connect.
+      // Auto-reconnects preserve the accumulated buffers so a network
+      // blip doesn't silently discard the recording (QA J.B1).
+      if (isRecorderMode.value && !_hasInitialConnect) {
+        resetPerTopicRecorderBuffers()
+      }
+      _hasInitialConnect = true
       if (autoRecordPredictions.value && !isRecorderMode.value) {
         startPredictionRecording()
       }
@@ -3291,6 +3388,13 @@ async function startLiveStream() {
     })
 
     mqttClient.on('close', () => {
+      // Phase J — if the broker drops the connection while a recorder
+      // session is in progress, mark the next finalize as interrupted.
+      // Distinguishing user-initiated disconnect from broker-drop is
+      // hard from paho callbacks; flag on close, clear on stopLiveStream.
+      if (mqttConnected.value && isRecorderMode.value) {
+        mqttWasInterrupted = true
+      }
       mqttConnected.value = false
     })
 
@@ -3320,6 +3424,19 @@ async function startLiveStream() {
         }
         const sample = parseSensorPayload(raw)
         if (sample) {
+          // Phase J — always accumulate per-topic rows in recorder mode so
+          // the session-end POST has data for EVERY subscribed topic,
+          // regardless of what parseSensorPayload does with combined
+          // channel state. Uses a lightweight raw-payload parse so the
+          // server-side CSV matches ingest-router semantics.
+          if (isRecorderMode.value) {
+            try {
+              appendPerTopicRecorderRow(_topic, raw)
+            } catch (e) {
+              // Never crash the message handler on a recorder bug.
+              console.error('[recorder] appendPerTopicRecorderRow failed', e)
+            }
+          }
           // Preview buffer (recorder-mode only): always updates while connected,
           // independent of whether the user has pressed Record.
           if (isRecorderMode.value) {
@@ -3379,6 +3496,17 @@ function stopLiveStream() {
   if (isRecordingPredictions.value) {
     stopAndDownloadPredictionRecording()
   }
+  // Phase J — if we were recording, ship the accumulated per-topic buffers
+  // to the server before tearing down. `interrupted` gets set if the
+  // broker closed the connection without a user-initiated disconnect (see
+  // mqttClient.on('close')). Fire-and-forget; user-facing errors bubble
+  // through mqttError.
+  const wasInterrupted = mqttWasInterrupted
+  mqttWasInterrupted = false
+  if (isRecorderMode.value) {
+    finalizeRecorderSession(wasInterrupted ? 'interrupted' : 'complete')
+      .catch(e => console.error('[recorder] finalize failed', e))
+  }
   if (mqttClient) {
     mqttClient.end(true)
     mqttClient = null
@@ -3398,6 +3526,150 @@ function stopLiveStream() {
   sensorBufferProgress.value = 0
   // Free the Fast Mode worker when the stream stops (spawn again on reconnect)
   terminateFastModeWorker()
+}
+
+// ── Phase J — per-topic recorder buffers + session finalize ─────
+// The Signal Recorder now writes one CSV per subscribed topic under
+// data/_recordings/<session_id>/ + a session.json manifest. Buffering is
+// entirely client-side; the server-side write happens ONCE on Disconnect
+// via POST /api/app-builder/recorder-sessions.
+//
+// Per-topic bucket shape:
+//   { columns: string[], rows: [[ts, v0, v1, ...], ...] }
+// columns is inferred from the FIRST payload seen on the topic (single
+// `value` for scalars, xyz-etc. for multi-axis).
+const perTopicRecorderBuckets = ref({})   // {topic: {columns, rows}}
+const recorderSessionId = ref('')
+const recorderSessionStartedAt = ref('')
+let mqttWasInterrupted = false            // flipped by unexpected close
+
+function _genSessionId() {
+  const rand = Math.random().toString(36).slice(2, 8)
+  return `${Date.now()}_${rand}`
+}
+
+function resetPerTopicRecorderBuffers() {
+  perTopicRecorderBuckets.value = {}
+  recorderSessionId.value = _genSessionId()
+  recorderSessionStartedAt.value = new Date().toISOString()
+  const topics = mqttTopics.value.length ? mqttTopics.value : [mqttTopic.value]
+  for (const t of topics) {
+    if (!t) continue
+    perTopicRecorderBuckets.value[t] = { columns: null, rows: [] }
+  }
+}
+
+function _parsePayloadForRecorder(raw) {
+  // Match mqtt_ingest_router semantics:
+  //   {"value": x} | {"v": x} | {"val": x} → ['value']
+  //   {"x":..., "y":..., "z":...}          → all numeric keys, sorted
+  //   bare number                          → ['value']
+  //   dict with only 1 numeric key         → [that key]
+  if (raw === null || raw === undefined) return null
+  if (typeof raw === 'number' && Number.isFinite(raw)) {
+    return { columns: ['value'], values: [raw] }
+  }
+  if (typeof raw === 'object' && !Array.isArray(raw)) {
+    for (const k of ['value', 'v', 'val']) {
+      if (k in raw) {
+        const v = raw[k]
+        if (typeof v === 'number' && Number.isFinite(v)) {
+          return { columns: ['value'], values: [v] }
+        }
+      }
+    }
+    // Multi-axis / arbitrary object: collect numeric leaves top-level only.
+    // Preserve insertion order — training loaders rely on it.
+    const cols = []
+    const vals = []
+    for (const [k, v] of Object.entries(raw)) {
+      if (typeof v === 'number' && Number.isFinite(v)) {
+        cols.push(k)
+        vals.push(v)
+      }
+    }
+    if (cols.length > 0) return { columns: cols, values: vals }
+  }
+  return null
+}
+
+function appendPerTopicRecorderRow(topic, raw) {
+  if (!topic) return
+  let bucket = perTopicRecorderBuckets.value[topic]
+  if (!bucket) {
+    bucket = { columns: null, rows: [] }
+    perTopicRecorderBuckets.value[topic] = bucket
+  }
+  const parsed = _parsePayloadForRecorder(raw)
+  if (!parsed) return
+  if (!bucket.columns) {
+    // Freeze the schema on first parseable message for this topic.
+    bucket.columns = parsed.columns.slice()
+  }
+  // Align values to the frozen column set. Missing columns become '' server-side.
+  const row = [new Date().toISOString()]
+  for (const col of bucket.columns) {
+    const idx = parsed.columns.indexOf(col)
+    row.push(idx >= 0 ? parsed.values[idx] : null)
+  }
+  bucket.rows.push(row)
+  // QA J.P3: match the server's per-topic row cap client-side and drop
+  // the OLDEST rows so a runaway session keeps the newest ~500k. Server
+  // used to truncate the tail (`rows[:500_000]`) which meant an 8-hour
+  // unattended recording ended up with the wrong 500k rows. Keeping
+  // newest is what the operator actually wants — recent state usually
+  // includes the interesting event (fault, spike, whatever).
+  const CAP = 500_000
+  if (bucket.rows.length > CAP) {
+    bucket.rows.splice(0, bucket.rows.length - CAP)
+  }
+}
+
+async function finalizeRecorderSession(status) {
+  // Only ship if we actually recorded something. Empty session = don't spam
+  // the disk with orphan session.json files.
+  const buckets = perTopicRecorderBuckets.value
+  const topicNames = Object.keys(buckets)
+  const totalRows = topicNames.reduce((n, t) => n + (buckets[t].rows?.length || 0), 0)
+  if (totalRows === 0) {
+    return
+  }
+  const topics_data = {}
+  for (const t of topicNames) {
+    const b = buckets[t]
+    if (!b.columns) continue  // never saw a parseable message on this topic
+    topics_data[t] = {
+      columns: b.columns,
+      rows: b.rows,
+    }
+  }
+  if (Object.keys(topics_data).length === 0) return
+  const body = {
+    session_id: recorderSessionId.value,
+    app_slug: slug.value || '',
+    started_at: recorderSessionStartedAt.value,
+    ended_at: new Date().toISOString(),
+    status: status || 'complete',
+    topics: topicNames,
+    topics_data,
+  }
+  let posted = false
+  try {
+    const resp = await api.post('/api/app-builder/recorder-sessions', body)
+    console.log('[recorder] session persisted', resp.data)
+    posted = true
+  } catch (e) {
+    // Surface as mqttError so the user sees "could not save server session"
+    // — but the client-side download flow still works.
+    const msg = e?.response?.data?.error || e?.message || 'save failed'
+    mqttError.value = `Recorder session save failed: ${msg}. Buffers preserved — try Disconnect again to retry.`
+  }
+  // QA J.P2: only wipe the client-side buffers when the server actually
+  // took delivery. On failure keep them so the user can retry (hit Connect
+  // → Disconnect again) instead of silently losing the recording.
+  if (posted) {
+    perTopicRecorderBuckets.value = {}
+  }
 }
 
 function startPredictionRecording() {

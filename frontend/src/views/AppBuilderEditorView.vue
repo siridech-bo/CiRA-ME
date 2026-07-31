@@ -409,19 +409,49 @@
               <!-- machine_id + topology fields are stored but hidden — set by the picker above -->
               <div v-else-if="selectedNode?.type === 'input.machine_live_stream' && (field.key === 'machine_id' || field.key === 'topology')" />
 
-              <!-- MQTT topic field with discover button -->
-              <div v-else-if="field.type === 'text' && field.key === 'topic' && selectedNode?.type === 'input.live_stream'" class="mb-2">
-                <div class="d-flex align-center gap-1">
-                  <v-text-field
-                    :model-value="getConfigVal(selectedNode, field)"
-                    @update:model-value="v => updateConfig(selectedNode.id, field.key, v)"
-                    variant="outlined"
-                    density="compact"
-                    hide-details
-                    class="config-input flex-grow-1"
-                  />
-                  <v-btn size="small" variant="tonal" color="info" :loading="discoveringTopics" @click="discoverTopics">
-                    <v-icon size="small">mdi-magnify</v-icon>
+              <!-- Phase J — MQTT multi-topic combobox with autocomplete -->
+              <!-- from asset tree + recent topics + "Load from machine" btn. -->
+              <div v-else-if="field.type === 'topic-combo' && selectedNode?.type === 'input.live_stream'" class="mb-2">
+                <v-combobox
+                  :model-value="getTopicsVal(selectedNode)"
+                  @update:model-value="v => setTopicsVal(selectedNode.id, v)"
+                  :items="topicSuggestions"
+                  :error-messages="invalidTopicChips.length ? [`Invalid topic pattern: ${invalidTopicChips.join(', ')}`] : []"
+                  chips
+                  closable-chips
+                  multiple
+                  hide-no-data
+                  hide-selected
+                  variant="outlined"
+                  density="compact"
+                  clearable
+                  placeholder="Type a topic path or pick one below"
+                  class="config-input"
+                >
+                  <template #chip="{ props: chipProps, item }">
+                    <v-chip
+                      v-bind="chipProps"
+                      :color="isValidTopic(item.value) ? undefined : 'error'"
+                      size="small"
+                      closable
+                    >{{ item.value }}</v-chip>
+                  </template>
+                </v-combobox>
+                <div class="topic-combo-hint" style="font-size: 10px; color: #8b949e; margin-top: 3px;">
+                  Add topics to record from — pick from your asset tree or type manually.
+                  <span v-if="recentTopics.length > 0">{{ recentTopics.length }} recent, {{ treeSensorTopics.length }} from tree.</span>
+                </div>
+                <div class="d-flex align-center gap-1 mt-2">
+                  <v-btn size="x-small" variant="tonal" color="info" @click="openMachinePickerForTopics">
+                    <v-icon start size="12">mdi-plus</v-icon>
+                    Load from machine…
+                  </v-btn>
+                  <v-btn size="x-small" variant="tonal" color="warning" @click="clearAllTopics(selectedNode.id)" :disabled="getTopicsVal(selectedNode).length === 0">
+                    <v-icon start size="12">mdi-close-circle-outline</v-icon>
+                    Clear all
+                  </v-btn>
+                  <v-btn size="x-small" variant="tonal" color="info" :loading="discoveringTopics" @click="discoverTopics" title="Discover MQTT topics (5s scan)">
+                    <v-icon size="12">mdi-magnify</v-icon>
                   </v-btn>
                 </div>
                 <div v-if="discoveredTopics.length > 0" class="mt-1 d-flex flex-wrap" style="gap: 3px;">
@@ -429,10 +459,21 @@
                     v-for="t in discoveredTopics"
                     :key="t"
                     class="discovered-topic-chip"
-                    :class="{ active: getConfigVal(selectedNode, field) === t }"
-                    @click="updateConfig(selectedNode.id, field.key, t)"
+                    :class="{ active: getTopicsVal(selectedNode).includes(t) }"
+                    @click="addTopicChip(selectedNode.id, t)"
                   >{{ t }}</button>
                 </div>
+                <!-- Non-recorder + multi-topic warning banner -->
+                <v-alert
+                  v-if="showMultiTopicInferenceWarning"
+                  type="warning"
+                  variant="tonal"
+                  density="compact"
+                  class="mt-2"
+                  style="font-size: 11px;"
+                >
+                  Inference apps expect one topic per Live Stream node. Downstream nodes will use the FIRST topic only. For multi-sensor inference, use the Machine Live Stream node instead.
+                </v-alert>
               </div>
 
               <!-- Live-stream channels field with "Detect from sample" helper -->
@@ -915,6 +956,14 @@
       </v-card>
     </v-dialog>
 
+    <!-- Phase J — machine picker for "Load from machine…" on Live Stream node -->
+    <MachineTreePickerDialog
+      v-model="topicsMachinePickerOpen"
+      :selected="[]"
+      title="Load a machine's sensor topics"
+      @confirm="onTopicsMachinePicked"
+    />
+
   </div>
 
 </template>
@@ -925,6 +974,7 @@ import { useRouter, useRoute } from 'vue-router'
 import api from '@/services/api'
 import { useNotificationStore } from '@/stores/notification'
 import { useAssetTreeStore } from '@/stores/assetTree'
+import MachineTreePickerDialog from '@/components/MachineTreePickerDialog.vue'
 
 const notificationStore = useNotificationStore()
 const assetTreeStore = useAssetTreeStore()
@@ -954,7 +1004,12 @@ const ALL_FEATURES = ['mean','std','rms','max','min','fft_peak','entropy','skew'
 
 const STATIC_CAPS = {
   'input.csv_upload':          { label: 'CSV Upload',      icon: 'mdi-file-delimited',       color: '#60a5fa', category: 'Input',     outputs: ['timeseries'], configSchema: [{ key: 'timestamp_col', label: 'Timestamp Column', type: 'text', default: 'timestamp' }, { key: 'value_cols', label: 'Value Columns', type: 'text', default: 'value' }] },
-  'input.live_stream':         { label: 'Live Stream (MQTT)', icon: 'mdi-access-point',       color: '#60a5fa', category: 'Input',     outputs: ['timeseries'], configSchema: [{ key: 'broker_url', label: 'MQTT Broker URL', type: 'text', default: 'ws://localhost:9001/mqtt' }, { key: 'topic', label: 'MQTT Topic', type: 'text', default: 'sensors/machine1/#' }, { key: 'channels', label: 'Channel Names (comma-separated)', type: 'text', default: '' }] },
+  // Phase J (2026-07-31) — LIVE STREAM (MQTT) now takes MULTIPLE topics
+  // via a v-combobox instead of a single-topic text field. Backward compat:
+  // apps saved with `config.topic` are auto-migrated to `topics: [topic]`
+  // on load (see loadApp + PublishedAppView boot). New default is empty
+  // list so the recorder template can pre-populate a sensible default.
+  'input.live_stream':         { label: 'Live Stream (MQTT)', icon: 'mdi-access-point',       color: '#60a5fa', category: 'Input',     outputs: ['timeseries'], configSchema: [{ key: 'broker_url', label: 'MQTT Broker URL', type: 'text', default: 'ws://localhost:9001/mqtt' }, { key: 'topics', label: 'MQTT Topic(s)', type: 'topic-combo', default: [] }, { key: 'channels', label: 'Channel Names (comma-separated)', type: 'text', default: '' }] },
   // Phase H — Machine Live Stream: bind to one asset-tree machine and
   // auto-subscribe to ALL its sensor topics. Config schema is minimal
   // because most fields are rendered by the custom panel below (machine
@@ -1125,6 +1180,24 @@ const selectedCap = computed(() =>
 const validationErrors = computed(() => {
   const errors = []
   nodes.value.forEach((node, i) => {
+    // QA J.P4: MQTT live-stream nodes must have at least one valid topic.
+    // Empty topics + wildcard-fallback in the runtime used to silently
+    // "record everything under sensors/*" — dangerous default.
+    if (node.type === 'input.mqtt.live_stream') {
+      const topics = getTopicsVal(node)
+      if (topics.length === 0) {
+        errors.push({ nodeId: node.id, msg: 'MQTT node needs at least one topic' })
+      } else {
+        const bad = topics.filter(t => !isValidTopic(t))
+        if (bad.length > 0) {
+          errors.push({
+            nodeId: node.id,
+            msg: `Invalid topic pattern${bad.length > 1 ? 's' : ''}: ${bad.join(', ')}`,
+          })
+        }
+      }
+      return
+    }
     if (!node.type.startsWith('model.endpoint.')) return
     const cap = capabilities.value[node.type]
     if (!cap) return
@@ -1310,6 +1383,213 @@ function updateConfig(nodeId, key, val) {
   // When mode changes on multi_model_compare, clear endpoint selection (different mode = different models)
   if (node.type === 'output.multi_model_compare' && key === 'mode') {
     node.config.endpoint_ids = []
+  }
+}
+
+// ── Phase J — multi-topic combobox helpers ───────────────────────
+// Chip validation grammar per spec §J.5 edge cases: MQTT topic segments
+// allow alphanumeric + underscore + dash + slash + wildcards.
+// QA J follow-up: explicit topic list only in v1 — wildcards (`+`, `#`)
+// intentionally excluded. Spec's Not-doing list was silent as long as the
+// grammar allowed them; a user typing `sensors/+/pressure` would silently
+// subscribe as a wildcard which the recorder wasn't tested against.
+// Character-class allows alphanumerics, underscore, dash, and slash.
+const TOPIC_GRAMMAR = /^[A-Za-z0-9_\-\/]+$/
+
+function isValidTopic(t) {
+  return typeof t === 'string' && t.length > 0 && TOPIC_GRAMMAR.test(t)
+}
+
+function getTopicsVal(node) {
+  if (!node) return []
+  const cfg = node.config || {}
+  if (Array.isArray(cfg.topics)) return cfg.topics
+  if (typeof cfg.topic === 'string' && cfg.topic) return [cfg.topic]
+  return []
+}
+
+function setTopicsVal(nodeId, val) {
+  const node = nodes.value.find(n => n.id === nodeId)
+  if (!node) return
+  // Combobox returns an array of strings for chip mode. Silent dedupe.
+  const arr = Array.isArray(val) ? val : (val ? [val] : [])
+  const seen = new Set()
+  const cleaned = []
+  for (const t of arr) {
+    const s = String(t || '').trim()
+    if (!s || seen.has(s)) continue
+    seen.add(s)
+    cleaned.push(s)
+  }
+  node.config.topics = cleaned
+  // Drop legacy single-topic key so the two shapes can't diverge on save.
+  if ('topic' in node.config) delete node.config.topic
+}
+
+function addTopicChip(nodeId, topic) {
+  const node = nodes.value.find(n => n.id === nodeId)
+  if (!node) return
+  const current = getTopicsVal(node)
+  if (current.includes(topic)) return
+  setTopicsVal(nodeId, [...current, topic])
+}
+
+function clearAllTopics(nodeId) {
+  const node = nodes.value.find(n => n.id === nodeId)
+  if (!node) return
+  const current = getTopicsVal(node)
+  if (current.length === 0) return
+  if (window.confirm(`Clear all ${current.length} topic${current.length === 1 ? '' : 's'}?`)) {
+    setTopicsVal(nodeId, [])
+  }
+}
+
+const invalidTopicChips = computed(() => {
+  const node = selectedNode.value
+  if (!node || node.type !== 'input.live_stream') return []
+  return getTopicsVal(node).filter(t => !isValidTopic(t))
+})
+
+// Non-recorder + multi-topic warning trigger
+const showMultiTopicInferenceWarning = computed(() => {
+  const node = selectedNode.value
+  if (!node || node.type !== 'input.live_stream') return false
+  const topics = getTopicsVal(node)
+  if (topics.length <= 1) return false
+  return nodes.value.some(n => {
+    const t = n.type || ''
+    return t.startsWith('model.endpoint.') || t === 'transform.feature_extract'
+  })
+})
+
+// ── Recent-topics fetch (from /api/asset-tree/recent-topics) ────
+const recentTopics = ref([])
+let recentTopicsTimer = null
+async function fetchRecentTopics() {
+  try {
+    const resp = await api.get('/api/asset-tree/recent-topics', {
+      params: { window_s: 900, limit: 100 },
+    })
+    recentTopics.value = resp?.data?.topics || []
+  } catch {
+    // Silent-fail per spec — combobox still shows tree suggestions
+    recentTopics.value = []
+  }
+}
+
+function startRecentTopicsPolling() {
+  fetchRecentTopics()
+  if (recentTopicsTimer) clearInterval(recentTopicsTimer)
+  recentTopicsTimer = setInterval(fetchRecentTopics, 30_000)
+}
+
+function stopRecentTopicsPolling() {
+  if (recentTopicsTimer) {
+    clearInterval(recentTopicsTimer)
+    recentTopicsTimer = null
+  }
+}
+
+// Kick polling on/off based on whether a live_stream node is selected.
+watch(() => selectedNode.value?.type, (t) => {
+  if (t === 'input.live_stream') startRecentTopicsPolling()
+  else stopRecentTopicsPolling()
+})
+
+// Walk the asset tree for active sensor-level topic_paths.
+const treeSensorTopics = computed(() => {
+  const out = []
+  const sensorLevel = (assetTreeStore.machineLevel || 2) + 1
+  const walk = (list) => {
+    if (!Array.isArray(list)) return
+    for (const n of list) {
+      if (n && n.status === 'active' && n.level === sensorLevel && n.topic_path) {
+        out.push(n.topic_path)
+      }
+      if (n?.children) walk(n.children)
+    }
+  }
+  walk(assetTreeStore.tree || [])
+  return out
+})
+
+// Merge tree + recent, ranked by recency (recent first, then alphabetical).
+const topicSuggestions = computed(() => {
+  const merged = new Map()
+  for (const t of treeSensorTopics.value) {
+    merged.set(t, { topic: t, secondsAgo: 999_999 })
+  }
+  for (const r of recentTopics.value || []) {
+    const t = r.topic
+    if (!t) continue
+    merged.set(t, { topic: t, secondsAgo: r.seconds_ago ?? 0 })
+  }
+  return Array.from(merged.values())
+    .sort((a, b) => (a.secondsAgo - b.secondsAgo) || a.topic.localeCompare(b.topic))
+    .map(x => x.topic)
+})
+
+// ── Load-from-machine dialog wiring ─────────────────────────────
+const topicsMachinePickerOpen = ref(false)
+const topicsMachinePickerTargetNodeId = ref(null)
+
+function openMachinePickerForTopics() {
+  if (!selectedNode.value) return
+  topicsMachinePickerTargetNodeId.value = selectedNode.value.id
+  topicsMachinePickerOpen.value = true
+}
+
+function onTopicsMachinePicked(ids) {
+  const nodeId = topicsMachinePickerTargetNodeId.value
+  topicsMachinePickerOpen.value = false
+  if (!nodeId || !Array.isArray(ids) || ids.length === 0) return
+  // Walk the tree, collect active sensor children of any of the picked machines.
+  const machineIds = new Set(ids)
+  const collected = []
+  const walkForSensors = (list, insideMachine) => {
+    if (!Array.isArray(list)) return
+    for (const n of list) {
+      if (!n) continue
+      const nowInside = insideMachine || machineIds.has(n.id)
+      if (nowInside && n.status === 'active'
+          && n.level === (assetTreeStore.machineLevel || 2) + 1
+          && n.topic_path) {
+        collected.push(n.topic_path)
+      }
+      if (n.children) walkForSensors(n.children, nowInside)
+    }
+  }
+  walkForSensors(assetTreeStore.tree || [], false)
+  if (collected.length === 0) return
+  const node = nodes.value.find(n => n.id === nodeId)
+  if (!node) return
+  const existing = new Set(getTopicsVal(node))
+  const merged = [...getTopicsVal(node)]
+  for (const t of collected) {
+    if (!existing.has(t)) {
+      existing.add(t)
+      merged.push(t)
+    }
+  }
+  setTopicsVal(nodeId, merged)
+}
+
+// ── Backward-compat migration ───────────────────────────────────
+// Called after loadApp. Rewrites every input.live_stream node's
+// config to the new `topics: string[]` shape. Silent — the spec
+// requires zero user intervention on legacy apps.
+function migrateLegacyTopics() {
+  for (const n of nodes.value) {
+    if (n.type !== 'input.live_stream') continue
+    const cfg = n.config || (n.config = {})
+    if (!Array.isArray(cfg.topics)) {
+      if (typeof cfg.topic === 'string' && cfg.topic) {
+        cfg.topics = [cfg.topic]
+      } else {
+        cfg.topics = []
+      }
+    }
+    if ('topic' in cfg) delete cfg.topic
   }
 }
 
@@ -1643,6 +1923,9 @@ async function loadApp() {
     const data = resp.data
     appName.value = data.name || 'My App'
     nodes.value   = data.nodes || []
+    // Phase J — normalize legacy single-topic config into multi-topic shape.
+    // Silent, per spec: user shouldn't see a migration prompt.
+    migrateLegacyTopics()
     // Phase I Q4 — hydrate the toggle from the persisted app row FIRST so
     // it survives being cleared from localStorage. Then the localStorage
     // read below wins if it exists (edit-time preference).
@@ -1726,6 +2009,14 @@ function buildEdges() {
 onMounted(async () => {
   await loadMelabEndpoints()
   await loadApp()
+  // Phase J — make sure the asset tree is available for topic suggestions
+  // and the "Load from machine…" dialog. Silent-fail: an empty tree just
+  // means fewer autocomplete suggestions.
+  try {
+    if (!assetTreeStore.treeLoaded && !assetTreeStore.loadingTree) {
+      await assetTreeStore.fetchTree()
+    }
+  } catch { /* ignore */ }
 })
 </script>
 
