@@ -565,17 +565,32 @@
               </div>
 
               <div class="preview-cards">
-                <div v-for="ch in liveChannels" :key="'pv-' + ch" class="preview-card">
-                  <div class="preview-card-label">{{ ch }}</div>
-                  <div class="preview-card-value">{{ fmtPreview(previewStats[ch]?.latest) }}</div>
-                  <div class="preview-card-stats">
-                    <span>Min: {{ fmtPreview(previewStats[ch]?.min) }}</span>
-                    <span class="preview-card-stats-sep">·</span>
-                    <span>Max: {{ fmtPreview(previewStats[ch]?.max) }}</span>
-                    <span class="preview-card-stats-sep">·</span>
-                    <span>Mean: {{ fmtPreview(previewStats[ch]?.mean) }}</span>
+                <template v-if="isMultiTopicRecorder">
+                  <div v-for="t in mqttTopics" :key="'pvt-' + t" class="preview-card">
+                    <div class="preview-card-label" :title="t">{{ _topicShortLabel(t) }}</div>
+                    <div class="preview-card-value">{{ fmtPreview(previewStatsByTopic[t]?.latest) }}</div>
+                    <div class="preview-card-stats">
+                      <span>Min: {{ fmtPreview(previewStatsByTopic[t]?.min) }}</span>
+                      <span class="preview-card-stats-sep">·</span>
+                      <span>Max: {{ fmtPreview(previewStatsByTopic[t]?.max) }}</span>
+                      <span class="preview-card-stats-sep">·</span>
+                      <span>Mean: {{ fmtPreview(previewStatsByTopic[t]?.mean) }}</span>
+                    </div>
                   </div>
-                </div>
+                </template>
+                <template v-else>
+                  <div v-for="ch in liveChannels" :key="'pv-' + ch" class="preview-card">
+                    <div class="preview-card-label">{{ ch }}</div>
+                    <div class="preview-card-value">{{ fmtPreview(previewStats[ch]?.latest) }}</div>
+                    <div class="preview-card-stats">
+                      <span>Min: {{ fmtPreview(previewStats[ch]?.min) }}</span>
+                      <span class="preview-card-stats-sep">·</span>
+                      <span>Max: {{ fmtPreview(previewStats[ch]?.max) }}</span>
+                      <span class="preview-card-stats-sep">·</span>
+                      <span>Mean: {{ fmtPreview(previewStats[ch]?.mean) }}</span>
+                    </div>
+                  </div>
+                </template>
               </div>
 
               <div v-if="previewBuffer.length > 1" class="preview-chart dash-preview-chart">
@@ -1141,19 +1156,34 @@
               />
             </div>
 
-            <!-- Per-channel numeric readout -->
+            <!-- Per-topic or per-channel numeric readout -->
             <div class="preview-cards">
-              <div v-for="ch in liveChannels" :key="'pv-' + ch" class="preview-card">
-                <div class="preview-card-label">{{ ch }}</div>
-                <div class="preview-card-value">{{ fmtPreview(previewStats[ch]?.latest) }}</div>
-                <div class="preview-card-stats">
-                  <span>Min: {{ fmtPreview(previewStats[ch]?.min) }}</span>
-                  <span class="preview-card-stats-sep">·</span>
-                  <span>Max: {{ fmtPreview(previewStats[ch]?.max) }}</span>
-                  <span class="preview-card-stats-sep">·</span>
-                  <span>Mean: {{ fmtPreview(previewStats[ch]?.mean) }}</span>
+              <template v-if="isMultiTopicRecorder">
+                <div v-for="t in mqttTopics" :key="'pvt-' + t" class="preview-card">
+                  <div class="preview-card-label" :title="t">{{ _topicShortLabel(t) }}</div>
+                  <div class="preview-card-value">{{ fmtPreview(previewStatsByTopic[t]?.latest) }}</div>
+                  <div class="preview-card-stats">
+                    <span>Min: {{ fmtPreview(previewStatsByTopic[t]?.min) }}</span>
+                    <span class="preview-card-stats-sep">·</span>
+                    <span>Max: {{ fmtPreview(previewStatsByTopic[t]?.max) }}</span>
+                    <span class="preview-card-stats-sep">·</span>
+                    <span>Mean: {{ fmtPreview(previewStatsByTopic[t]?.mean) }}</span>
+                  </div>
                 </div>
-              </div>
+              </template>
+              <template v-else>
+                <div v-for="ch in liveChannels" :key="'pv-' + ch" class="preview-card">
+                  <div class="preview-card-label">{{ ch }}</div>
+                  <div class="preview-card-value">{{ fmtPreview(previewStats[ch]?.latest) }}</div>
+                  <div class="preview-card-stats">
+                    <span>Min: {{ fmtPreview(previewStats[ch]?.min) }}</span>
+                    <span class="preview-card-stats-sep">·</span>
+                    <span>Max: {{ fmtPreview(previewStats[ch]?.max) }}</span>
+                    <span class="preview-card-stats-sep">·</span>
+                    <span>Mean: {{ fmtPreview(previewStats[ch]?.mean) }}</span>
+                  </div>
+                </div>
+              </template>
             </div>
 
             <!-- Live oscilloscope chart -->
@@ -3177,12 +3207,105 @@ const previewStats = computed(() => {
   return out
 })
 
+// Multi-topic recorder stats (Phase J follow-up): one entry per subscribed
+// topic, keyed by full topic path. Each entry has {latest, min, max, mean}
+// derived from the first numeric field of the sample. Falls back to empty
+// when the topic hasn't received any messages yet.
+const previewStatsByTopic = computed(() => {
+  void previewTicker.value
+  const buf = previewBuffer.value
+  const out = {}
+  for (const topic of (mqttTopics.value || [])) {
+    let latest = null
+    let min = Infinity
+    let max = -Infinity
+    let sum = 0
+    let count = 0
+    for (const s of buf) {
+      if (s._topic !== topic) continue
+      for (const [k, v] of Object.entries(s)) {
+        if (k === 'ts' || k === '_topic') continue
+        if (typeof v === 'number' && Number.isFinite(v)) {
+          latest = v
+          if (v < min) min = v
+          if (v > max) max = v
+          sum += v
+          count++
+          break
+        }
+      }
+    }
+    out[topic] = {
+      latest,
+      min: count > 0 ? min : null,
+      max: count > 0 ? max : null,
+      mean: count > 0 ? sum / count : null,
+      count,
+    }
+  }
+  return out
+})
+
+// Short human label from a full MQTT topic path — used for chart legends
+// so the user isn't confronted with 6 identical prefixes eating the
+// legend space. Falls back to the full topic if there's no `/`.
+function _topicShortLabel(topic) {
+  if (!topic || typeof topic !== 'string') return String(topic || '')
+  const idx = topic.lastIndexOf('/')
+  return idx >= 0 && idx < topic.length - 1 ? topic.slice(idx + 1) : topic
+}
+
+// True when the recorder is subscribed to > 1 topic — flips the preview
+// UI from per-channel cards to per-topic cards + splits the chart series.
+const isMultiTopicRecorder = computed(() => (
+  isRecorderMode.value
+  && Array.isArray(mqttTopics.value)
+  && mqttTopics.value.length > 1
+))
+
 const previewChartData = computed(() => {
   void previewTicker.value
   const buf = previewBuffer.value
-  const channels = liveChannels.value || []
   const now = Date.now()
   const labels = buf.map(s => ((s.ts - now) / 1000).toFixed(1))
+
+  // Phase J follow-up: when the recorder is subscribed to >1 topic,
+  // split the preview by topic (one series per topic) instead of by
+  // payload key. Before this every topic pushed `{value: N}` into the
+  // same key → one collapsed line with wildly-mixed scales (vibration
+  // 0.5 vs spindle_rpm 5000). Split-by-topic gives one legible trace
+  // per sensor with a clear legend label (topic's last segment).
+  const isMultiTopic = Array.isArray(mqttTopics.value) && mqttTopics.value.length > 1
+  if (isMultiTopic && isRecorderMode.value) {
+    const datasets = mqttTopics.value.map((topic, idx) => {
+      const label = _topicShortLabel(topic)
+      return {
+        label,
+        // Pick the first numeric value in the sample for each topic
+        // (works for `{value: N}` scalar payloads AND for multi-axis
+        // where we plot the first channel as a representative trace —
+        // multi-axis breakdowns live in the future per-topic view).
+        data: buf.map(s => {
+          if (s._topic !== topic) return null
+          for (const [k, v] of Object.entries(s)) {
+            if (k === 'ts' || k === '_topic') continue
+            if (typeof v === 'number' && Number.isFinite(v)) return v
+          }
+          return null
+        }),
+        borderColor: PREVIEW_COLORS[idx % PREVIEW_COLORS.length],
+        backgroundColor: PREVIEW_COLORS[idx % PREVIEW_COLORS.length] + '22',
+        borderWidth: 1.5,
+        pointRadius: 0,
+        tension: 0.15,
+        spanGaps: true,
+      }
+    })
+    return { labels, datasets }
+  }
+
+  // Single-topic path (unchanged): split by payload channel.
+  const channels = liveChannels.value || []
   const datasets = channels.map((ch, idx) => ({
     label: ch,
     data: buf.map(s => (typeof s[ch] === 'number' ? s[ch] : null)),
@@ -3483,9 +3606,11 @@ async function startLiveStream() {
             }
           }
           // Preview buffer (recorder-mode only): always updates while connected,
-          // independent of whether the user has pressed Record.
+          // independent of whether the user has pressed Record. Tag with
+          // `_topic` so the preview chart can split-by-topic when the
+          // recorder is subscribed to multiple topics (Phase J follow-up).
           if (isRecorderMode.value) {
-            previewBuffer.value.push({ ts: Date.now(), ...sample })
+            previewBuffer.value.push({ ts: Date.now(), _topic, ...sample })
             prunePreviewBuffer()
             previewTicker.value++
           }
