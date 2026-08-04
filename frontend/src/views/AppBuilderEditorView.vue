@@ -434,7 +434,8 @@
                       :color="isValidTopic(item.value) ? undefined : 'error'"
                       size="small"
                       closable
-                    >{{ item.value }}</v-chip>
+                      :title="item.value"
+                    >{{ topicShortLabel(item.value) }}</v-chip>
                   </template>
                 </v-combobox>
                 <div class="topic-combo-hint" style="font-size: 10px; color: #8b949e; margin-top: 3px;">
@@ -491,11 +492,13 @@
                   size="x-small"
                   variant="tonal"
                   color="info"
-                  class="mt-2"
+                  class="mt-2 sidebar-wrap-btn"
+                  block
                   @click="openDetectChannels"
+                  title="Detect channels from a sample MQTT message"
                 >
                   <v-icon start size="12">mdi-auto-fix</v-icon>
-                  Detect channels from sample MQTT message
+                  Detect from sample…
                 </v-btn>
               </div>
 
@@ -1398,6 +1401,15 @@ const TOPIC_GRAMMAR = /^[A-Za-z0-9_\-\/]+$/
 
 function isValidTopic(t) {
   return typeof t === 'string' && t.length > 0 && TOPIC_GRAMMAR.test(t)
+}
+
+// Sidebar chip label — last path segment only, so 6 topics like
+// factory/plant_A/machine_1/vibration_1 don't render as 6 identical
+// truncated "factory/plant_A" prefixes. Full path shown on hover.
+function topicShortLabel(topic) {
+  if (!topic || typeof topic !== 'string') return String(topic || '')
+  const i = topic.lastIndexOf('/')
+  return i >= 0 && i < topic.length - 1 ? topic.slice(i + 1) : topic
 }
 
 function getTopicsVal(node) {
@@ -2426,6 +2438,19 @@ onMounted(async () => {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+/* Vuetify buttons refuse to wrap by default; a long label inside the
+   280px sidebar gets clipped as "DETECT CHANNELS FROM SAMPLE MQTT MESSAG…".
+   Force wrap + auto height. */
+.sidebar-wrap-btn :deep(.v-btn__content) {
+  white-space: normal;
+  line-height: 1.15;
+  padding: 4px 0;
+}
+.sidebar-wrap-btn {
+  height: auto !important;
+  min-height: 28px;
 }
 
 .config-panel-header {
