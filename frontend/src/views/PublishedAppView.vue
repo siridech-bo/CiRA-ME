@@ -3375,38 +3375,65 @@ const previewChartData = computed(() => {
   const now = Date.now()
   const labels = buf.map(s => ((s.ts - now) / 1000).toFixed(1))
 
-  // Phase J follow-up: when the recorder is subscribed to >1 topic,
-  // split the preview by topic (one series per topic) instead of by
-  // payload key. Before this every topic pushed `{value: N}` into the
-  // same key → one collapsed line with wildly-mixed scales (vibration
-  // 0.5 vs spindle_rpm 5000). Split-by-topic gives one legible trace
-  // per sensor with a clear legend label (topic's last segment).
+  // Phase K #1a: when the recorder is subscribed to >1 topic, emit ONE
+  // dataset per (topic × payload-channel) so a 3-topic accelerometer setup
+  // renders 9 lines (topicA.x/y/z, topicB.x/y/z, topicC.x/y/z) instead of
+  // collapsing each topic to its first numeric field. Earlier we picked
+  // only the "first numeric value" per sample → x/y/z accelerometers
+  // showed exactly one line per topic (only x, silently dropping y+z).
   const isMultiTopic = Array.isArray(mqttTopics.value) && mqttTopics.value.length > 1
   if (isMultiTopic && isRecorderMode.value) {
-    const datasets = mqttTopics.value.map((topic, idx) => {
-      const label = _topicShortLabel(topic)
-      return {
-        label,
-        // Pick the first numeric value in the sample for each topic
-        // (works for `{value: N}` scalar payloads AND for multi-axis
-        // where we plot the first channel as a representative trace —
-        // multi-axis breakdowns live in the future per-topic view).
-        data: buf.map(s => {
-          if (s._topic !== topic) return null
-          for (const [k, v] of Object.entries(s)) {
-            if (k === 'ts' || k === '_topic') continue
-            if (typeof v === 'number' && Number.isFinite(v)) return v
-          }
-          return null
-        }),
-        borderColor: PREVIEW_COLORS[idx % PREVIEW_COLORS.length],
-        backgroundColor: PREVIEW_COLORS[idx % PREVIEW_COLORS.length] + '22',
-        borderWidth: 1.5,
-        pointRadius: 0,
-        tension: 0.15,
-        spanGaps: true,
+    // Discover channel names per topic from the buffered samples.
+    const channelsByTopic = new Map()
+    for (const s of buf) {
+      const t = s._topic
+      if (!t) continue
+      let set = channelsByTopic.get(t)
+      if (!set) { set = new Set(); channelsByTopic.set(t, set) }
+      for (const [k, v] of Object.entries(s)) {
+        if (k === 'ts' || k === '_topic') continue
+        if (typeof v === 'number' && Number.isFinite(v)) set.add(k)
       }
-    })
+    }
+    const datasets = []
+    let colorIdx = 0
+    for (const topic of mqttTopics.value) {
+      const shortTopic = _topicShortLabel(topic)
+      const chans = Array.from(channelsByTopic.get(topic) || [])
+      // Sensor hasn't published yet → emit an empty placeholder trace so
+      // the legend still lists the topic name.
+      if (chans.length === 0) {
+        datasets.push({
+          label: shortTopic,
+          data: buf.map(() => null),
+          borderColor: PREVIEW_COLORS[colorIdx % PREVIEW_COLORS.length],
+          backgroundColor: PREVIEW_COLORS[colorIdx % PREVIEW_COLORS.length] + '22',
+          borderWidth: 1.5,
+          pointRadius: 0,
+          tension: 0.15,
+          spanGaps: true,
+        })
+        colorIdx++
+        continue
+      }
+      for (const ch of chans) {
+        const label = chans.length === 1 ? shortTopic : `${shortTopic}.${ch}`
+        datasets.push({
+          label,
+          data: buf.map(s => (
+            s._topic === topic && typeof s[ch] === 'number'
+              ? s[ch] : null
+          )),
+          borderColor: PREVIEW_COLORS[colorIdx % PREVIEW_COLORS.length],
+          backgroundColor: PREVIEW_COLORS[colorIdx % PREVIEW_COLORS.length] + '22',
+          borderWidth: 1.5,
+          pointRadius: 0,
+          tension: 0.15,
+          spanGaps: true,
+        })
+        colorIdx++
+      }
+    }
     return { labels, datasets }
   }
 

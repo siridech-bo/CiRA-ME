@@ -124,6 +124,19 @@ def validate_path(path: str, user: dict, datasets_root: str, shared_folder: str,
             # to the strict deny below rather than crash.
             pass
 
+        # Recorder-sessions read bypass (Phase K #1b, 2026-08-04): any
+        # authed user can READ under <datasets_root>/_recordings so
+        # signal-recorder sessions saved from the published app can be
+        # loaded back into the Data Source pipeline. Writes still go
+        # through the /api/app-builder/recorder-sessions endpoint (has
+        # its own login_required + shape validation) — NOT via
+        # data-source /upload / /mkdir / etc., which stay strict.
+        recordings_root = os.path.normpath(
+            os.path.join(datasets_root, '_recordings')
+        )
+        if _is_path_within(path, recordings_root):
+            return True
+
     return False
 
 
@@ -191,5 +204,18 @@ def get_user_folders(user: dict, datasets_root: str, shared_folder: str) -> list
             # Tree unavailable (boot / test setup) — silently omit; user
             # still gets shared + private.
             pass
+
+        # Recorder-sessions root (Phase K #1b, 2026-08-04) — read-only
+        # for annotators. Anyone who saved a signal-recorder session in
+        # a published app can find and load it back through the Data
+        # Source browser. Admins already see this via the datasets_root
+        # walk above.
+        recordings_path = os.path.join(datasets_root, '_recordings')
+        if os.path.isdir(recordings_path):
+            folders.append({
+                'name': '_recordings',
+                'path': recordings_path,
+                'type': 'recordings',
+            })
 
     return folders
