@@ -442,17 +442,25 @@
                   Add topics to record from — pick from your asset tree or type manually.
                   <span v-if="recentTopics.length > 0">{{ recentTopics.length }} recent, {{ treeSensorTopics.length }} from tree.</span>
                 </div>
-                <div class="d-flex align-center gap-1 mt-2">
+                <div class="d-flex align-center flex-wrap gap-1 mt-2">
                   <v-btn size="x-small" variant="tonal" color="info" @click="openMachinePickerForTopics">
                     <v-icon start size="12">mdi-plus</v-icon>
                     Load from machine…
                   </v-btn>
+                  <v-btn
+                    size="x-small"
+                    variant="tonal"
+                    color="info"
+                    :loading="discoveringTopics"
+                    @click="discoverTopics"
+                    title="Scan the broker for 5 s and list every topic seen — the fastest way to pick up sensors already publishing."
+                  >
+                    <v-icon start size="12">mdi-magnify</v-icon>
+                    Discover
+                  </v-btn>
                   <v-btn size="x-small" variant="tonal" color="warning" @click="clearAllTopics(selectedNode.id)" :disabled="getTopicsVal(selectedNode).length === 0">
                     <v-icon start size="12">mdi-close-circle-outline</v-icon>
                     Clear all
-                  </v-btn>
-                  <v-btn size="x-small" variant="tonal" color="info" :loading="discoveringTopics" @click="discoverTopics" title="Discover MQTT topics (5s scan)">
-                    <v-icon size="12">mdi-magnify</v-icon>
                   </v-btn>
                 </div>
                 <div v-if="discoveredTopics.length > 0" class="mt-1 d-flex flex-wrap" style="gap: 3px;">
