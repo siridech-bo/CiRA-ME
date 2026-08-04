@@ -289,16 +289,19 @@ function _clientInferenceInfo(m: any): any | null {
 function onnxChipLabel(m: any): string {
   const ci = _clientInferenceInfo(m)
   if (!ci) return 'not exported'
+  if (ci.status === 'pending') return 'exporting…'
   return ci.supported ? 'ready' : 'unsupported'
 }
 function onnxChipColor(m: any): string | undefined {
   const ci = _clientInferenceInfo(m)
   if (!ci) return undefined  // grey
+  if (ci.status === 'pending') return 'info'
   return ci.supported ? 'success' : 'warning'
 }
 function onnxChipIcon(m: any): string {
   const ci = _clientInferenceInfo(m)
   if (!ci) return 'mdi-help-circle-outline'
+  if (ci.status === 'pending') return 'mdi-progress-clock'
   return ci.supported ? 'mdi-flash' : 'mdi-alert-circle-outline'
 }
 function onnxTooltip(m: any): string {
@@ -308,6 +311,11 @@ function onnxTooltip(m: any): string {
            'client inference was added (Phase I, 2026-07-25). Retrain to ' +
            'get an ONNX sibling and enable client-side inference in the ' +
            'App Builder.'
+  }
+  if (ci.status === 'pending') {
+    return 'ONNX export in progress — runs in the background so save returns ' +
+           'immediately (Phase K, 2026-08-04). Refresh in ~30 s to see the ' +
+           'final status. Server inference works meanwhile.'
   }
   if (ci.supported) {
     const shape = ci.feature_shape ? ` · features=${ci.feature_shape}` : ''

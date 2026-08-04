@@ -4,9 +4,11 @@ Handles Anomaly Detection (PyOD), Classification (Scikit-learn), and Deep Learni
 """
 
 import os
+import json
 import math
 import logging
 import pickle
+import threading
 import numpy as np
 from flask import Blueprint, request, jsonify
 from ..auth import login_required
@@ -16,9 +18,97 @@ from ..services.feature_extractor import FeatureExtractor
 from ..services.data_loader import _data_sessions
 from ..services.deployer import load_saved_model_session
 from ..config import ANOMALY_ALGORITHMS, CLASSIFICATION_ALGORITHMS, REGRESSION_ALGORITHMS
-from ..models import SavedModel, ModelMachineBinding, AssetNode
+from ..models import SavedModel, ModelMachineBinding, AssetNode, get_db
 
 logger = logging.getLogger(__name__)
+
+# Phase K (2026-08-04) — ONNX export runs off the request thread.
+# Rationale: on gunicorn --workers 1 --threads 8, N concurrent /save-benchmark
+# calls used to hold all 8 request threads inside CPU-heavy ONNX conversion,
+# starving every unrelated endpoint (MQTT stats, tree browse, sensor click)
+# and producing the 2026-08-03 workshop outage when ~40 users saved at once.
+# The semaphore caps concurrent conversions so a save flurry can't OOM the
+# box either — extras queue in Python, not in the request pool.
+_ONNX_EXPORT_SEMAPHORE = threading.Semaphore(2)
+
+
+def _persist_client_inference(model_id: int, info: dict) -> None:
+    """Read-modify-write pipeline_config.client_inference for a saved model.
+
+    Isolated so both the initial 'pending' write and the background thread's
+    'ready'/'failed' update share exactly one code path — one place to catch
+    JSON corruption / row-missing bugs.
+    """
+    try:
+        with get_db() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                'SELECT pipeline_config FROM saved_models WHERE id = ?',
+                (model_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                logger.warning(
+                    '[ONNX export] saved_model %s not found for status update',
+                    model_id,
+                )
+                return
+            try:
+                pc = json.loads(row[0]) if row[0] else {}
+            except Exception:
+                pc = {}
+            pc['client_inference'] = info
+            cur.execute(
+                'UPDATE saved_models SET pipeline_config = ? WHERE id = ?',
+                (json.dumps(pc), model_id),
+            )
+            conn.commit()
+    except Exception as e:
+        logger.exception(
+            '[ONNX export] could not persist client_inference for %s: %s',
+            model_id, e,
+        )
+
+
+def _background_onnx_export(model_id: int, model_path: str,
+                            x_sample) -> None:
+    """Run ONNX export in a background thread.
+
+    Wall-clock cost per conversion: seconds to tens of seconds depending on
+    algorithm; the semaphore holds only during the conversion itself so DB
+    writes serialize behind it too (harmless — the last thing we do is one
+    short UPDATE).
+    """
+    with _ONNX_EXPORT_SEMAPHORE:
+        try:
+            from ..services.model_exporter import export_saved_model_to_onnx
+            onnx_meta = export_saved_model_to_onnx(
+                model_path, x_sample=x_sample,
+            )
+        except Exception as e:
+            logger.warning(
+                '[ONNX export bg] saved_model %s crashed: %s', model_id, e,
+            )
+            _persist_client_inference(model_id, {
+                'supported': False,
+                'status': 'failed',
+                'error': str(e)[:500],
+            })
+            return
+        supported = bool(onnx_meta)
+        _persist_client_inference(model_id, {
+            'supported': supported,
+            'status': 'ready' if supported else 'failed',
+            'onnx_path': onnx_meta.get('path') if onnx_meta else None,
+            'model_type': onnx_meta.get('model_type') if onnx_meta else None,
+            'opset': onnx_meta.get('opset') if onnx_meta else None,
+            'feature_shape': onnx_meta.get('feature_shape') if onnx_meta else None,
+            'parity_kind': onnx_meta.get('parity_kind') if onnx_meta else None,
+        })
+        logger.info(
+            '[ONNX export bg] saved_model %s: status=%s',
+            model_id, 'ready' if supported else 'failed',
+        )
 
 
 def _sanitize_nan(obj):
@@ -835,75 +925,55 @@ def save_benchmark():
         user_id=request.current_user['id']
     )
 
-    # ── Phase I Q4 — ONNX export for client-side inference ─────────────
-    # Try to convert the trained model to ONNX and drop the .onnx as a
-    # sibling of the .pkl. This is DEPLOY-time packaging (the customer sees
-    # this model in App Builder as a bindable endpoint). NEVER blocks the
-    # save — export failure just means the App Builder toggle stays greyed
-    # out for this model with a tooltip explaining why.
-    try:
-        from ..services.model_exporter import export_saved_model_to_onnx
-        onnx_meta = None
-        model_path_for_onnx = session.get('model_path', '')
-        if model_path_for_onnx and os.path.exists(model_path_for_onnx):
-            # Pull a real X sample from the feature session so the parity
-            # check runs on training-distribution data (not random noise).
-            x_sample = None
-            try:
-                feat_sid = session.get('feature_session_id') \
-                    or pipeline_config.get('feature_session_id')
-                if feat_sid:
-                    _fx, _fy, _ = FeatureExtractor.get_features_for_training(feat_sid)
-                    if _fx is not None and len(_fx) > 0:
-                        x_sample = np.asarray(_fx[:100], dtype=np.float32)
-            except Exception as _fx_err:
-                logger.info(
-                    f"[ONNX export] Could not fetch training X for parity "
-                    f"(non-fatal): {_fx_err}"
-                )
-            onnx_meta = export_saved_model_to_onnx(
-                model_path_for_onnx, x_sample=x_sample
-            )
-        # Persist client-inference flag into the SavedModel row's
-        # pipeline_config so downstream App Builder / PublishedApp can read
-        # it without re-attempting the export. `client_inference` is a fresh
-        # section — existing consumers ignore it.
-        client_infer_supported = bool(onnx_meta)
+    # ── Phase K (2026-08-04) — ONNX export off the request thread ─────
+    # Was: synchronous inside this request. At 40 concurrent /save-benchmark
+    # calls all 8 gunicorn threads sat inside CPU-heavy ONNX conversion and
+    # every other endpoint stalled. Now: mark client_inference.status
+    # 'pending', spawn a daemon thread, return the model row immediately.
+    # The frontend polls MachineModelsTab / App Builder for the final flip.
+    model_path_for_onnx = session.get('model_path', '')
+    if model_path_for_onnx and os.path.exists(model_path_for_onnx):
+        _persist_client_inference(model_id, {
+            'supported': None,
+            'status': 'pending',
+        })
+        x_sample = None
         try:
-            from ..models import get_db as _gdb
-            import json as _json_ci
-            new_pc = dict(pipeline_config)
-            new_pc['client_inference'] = {
-                'supported': client_infer_supported,
-                'onnx_path': onnx_meta.get('path') if onnx_meta else None,
-                'model_type': onnx_meta.get('model_type') if onnx_meta else None,
-                'opset': onnx_meta.get('opset') if onnx_meta else None,
-                'feature_shape': onnx_meta.get('feature_shape') if onnx_meta else None,
-                'parity_kind': onnx_meta.get('parity_kind') if onnx_meta else None,
-            }
-            with _gdb() as _c:
-                _cur = _c.cursor()
-                _cur.execute(
-                    'UPDATE saved_models SET pipeline_config = ? WHERE id = ?',
-                    (_json_ci.dumps(new_pc), model_id)
-                )
-                _c.commit()
+            feat_sid = session.get('feature_session_id') \
+                or pipeline_config.get('feature_session_id')
+            if feat_sid:
+                _fx, _fy, _ = FeatureExtractor.get_features_for_training(feat_sid)
+                if _fx is not None and len(_fx) > 0:
+                    x_sample = np.asarray(_fx[:100], dtype=np.float32)
+        except Exception as _fx_err:
             logger.info(
-                f"[ONNX export] saved_model {model_id}: "
-                f"client_inference_supported={client_infer_supported}"
+                '[ONNX export] Could not fetch training X for parity '
+                '(non-fatal): %s', _fx_err,
             )
-        except Exception as _pers_err:
+        try:
+            threading.Thread(
+                target=_background_onnx_export,
+                args=(model_id, model_path_for_onnx, x_sample),
+                daemon=True,
+                name=f'onnx-export-{model_id}',
+            ).start()
+        except Exception as _spawn_err:
             logger.warning(
-                f"[ONNX export] could not persist client_inference flag "
-                f"for saved_model {model_id}: {_pers_err}"
+                '[ONNX export] could not spawn worker for %s: %s',
+                model_id, _spawn_err,
             )
-    except Exception as _onnx_err:
-        # Outermost blanket guard — Q4's HARD REQUIREMENT: deploy MUST NOT
-        # fail because ONNX export blew up.
-        logger.warning(
-            f"[ONNX export] unexpected failure for saved_model {model_id}: "
-            f"{_onnx_err}"
-        )
+            _persist_client_inference(model_id, {
+                'supported': False,
+                'status': 'failed',
+                'error': f'spawn failed: {_spawn_err}',
+            })
+    else:
+        # No pickle on disk (e.g. TI ONNX-only path, or training session
+        # already garbage-collected). Nothing to export from.
+        _persist_client_inference(model_id, {
+            'supported': False,
+            'status': 'skipped',
+        })
 
     # F4: link saved model to project + advance current_stage
     project_id = data.get('project_id')
