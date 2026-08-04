@@ -131,14 +131,16 @@ function onSelectMachine(node: AssetNode) {
   router.push({ name: 'machine-workspace', params: { id: String(node.id) } })
 }
 
-// Sensor clicks route to the machine workspace's History tab, preselected
-// to the clicked sensor via the ?sensor= query. MachineHistoryTab reads
-// this on mount and auto-selects the dropdown.
+// Sensor clicks route to the machine workspace's Live tab so the user sees
+// real-time values immediately. Older behaviour routed to History (CSV
+// playback), which surprised workshop users clicking a sensor to "see the
+// signal now" and getting an empty History panel. History remains one tab
+// click away for anyone who wants the CSV playback.
 function onSelectSensor(payload: { machine: AssetNode; sensor: AssetNode }) {
   router.push({
     name: 'machine-workspace',
     params: { id: String(payload.machine.id) },
-    query: { tab: 'history', sensor: payload.sensor.name },
+    query: { tab: 'live', sensor: payload.sensor.name },
   })
 }
 </script>

@@ -50,7 +50,7 @@
           v-for="s in sensors"
           :key="s.id"
           :name="s.name"
-          :channels="s.sensor_meta?.channels || null"
+          :channels="channelsFor(s)"
           :values="bufferForSensor(s)"
           :unit="s.sensor_meta?.unit || ''"
           height="70px"
@@ -320,15 +320,17 @@ const buffers = reactive<Record<string, number[]>>({})
 //   single-value:  { [sensor.name]: number[] }
 //   multi-axis:    { [`${sensor.name}.${axis}`]: number[] }
 function bufferForSensor(sensor: AssetNode): Record<string, number[]> {
-  const ch = sensor.sensor_meta?.channels
+  // Prefer declared channels; fall back to any channel keys we discovered
+  // live (Phase K #4 fallback for sensors with no channels config).
+  const ch = channelsFor(sensor)
   const out: Record<string, number[]> = {}
   if (ch && ch.length > 0) {
     for (const axis of ch) {
       out[`${sensor.name}.${axis}`] = buffers[`${sensor.id}|${axis}`] || []
     }
-  } else {
-    out[sensor.name] = buffers[`${sensor.id}|__value__`] || []
+    return out
   }
+  out[sensor.name] = buffers[`${sensor.id}|__value__`] || []
   return out
 }
 
@@ -420,9 +422,15 @@ function onMessage(topic: string, payload: Buffer) {
   const cap = windowCapFor(sensor)
   if (ch && ch.length > 0) {
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      // Build a case-insensitive lookup so `{X, Y, Z}` matches
+      // declared channels `[x, y, z]` (and vice versa). Real-world
+      // publishers (Arduino/ESP32 accelerometer libs) mix cases.
+      const lowerMap: Record<string, unknown> = {}
+      for (const [k, v] of Object.entries(parsed)) lowerMap[k.toLowerCase()] = v
       for (const axis of ch) {
-        if (!(axis in parsed)) continue
-        const v = Number(parsed[axis])
+        const raw = (axis in parsed) ? parsed[axis] : lowerMap[axis.toLowerCase()]
+        if (raw === undefined) continue
+        const v = Number(raw)
         if (!Number.isFinite(v)) continue
         pushToBuffer(`${sensor.id}|${axis}`, v, cap)
       }
@@ -438,12 +446,43 @@ function onMessage(topic: string, payload: Buffer) {
         break
       }
     }
+    // Fallback for multi-axis payloads on sensors that were created without
+    // declaring channels (learn-mode auto-creation, Phase F migrations).
+    // Discover per-axis keys and demux under a `discovered:` channel scheme
+    // so sparklines render immediately instead of silently dropping data.
+    if (value === null) {
+      const discovered: [string, number][] = []
+      for (const [k, v] of Object.entries(parsed)) {
+        if (typeof v === 'number' && Number.isFinite(v)) discovered.push([k, v])
+      }
+      if (discovered.length > 0) {
+        for (const [k, v] of discovered) pushToBuffer(`${sensor.id}|${k}`, v, cap)
+        registerDiscoveredChannels(sensor.id, discovered.map(([k]) => k))
+        return
+      }
+    }
   } else if (typeof parsed === 'number' && Number.isFinite(parsed)) {
     value = parsed
   }
   if (value !== null) {
     pushToBuffer(`${sensor.id}|__value__`, value, cap)
   }
+}
+
+// Tracks channel names discovered from live payloads for sensors whose
+// sensor_meta.channels is null. Feeds the sparkline via a lookup so the
+// grid can render multiple axes without waiting on the admin to update
+// the sensor's tree config.
+const discoveredChannels = reactive<Record<number, string[]>>({})
+function registerDiscoveredChannels(sensorId: number, keys: string[]) {
+  const existing = discoveredChannels[sensorId] || []
+  const merged = Array.from(new Set([...existing, ...keys]))
+  if (merged.length !== existing.length) discoveredChannels[sensorId] = merged
+}
+function channelsFor(sensor: AssetNode): string[] | null {
+  const declared = sensor.sensor_meta?.channels
+  if (declared && declared.length > 0) return declared
+  return discoveredChannels[sensor.id] || null
 }
 
 function pushToBuffer(key: string, value: number, cap: number) {

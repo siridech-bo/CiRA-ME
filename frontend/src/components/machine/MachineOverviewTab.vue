@@ -281,17 +281,36 @@ function onMessage(topic: string, payload: Buffer) {
 
 function extractScalar(v: any): unknown {
   if (v == null) return null
-  if (typeof v === 'object') {
-    // Common shapes: { value: X } or { v: X } or { data: X }
-    if ('value' in v) return v.value
-    if ('v' in v) return v.v
-    if ('data' in v) return v.data
-    return JSON.stringify(v)
+  if (typeof v === 'object' && !Array.isArray(v)) {
+    // Common single-value shapes: {value: X} / {v: X} / {data: X}
+    if ('value' in v) return formatNumberIfNumeric(v.value)
+    if ('v' in v) return formatNumberIfNumeric(v.v)
+    if ('data' in v) return formatNumberIfNumeric(v.data)
+    // Multi-axis payload (adxl345-shaped {x, y, z} or arbitrary numeric keys).
+    // Render as "x=1.20 y=3.40 z=5.60" so the Overview card shows something
+    // meaningful instead of raw JSON. Cap at 4 keys to keep it readable.
+    const numericEntries = Object.entries(v)
+      .filter(([, val]) => typeof val === 'number' && Number.isFinite(val))
+      .slice(0, 4)
+    if (numericEntries.length > 0) {
+      return numericEntries
+        .map(([k, val]) => `${k}=${formatNumberIfNumeric(val)}`)
+        .join(' ')
+    }
+    // Fell through — nested / non-numeric object. Show a short JSON preview.
+    const preview = JSON.stringify(v)
+    return preview.length > 40 ? preview.slice(0, 37) + '…' : preview
   }
-  if (typeof v === 'number') {
-    return Math.abs(v) >= 100 ? v.toFixed(1) : v.toFixed(2)
+  if (Array.isArray(v)) {
+    const nums = v.filter(x => typeof x === 'number' && Number.isFinite(x)).slice(0, 4)
+    if (nums.length > 0) return nums.map(formatNumberIfNumeric).join(' ')
   }
-  return v
+  return formatNumberIfNumeric(v)
+}
+
+function formatNumberIfNumeric(v: any): unknown {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return v
+  return Math.abs(v) >= 100 ? v.toFixed(1) : v.toFixed(2)
 }
 
 function updateSensor(sensorId: number, value: unknown) {
