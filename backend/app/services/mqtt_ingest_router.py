@@ -649,6 +649,25 @@ class MqttIngestRouter:
         # 4. Parse payload (single-value path — unchanged from Phase D)
         value = self._parse_payload(payload)
         if value is None:
+            # Phase K #4b (2026-08-04): before rejecting, try to auto-detect
+            # a multi-axis payload on a sensor whose channels weren't declared.
+            # Frontend LivePanel already does this so users saw live sparklines
+            # while the router silently rejected every message and wrote no
+            # CSVs (the "recording on, folder empty" bug in the 2026-08-04
+            # workshop). One-shot per sensor: first `{k1: n, k2: n, ...}` dict
+            # promotes those keys to sensor_meta.channels; subsequent messages
+            # take the declared-multi-axis fast path.
+            auto = self._auto_detect_multi_axis(payload)
+            if auto:
+                self._promote_channels(node, auto, canonical_path)
+                row_values = self._parse_multi_axis_payload(payload, auto)
+                if row_values is not None:
+                    if not self._recording_allowed(node, canonical_path):
+                        return
+                    self._append_multi_row(
+                        canonical_path, _iso_now(), row_values, auto,
+                    )
+                    return
             with self._stats_lock:
                 self._stats['messages_parse_errors'] += 1
             self._reject(topic, 'unparseable payload')
@@ -881,6 +900,92 @@ class MqttIngestRouter:
         ).start()
 
     # ── Multi-axis payload path (Phase H) ────────────────────────────────
+
+    def _auto_detect_multi_axis(self, payload: bytes):
+        """Sniff a payload for multi-axis channel keys.
+
+        Returns a list of numeric-valued key names (preserved order) or None
+        if the payload isn't a JSON dict with at least two numeric fields.
+        Called from _route() when a sensor's channels are undeclared and the
+        single-value parse failed — the fallback before we call the message
+        unparseable and reject it (Phase K #4b, 2026-08-04 workshop fix).
+
+        Deliberately conservative: at least 2 numeric keys AND at least one
+        of {x, y, z, ax, ay, az, roll, pitch, yaw} to avoid grabbing e.g.
+        a `{value: 5, unit: 'C'}` payload as multi-axis. The narrow trigger
+        keeps this from silently changing single-value sensors' schemas.
+        """
+        if payload is None:
+            return None
+        try:
+            obj = json.loads(payload.decode('utf-8', errors='replace').strip())
+        except Exception:
+            return None
+        if not isinstance(obj, dict):
+            return None
+        numeric = [k for k, v in obj.items()
+                   if isinstance(v, (int, float)) and not isinstance(v, bool)]
+        if len(numeric) < 2:
+            return None
+        _AXIS_HINTS = {
+            'x', 'y', 'z', 'ax', 'ay', 'az',
+            'gx', 'gy', 'gz', 'mx', 'my', 'mz',
+            'roll', 'pitch', 'yaw',
+        }
+        lower = {k.lower() for k in numeric}
+        if not (lower & _AXIS_HINTS):
+            return None
+        return numeric
+
+    def _promote_channels(self, node: dict, channels: list,
+                          canonical_path: str) -> None:
+        """Persist auto-detected channels to sensor_meta + reload cache.
+
+        Writes go through the same DB path a user would trigger from the
+        tree UI's "Detect channels" flow, so downstream (CSV header, App
+        Builder capability catalog, front-end sparkline) all pick up the
+        change on their next read. In-memory node dict is mutated in place
+        so THIS message (and any others already buffered from the same
+        sensor) take the fast multi-axis path without waiting for the next
+        cache reload.
+        """
+        node_id = node.get('id')
+        if not node_id:
+            return
+        try:
+            from ..models import get_db
+            with get_db() as conn:
+                cur = conn.cursor()
+                # UPSERT so a sensor without a sensor_meta row yet also gets
+                # one — learn-mode auto-creates the node but not always the
+                # meta row.
+                cur.execute(
+                    'INSERT INTO asset_sensor_meta '
+                    '(asset_id, channels, ingest_enabled) '
+                    'VALUES (?, ?, 1) '
+                    'ON CONFLICT(asset_id) DO UPDATE SET channels = excluded.channels',
+                    (node_id, json.dumps(channels)),
+                )
+                conn.commit()
+        except Exception as e:
+            logger.warning(
+                '[ingest] failed to persist auto-detected channels %s '
+                'for sensor %s: %s', channels, node_id, e,
+            )
+            # Non-fatal — we still hand back the channels list so THIS
+            # message writes; a future cache reload will re-attempt.
+        node['_channels'] = channels
+        # Update the topic-path cache entry too so the next message on the
+        # same topic sees the fast path.
+        with self._cache_lock:
+            cached = self._path_cache.get(canonical_path)
+            if isinstance(cached, dict):
+                cached['_channels'] = channels
+        logger.info(
+            '[ingest] auto-promoted channels %s for sensor %s (%s) — '
+            'subsequent writes use a stable multi-axis header',
+            channels, node_id, canonical_path,
+        )
 
     def _parse_multi_axis_payload(self, payload: bytes, channels: list):
         """Demultiplex a JSON dict payload into per-channel scalar strings.
