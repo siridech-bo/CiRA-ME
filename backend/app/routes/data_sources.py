@@ -1422,6 +1422,13 @@ def _bulk_transfer(op_name: str):
     """
     Shared body for /move and /copy — both take the same request shape,
     only differ in the per-item action.
+
+    Auth (Phase K #5, 2026-08-04):
+      - Destination: strict write auth (annotators need write permission).
+      - Source for /copy: read auth only — copying leaves the source
+        untouched, so annotators can copy from factory/shared into their
+        private folder without hitting a 'Access denied' at source.
+      - Source for /move: strict write auth (move deletes the source).
     """
     data = request.get_json() or {}
     sources = data.get('sources')
@@ -1443,6 +1450,10 @@ def _bulk_transfer(op_name: str):
     if not os.path.isdir(destination):
         return jsonify({'error': 'Destination is not a folder'}), 400
 
+    # /copy leaves the source untouched → read auth is sufficient.
+    # /move mutates it → write auth still required.
+    src_for_read = (op_name == 'copy')
+
     dest_norm = _norm(destination)
 
     ok_paths = []
@@ -1454,7 +1465,8 @@ def _bulk_transfer(op_name: str):
                 errors.append({'path': str(src), 'reason': 'Invalid source path'})
                 continue
 
-            if not validate_path(src, user, datasets_root, shared_folder):
+            if not validate_path(src, user, datasets_root, shared_folder,
+                                 for_read=src_for_read):
                 errors.append({'path': src, 'reason': 'Access denied'})
                 continue
 
