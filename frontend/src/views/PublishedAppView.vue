@@ -4294,51 +4294,71 @@ function downloadRecordedCSV() {
   const prefix = recorderConfig.value.file_prefix || 'sensor_data'
   const dateStr = new Date().toISOString().slice(0,10)
 
-  // Multi-topic recorder: emit a WIDE CSV — one column per topic (short
-  // label used as the column header), one row per sample, FORWARD-FILLED
-  // so every row carries the last-known value for every topic. Standard
-  // time-series treatment; downstream training expects dense rows, not
-  // sparse ones with blanks.
-  //
-  // A row still corresponds to ONE incoming message (so timestamps are
-  // real, not resampled). The message's own topic column gets the fresh
-  // value; other columns get whichever value that topic most recently
-  // reported (or empty if that topic has never fired yet). This matches
-  // how a real training pipeline would consume asynchronous multi-sensor
-  // streams.
+  // Phase K #1 (2026-08-04 revision):
+  // Multi-topic recorder emits a WIDE SPARSE CSV — one column per
+  // (topic × payload-channel) so a 3-axis ADXL345 becomes
+  // "adxl345.x, adxl345.y, adxl345.z" instead of collapsing to one
+  // column with only x. Cells that a given sample doesn't populate are
+  // left blank — no forward-fill. The customer's earlier "same value"
+  // complaint was the forward-fill: sensor A publishing at 10 Hz got
+  // its column repeated 5× for every intervening B/C/D message, which
+  // looks like a stuck sensor in Excel. Blanks are the honest signal;
+  // DataLoader.apply_windowing (backend) linearly interpolates NaN
+  // during windowing so training receives dense feature vectors.
   if (isMultiTopicRecorder.value) {
     const topics = [...(mqttTopics.value || [])]
     const shortLabels = topics.map((t) => _topicShortLabel(t))
-    // Disambiguate rare same-short-name case (e.g. plant_A/../pressure +
-    // plant_B/../pressure) with `_2`, `_3` suffix.
     const seen = new Map()
-    const colNames = shortLabels.map((s) => {
+    const topicBase = shortLabels.map((s) => {
       const n = seen.get(s) || 0
       seen.set(s, n + 1)
       return n === 0 ? s : `${s}_${n + 1}`
     })
-    const topicToCol = new Map(topics.map((t, i) => [t, colNames[i]]))
+    const baseByTopic = new Map(topics.map((t, i) => [t, topicBase[i]]))
 
-    const header = ['timestamp', ...colNames, 'label'].join(',')
+    // Discover payload channels per topic from the buffered samples.
+    // If a topic publishes {x, y, z} across the session, emit three
+    // columns "<base>.x", "<base>.y", "<base>.z". Single-value payloads
+    // ({value: N}) collapse to a single "<base>" column.
+    const channelsByTopic = new Map(topics.map((t) => [t, new Set()]))
+    for (const s of samples) {
+      const set = channelsByTopic.get(s._topic)
+      if (!set) continue
+      for (const [k, v] of Object.entries(s)) {
+        if (k === '_ts' || k === '_topic' || k === 'label') continue
+        if (typeof v === 'number' && Number.isFinite(v)) set.add(k)
+      }
+    }
+    // Build ordered column list: for each topic (in user's original
+    // order), emit its discovered channels in insertion order.
+    const colDefs = []  // {header, topic, key}
+    for (const t of topics) {
+      const base = baseByTopic.get(t)
+      const chans = Array.from(channelsByTopic.get(t) || [])
+      if (chans.length === 0) {
+        // Never fired — still emit an empty column so the schema is
+        // stable across sessions with the same topics.
+        colDefs.push({ header: base, topic: t, key: null })
+      } else if (chans.length === 1 && ['value', 'v', 'val'].includes(chans[0])) {
+        // Single-value scalar payload — column keeps the topic's short
+        // name without ".value" clutter.
+        colDefs.push({ header: base, topic: t, key: chans[0] })
+      } else {
+        for (const k of chans) {
+          colDefs.push({ header: `${base}.${k}`, topic: t, key: k })
+        }
+      }
+    }
+
+    const header = ['timestamp', ...colDefs.map((c) => c.header), 'label'].join(',')
     const t0 = samples[0]?._ts || Date.now()
-    // Forward-fill state — last seen value per column. Starts empty ('')
-    // until each topic reports its first sample.
-    const lastByCol = new Map(colNames.map((n) => [n, '']))
     const rows = samples.map((s) => {
       const tsSec = (((s._ts || Date.now()) - t0) / 1000).toFixed(3)
-      const col = topicToCol.get(s._topic)
-      // Pick the first numeric field of the sample payload as this
-      // topic's value. Multi-axis (x/y/z) collapses to `x` here — the
-      // server-side per-topic CSVs (Phase J) keep full multi-axis
-      // fidelity for training; this browser download is the demo path.
-      let v = null
-      for (const [k, val] of Object.entries(s)) {
-        if (k === '_ts' || k === '_topic' || k === 'label') continue
-        if (typeof val === 'number' && Number.isFinite(val)) { v = val; break }
-      }
-      if (col && v !== null) lastByCol.set(col, v)
-      // Emit the forward-filled row.
-      const cells = colNames.map((n) => lastByCol.get(n))
+      const cells = colDefs.map((c) => {
+        if (c.topic !== s._topic || !c.key) return ''
+        const v = s[c.key]
+        return typeof v === 'number' && Number.isFinite(v) ? v : ''
+      })
       return [tsSec, ...cells, s.label].join(',')
     })
     const csv = [header, ...rows].join('\n')

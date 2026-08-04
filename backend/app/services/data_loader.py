@@ -2242,6 +2242,36 @@ class DataLoader:
                 raise ValueError("No valid sensor columns selected")
             print(f"[DataLoader] Using {len(sensor_cols)} of {len(metadata['sensor_columns'])} columns: {sensor_cols}")
 
+        # Phase K #6 (2026-08-04): fill NaN in sensor columns before windowing.
+        # Sparse CSVs (e.g. the multi-sensor signal recorder writing one topic
+        # per row, other cells blank) previously broke every downstream stat:
+        # numpy min/max return NaN if ANY value is NaN → range=NaN → mask=False
+        # → column silently dropped as 'constant' → training received zero
+        # features. Linear interpolation between known values gives dense
+        # windows without the aesthetic 'same value repeat' of raw ffill; edge
+        # gaps use ffill+bfill via limit_direction='both'. Columns that never
+        # fire (all-NaN) stay NaN → the constant-column check drops them,
+        # which is the correct outcome (no signal to train on).
+        nan_before = 0
+        try:
+            nan_before = int(df[sensor_cols].isna().sum().sum())
+        except Exception:
+            pass
+        if nan_before > 0:
+            try:
+                filled = df[sensor_cols].interpolate(
+                    method='linear', limit_direction='both',
+                )
+                df = df.copy()
+                df[sensor_cols] = filled
+                nan_after = int(df[sensor_cols].isna().sum().sum())
+                print(f"[DataLoader] Interpolated {nan_before - nan_after} "
+                      f"NaN cell(s) across {len(sensor_cols)} sensor columns "
+                      f"(remaining {nan_after} are all-NaN columns).")
+            except Exception as _e:
+                print(f"[DataLoader] NaN interpolation failed (non-fatal, "
+                      f"columns may be dropped downstream): {_e}")
+
         label_col = metadata.get('label_column')
         has_sample_id = 'sample_id' in df.columns
         has_category = 'category' in df.columns
@@ -2668,14 +2698,18 @@ class DataLoader:
             norm_method = 'min_max'
 
         if norm_method == 'min_max':
-            ch_min = train_flat.min(axis=0)
-            ch_max = train_flat.max(axis=0)
+            # nanmin/nanmax so an all-NaN column becomes range=NaN and gets
+            # dropped by the mask below, instead of poisoning min/max for
+            # every channel via numpy's default NaN propagation.
+            ch_min = np.nanmin(train_flat, axis=0)
+            ch_max = np.nanmax(train_flat, axis=0)
             ch_range = ch_max - ch_min
 
             # Constant-column dropping is only meaningful for min-max:
             # a channel with zero range provides no signal AND would divide-by-zero here.
             # For other methods we keep all channels (z_score guards std==0, robust guards iqr==0).
-            active_mask = ch_range > 1e-10
+            # NaN > 1e-10 evaluates to False → NaN-only columns drop as intended.
+            active_mask = np.where(np.isnan(ch_range), False, ch_range > 1e-10)
             dropped_cols = [sensor_cols[i] for i in range(len(sensor_cols)) if not active_mask[i]]
             kept_cols = [sensor_cols[i] for i in range(len(sensor_cols)) if active_mask[i]]
 
