@@ -4308,18 +4308,11 @@ function startEditLabel(sortedIdx: number) {
 }
 
 function previewLabel(sortedIdx: number) {
-  // Row-click behaviour: show the two vertical lines on the chart at this
-  // label's range without entering edit mode. Distinct from startEditLabel
-  // (which the pencil button calls) — a preview click that lands you in
-  // "replace mode" would surprise-overwrite the label on the next Apply.
-  const sorted = sortedLabels.value
-  const target = sorted[sortedIdx]
-  if (!target) return
-  editingLabelIndex.value = null
-  labelStart.value = target.from
-  labelEnd.value = target.to
-  labelClass.value = ''  // stays neutral so Apply-without-edit acts as new
-  chartMode.value = 'label'
+  // Row-click == edit. Earlier this only previewed lines without setting
+  // editingLabelIndex — the overlap check then compared the pending range
+  // against the same label and customers hit "Range overlaps existing label
+  // 'aa'" when tweaking start/end.
+  startEditLabel(sortedIdx)
 }
 
 function deleteLabel(sortedIdx: number) {
