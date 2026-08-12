@@ -1,5 +1,5 @@
 <template>
-  <div class="published-app" :class="{ 'dashboard-mode': dashboardMode }">
+  <div class="published-app" :class="{ 'dashboard-mode': dashboardMode, 'has-design-widgets': tier1WidgetNodes.length > 0 }">
     <!-- Loading -->
     <div v-if="loading" class="app-loading">
       <v-progress-circular indeterminate color="purple" />
@@ -127,6 +127,81 @@
           </v-btn>
           <span class="app-powered">Powered by CiRA ME</span>
         </div>
+      </div>
+
+      <!-- ═══════════════════════════════════════════════════════ -->
+      <!-- DESIGN WIDGETS DASHBOARD (2026-08-12 refactor) — text_block /  -->
+      <!-- big_number / status_indicator / gauge / button, laid out on   -->
+      <!-- the same 12-col / 60px-row grid the DESIGN tab's editor used.  -->
+      <!-- Rendered once, ABOVE both layouts below, so it acts as the    -->
+      <!-- operator's "dashboard" for CSV-upload apps AND live MQTT-     -->
+      <!-- stream apps without duplicating markup. Empty when an app has -->
+      <!-- no DESIGN widgets (pre-refactor apps) — falls back to today's -->
+      <!-- pipeline-output-only view entirely unchanged.                 -->
+      <!-- See docs/PLAN_2026-08-12_app-builder-widgets.md                -->
+      <!-- ═══════════════════════════════════════════════════════ -->
+      <div v-if="tier1WidgetNodes.length > 0" class="app-section design-dashboard-grid">
+        <template v-for="w in tier1WidgetNodes" :key="w.id">
+          <!-- text_block -->
+          <div
+            v-if="w.type === 'widget.text_block'"
+            class="tier1-widget tier1-text-block"
+            :style="{ textAlign: w.config.alignment || 'left', ...widgetGridStyle(w) }"
+            v-html="renderMarkdownShim(w.config.content, w.config.heading_level)"
+          />
+
+          <!-- big_number -->
+          <div v-else-if="w.type === 'widget.big_number'" class="tier1-widget tier1-big-number" :style="widgetGridStyle(w)">
+            <div class="tier1-bn-label">{{ w.config.label || 'Metric' }}</div>
+            <div class="tier1-bn-value" :class="'tier1-bn-' + (w.config.size || 'lg')" :style="{ color: bigNumberColor(w) }">
+              {{ formatBigNumber(w) }}<span class="tier1-bn-unit">{{ w.config.unit }}</span>
+            </div>
+          </div>
+
+          <!-- status_indicator -->
+          <div v-else-if="w.type === 'widget.status_indicator'" class="tier1-widget tier1-status" :style="widgetGridStyle(w)">
+            <div class="tier1-status-dot" :style="{ background: statusIndicatorState(w).colorHex }" />
+            <v-icon v-if="statusIndicatorState(w).icon" size="16" :style="{ color: statusIndicatorState(w).colorHex }">
+              {{ statusIndicatorState(w).icon }}
+            </v-icon>
+            <span class="tier1-status-label">{{ w.config.label ? w.config.label + ': ' : '' }}{{ statusIndicatorState(w).label }}</span>
+          </div>
+
+          <!-- gauge -->
+          <div v-else-if="w.type === 'widget.gauge'" class="tier1-widget tier1-gauge" :style="widgetGridStyle(w)">
+            <div class="tier1-gauge-label">{{ w.config.label || 'Gauge' }}</div>
+            <svg width="160" height="100" viewBox="0 0 160 100">
+              <path d="M14,90 A66,66 0 0 1 146,90" fill="none" stroke="#21262d" stroke-width="12" />
+              <path
+                v-for="(seg, i) in gaugeBandPaths(w)"
+                :key="i"
+                :d="seg.d"
+                fill="none"
+                :stroke="seg.color"
+                stroke-width="12"
+              />
+              <line
+                v-if="w.config.show_needle !== false"
+                x1="80" y1="90"
+                :x2="gaugeNeedle(w).x" :y2="gaugeNeedle(w).y"
+                stroke="#e6edf3" stroke-width="2"
+              />
+              <circle cx="80" cy="90" r="4" fill="#e6edf3" />
+            </svg>
+            <div class="tier1-gauge-value">{{ formatGaugeValue(w) }}{{ w.config.unit }}</div>
+          </div>
+
+          <!-- button -->
+          <div v-else-if="w.type === 'widget.button'" class="tier1-widget tier1-button" :style="widgetGridStyle(w)">
+            <v-btn :color="w.config.color || 'primary'" :loading="!!buttonLoading[w.id]" @click="runButtonAction(w)">
+              <v-icon v-if="w.config.icon" start size="16">{{ w.config.icon }}</v-icon>
+              {{ w.config.label || 'Run Action' }}
+            </v-btn>
+            <div v-if="buttonFeedback[w.id]" class="tier1-button-feedback" :class="buttonFeedback[w.id].ok ? 'ok' : 'err'">
+              {{ buttonFeedback[w.id].msg }}
+            </div>
+          </div>
+        </template>
       </div>
 
       <!-- ═══════════════════════════════════════════════════════ -->
@@ -1800,6 +1875,10 @@
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import api from '@/services/api'
+// DESIGN widgets (2026-08-12) — widget.button's http.get/http.post use a bare
+// axios instance (no baseURL, no withCredentials) so we never leak session
+// cookies to an arbitrary operator-configured URL. See PLAN_2026-08-12_app-builder-widgets.md.
+import axios from 'axios'
 import { Line } from 'vue-chartjs'
 import MqttTestPublisher from '@/components/MqttTestPublisher.vue'
 import { useAuthStore } from '@/stores/auth'
@@ -1965,6 +2044,38 @@ const parsedNodes = computed(() => {
 const appMode = computed(() => {
   return appData.value.mode || 'regression'
 })
+
+// ── DESIGN widgets (2026-08-12 refactor — moved out of BUILD's OUTPUT ──
+// palette into their own tab; type prefix changed 'output.*' -> 'widget.*'
+// so they can't be mistaken for pipeline nodes. Nothing was ever published
+// under the old 'output.*' widget types (this whole feature was unshipped
+// working-tree code), so no legacy-type fallback is needed. Widgets are
+// stored inside the same `nodes` array the backend already persists
+// verbatim as JSON (see AppBuilderEditorView's mergedNodesForSave/
+// splitLoadedNodes) — parsedNodes already contains them, this just filters
+// by the new prefix and defaults `layout` for older-shaped rows.
+const TIER1_WIDGET_TYPES = ['widget.text_block', 'widget.big_number', 'widget.status_indicator', 'widget.gauge', 'widget.button']
+const tier1WidgetNodes = computed(() =>
+  parsedNodes.value
+    .filter(n => n && typeof n === 'object' && TIER1_WIDGET_TYPES.includes(n.type))
+    .map((n, i) => ({
+      ...n,
+      config: n.config || {},
+      layout: n.layout || { x: (i % 3) * 4, y: Math.floor(i / 3) * 3, w: 4, h: 3 },
+    }))
+)
+
+// CSS custom properties driving each widget's grid position/span — see
+// .design-dashboard-grid below. 12 columns, 60px rows, matches the DESIGN
+// tab's grid-layout-plus canvas exactly so a dashboard looks the same here
+// as it did in the editor.
+function widgetGridStyle(w) {
+  const l = w.layout || { x: 0, y: 0, w: 4, h: 3 }
+  return {
+    gridColumn: `${l.x + 1} / span ${l.w}`,
+    gridRow: `${l.y + 1} / span ${l.h}`,
+  }
+}
 
 // Max rows to render in result tables; falls back to 100 for backwards compatibility
 // (older apps had no output.table node config or set max_rows to a smaller default).
@@ -4176,6 +4287,327 @@ function downloadCSV(csvText, filename) {
   URL.revokeObjectURL(url)
 }
 
+// ── Tier 1 widgets — value derivation, rendering, and actions (2026-08-12) ──
+// See docs/PLAN_2026-08-12_app-builder-widgets.md. Widgets are stateless in
+// v1 (no Tier 2 variables) — each derives its value from the pipeline
+// output only, via getWidgetValue() below.
+const WIDGET_COLOR_HEX = { primary: '#a78bfa', success: '#34d399', warning: '#fbbf24', error: '#f87171', info: '#60a5fa', grey: '#8b949e' }
+
+function safeJsonParse(text, fallback) {
+  if (text === null || text === undefined || text === '') return fallback
+  if (typeof text === 'object') return text
+  try {
+    const parsed = JSON.parse(text)
+    return parsed ?? fallback
+  } catch {
+    return fallback
+  }
+}
+
+/** Resolve the current pipeline output value for a widget's `source_field`.
+ *  Prefers the live-stream state (latestPredictionState, updated on every
+ *  inference — see recordInferenceRows) and falls back to the batch/CSV
+ *  result (`result.value`) so widgets work in both CSV-upload and MQTT
+ *  live-stream apps. */
+function getWidgetValue(sourceField) {
+  const field = sourceField || 'prediction'
+  const state = latestPredictionState.value
+  if (state && state.prediction !== null && state.prediction !== undefined) {
+    if (field === 'prediction') return state.prediction
+    if (field === 'confidence') return state.confidence
+    if (field === 'score') return state.score
+    if (state.modelPredictions && field in state.modelPredictions) return state.modelPredictions[field]
+  }
+  const r = result.value
+  if (r) {
+    if (field !== 'prediction' && field in r) {
+      const v = r[field]
+      return Array.isArray(v) ? v[v.length - 1] : v
+    }
+    if (Array.isArray(r.predictions) && r.predictions.length > 0) {
+      return r.predictions[r.predictions.length - 1]
+    }
+  }
+  return null
+}
+
+// text_block: minimal markdown-to-HTML shim — `marked` is not in
+// package.json and Tier 1 must not add a new dependency. Supports
+// headings (#/##/###), **bold**, *italic*, [text](url) links, and
+// - / * bullet lists. Everything else passes through as a paragraph.
+function escapeHtml(s) {
+  return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+function inlineMarkdown(line) {
+  let out = escapeHtml(line)
+  out = out.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+  out = out.replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, '<em>$1</em>')
+  out = out.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
+  return out
+}
+
+function renderMarkdownShim(content, headingLevel) {
+  const lines = String(content ?? '').split('\n')
+  const htmlParts = []
+  let listBuf = []
+  const flushList = () => {
+    if (listBuf.length) {
+      htmlParts.push('<ul>' + listBuf.map(li => `<li>${inlineMarkdown(li)}</li>`).join('') + '</ul>')
+      listBuf = []
+    }
+  }
+  for (const raw of lines) {
+    const line = raw.trim()
+    if (!line) { flushList(); continue }
+    const h = line.match(/^(#{1,3})\s+(.*)$/)
+    if (h) {
+      flushList()
+      const tag = 'h' + h[1].length
+      htmlParts.push(`<${tag}>${inlineMarkdown(h[2])}</${tag}>`)
+      continue
+    }
+    if (/^[-*]\s+/.test(line)) {
+      listBuf.push(line.replace(/^[-*]\s+/, ''))
+      continue
+    }
+    flushList()
+    htmlParts.push(`<p>${inlineMarkdown(line)}</p>`)
+  }
+  flushList()
+  let html = htmlParts.join('')
+  // No explicit heading in the content but a heading_level is set (not
+  // 'p') — promote the first paragraph so title-only blocks still style
+  // as a heading.
+  if (headingLevel && headingLevel !== 'p' && !/^<h[1-3]>/.test(html)) {
+    html = html.replace(/^<p>(.*?)<\/p>/, `<${headingLevel}>$1</${headingLevel}>`)
+  }
+  return html || '<p></p>'
+}
+
+// big_number
+function formatBigNumber(w) {
+  const val = getWidgetValue(w.config.source_field)
+  if (val === null || val === undefined || val === '') return '—'
+  const num = Number(val)
+  if (!Number.isFinite(num)) return String(val)
+  const dp = Number.isFinite(Number(w.config.decimal_places)) ? Number(w.config.decimal_places) : 1
+  return num.toFixed(dp)
+}
+
+function bigNumberColor(w) {
+  const val = Number(getWidgetValue(w.config.source_field))
+  const thresholds = safeJsonParse(w.config.thresholds, [])
+  if (!Number.isFinite(val) || !Array.isArray(thresholds)) return '#e6edf3'
+  for (const t of thresholds) {
+    if (!t) continue
+    if (t.below !== undefined && val < Number(t.below)) return WIDGET_COLOR_HEX[t.color] || t.color || '#e6edf3'
+    if (t.above !== undefined && val > Number(t.above)) return WIDGET_COLOR_HEX[t.color] || t.color || '#e6edf3'
+  }
+  return '#e6edf3'
+}
+
+// status_indicator
+function statusIndicatorState(w) {
+  const stateMap = safeJsonParse(w.config.state_map, {})
+  const val = getWidgetValue(w.config.source_field)
+  const key = val === null || val === undefined ? '' : String(val).trim().toLowerCase()
+  let entry = null
+  if (stateMap && typeof stateMap === 'object') {
+    const foundKey = Object.keys(stateMap).find(k => k.toLowerCase() === key)
+    if (foundKey) entry = stateMap[foundKey]
+  }
+  if (!entry) {
+    entry = safeJsonParse(w.config.default_state, null) ||
+      { color: 'grey', label: val !== null && val !== undefined ? String(val) : 'Unknown' }
+  }
+  return {
+    colorHex: WIDGET_COLOR_HEX[entry.color] || entry.color || '#8b949e',
+    label: entry.label || key || 'Unknown',
+    icon: entry.icon || '',
+  }
+}
+
+// gauge — pure SVG semicircle. No ECharts in this project (chart.js +
+// vue-chartjs is what's already imported above); a hand-rolled arc avoids
+// pulling in a new charting dependency for one widget. Arc runs 180°→0°
+// left-to-right across (14,90)→(146,90), radius 66, center (80,90).
+function gaugePct(w) {
+  const min = Number(w.config.min ?? 0)
+  const max = Number(w.config.max ?? 100)
+  const val = Number(getWidgetValue(w.config.source_field))
+  if (!Number.isFinite(val) || max <= min) return 0
+  return Math.min(1, Math.max(0, (val - min) / (max - min)))
+}
+
+function gaugePoint(pct) {
+  const angle = Math.PI - pct * Math.PI // pct=0 -> 180deg (left), pct=1 -> 0deg (right)
+  return { x: 80 + 66 * Math.cos(angle), y: 90 - 66 * Math.sin(angle) }
+}
+
+function gaugeBandPaths(w) {
+  const min = Number(w.config.min ?? 0)
+  const max = Number(w.config.max ?? 100)
+  const bands = safeJsonParse(w.config.bands, [])
+  if (!Array.isArray(bands) || max <= min) return []
+  return bands.filter(b => b && b.from !== undefined && b.to !== undefined).map(b => {
+    const pFrom = Math.min(1, Math.max(0, (Number(b.from) - min) / (max - min)))
+    const pTo = Math.min(1, Math.max(0, (Number(b.to) - min) / (max - min)))
+    const start = gaugePoint(pFrom)
+    const end = gaugePoint(pTo)
+    // large-arc-flag is 0 always: a band can never exceed 180° on a
+    // semicircular gauge, so we always pick the short arc. The earlier
+    // `(pTo - pFrom) > 0.5` was wrong — it mapped "band covers > half
+    // the gauge range" to "SVG chooses the long arc going through the
+    // bottom", which produced the broken-wedge visuals.
+    return {
+      d: `M${start.x},${start.y} A66,66 0 0 1 ${end.x},${end.y}`,
+      color: WIDGET_COLOR_HEX[b.color] || b.color || '#94a3b8',
+    }
+  })
+}
+
+function gaugeNeedle(w) {
+  return gaugePoint(gaugePct(w))
+}
+
+function formatGaugeValue(w) {
+  const val = getWidgetValue(w.config.source_field)
+  if (val === null || val === undefined || val === '') return '—'
+  const num = Number(val)
+  return Number.isFinite(num) ? num.toFixed(1) : String(val)
+}
+
+// button — action dispatch: mqtt.publish / http.get / http.post / download.csv
+// (download.pdf dropped from v1 — see docs/PLAN_2026-08-12_app-builder-widgets.md)
+const buttonLoading = ref({})
+const buttonFeedback = ref({})
+
+function setButtonFeedback(id, ok, msg) {
+  buttonFeedback.value = { ...buttonFeedback.value, [id]: { ok, msg } }
+  setTimeout(() => {
+    const next = { ...buttonFeedback.value }
+    delete next[id]
+    buttonFeedback.value = next
+  }, 4000)
+}
+
+/** Resolve a broker URL for an ad-hoc MQTT publish: widget override > the
+ *  app's already-resolved live-stream broker > a same-host default — same
+ *  localhost/https rewrite rules as startLiveStream() above. */
+function resolveButtonBrokerUrl(w) {
+  let url = w.config.broker_url || mqttBrokerUrl.value || 'ws://localhost:9001/mqtt'
+  if (url.includes('localhost') || url.includes('127.0.0.1')) {
+    url = url.replace('localhost', window.location.hostname).replace('127.0.0.1', window.location.hostname)
+  }
+  if (window.location.protocol === 'https:' && url.startsWith('ws://')) {
+    try {
+      const u = new URL(url)
+      if (u.hostname === window.location.hostname) url = `wss://${window.location.host}/mqtt`
+    } catch { /* leave unchanged */ }
+  }
+  return url
+}
+
+async function publishButtonMqtt(w) {
+  const topic = w.config.topic
+  if (!topic) { setButtonFeedback(w.id, false, 'No MQTT topic configured'); return }
+  const payload = w.config.payload ?? ''
+
+  // Reuse the live-stream connection if one is already open — avoids
+  // opening a second broker session just to publish one message.
+  if (mqttClient && mqttConnected.value) {
+    mqttClient.publish(topic, payload)
+    setButtonFeedback(w.id, true, `Published to ${topic}`)
+    return
+  }
+
+  // Otherwise open a short-lived connection, publish, then close.
+  try {
+    if (!mqtt) {
+      const mod = await import('mqtt')
+      mqtt = mod.default || mod
+    }
+    const brokerUrl = resolveButtonBrokerUrl(w)
+    const client = mqtt.connect(brokerUrl, {
+      clientId: `cira-btn-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+      clean: true,
+      connectTimeout: 8000,
+    })
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('Connection timed out')), 8000)
+      client.on('connect', () => {
+        clearTimeout(timer)
+        client.publish(topic, payload, {}, (err) => {
+          client.end(true)
+          if (err) reject(err)
+          else resolve()
+        })
+      })
+      client.on('error', (err) => {
+        clearTimeout(timer)
+        client.end(true)
+        reject(err)
+      })
+    })
+    setButtonFeedback(w.id, true, `Published to ${topic}`)
+  } catch (e) {
+    setButtonFeedback(w.id, false, e.message || 'MQTT publish failed')
+  }
+}
+
+async function runHttpButton(w) {
+  const url = w.config.url
+  if (!url) { setButtonFeedback(w.id, false, 'No URL configured'); return }
+  let headers = {}
+  try { headers = JSON.parse(w.config.headers || '{}') } catch { /* ignore malformed headers */ }
+  try {
+    if (w.config.action === 'http.post') {
+      let body = {}
+      try { body = JSON.parse(w.config.body || '{}') } catch { body = w.config.body }
+      await axios.post(url, body, { headers, timeout: 15000 })
+    } else {
+      await axios.get(url, { headers, timeout: 15000 })
+    }
+    setButtonFeedback(w.id, true, 'Request sent')
+  } catch (e) {
+    setButtonFeedback(w.id, false, e.response?.status ? `HTTP ${e.response.status}` : (e.message || 'Request failed'))
+  }
+}
+
+function downloadButtonCsv(w) {
+  const filename = w.config.filename || 'export.csv'
+  if (predictionRecordBuffer.value.length > 0) {
+    downloadCSV(buildPredictionCSV(), filename)
+    setButtonFeedback(w.id, true, `Downloaded ${filename}`)
+    return
+  }
+  // No recording buffer (CSV-upload app, or nothing recorded yet) — fall
+  // back to a single-row CSV of the current pipeline output.
+  const val = getWidgetValue(w.config.source_field)
+  const csv = 'field,value\n' + `${w.config.source_field || 'prediction'},${csvEscape(val)}`
+  downloadCSV(csv, filename)
+  setButtonFeedback(w.id, true, `Downloaded ${filename}`)
+}
+
+async function runButtonAction(w) {
+  if (buttonLoading.value[w.id]) return
+  buttonLoading.value = { ...buttonLoading.value, [w.id]: true }
+  try {
+    switch (w.config.action) {
+      case 'mqtt.publish': await publishButtonMqtt(w); break
+      case 'http.get':
+      case 'http.post': await runHttpButton(w); break
+      case 'download.csv': downloadButtonCsv(w); break
+      default: setButtonFeedback(w.id, false, `Unknown action: ${w.config.action}`)
+    }
+  } finally {
+    const next = { ...buttonLoading.value }
+    delete next[w.id]
+    buttonLoading.value = next
+  }
+}
+
 // ── Signal Recorder ─────────────────────────────────
 const isMultiModelApp = computed(() => {
   return parsedNodes.value.some(n => n.type === 'output.multi_model_compare')
@@ -4951,6 +5383,21 @@ async function runPipeline() {
   flex-shrink: 0;
 }
 
+/* When the author has added DESIGN widgets, the wall-monitor "no scroll"
+   constraint stops making sense — the custom dashboard grid is now the
+   top of a document that flows into the auto-generated dashboard body.
+   Let the page scroll normally so the user can see everything. */
+.published-app.dashboard-mode.has-design-widgets {
+  height: auto;
+  min-height: 100vh;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.published-app.dashboard-mode.has-design-widgets .app-content {
+  height: auto;
+  min-height: 100vh;
+}
+
 .app-loading {
   display: flex;
   flex-direction: column;
@@ -5034,6 +5481,107 @@ async function runPipeline() {
   margin-bottom: 12px;
   color: #c9d1d9;
 }
+
+/* DESIGN widgets dashboard (2026-08-12 refactor) — 12-col / 60px-row CSS
+   grid mirrors the DESIGN tab's grid-layout-plus canvas exactly, so each
+   widget renders in the same position/size the operator arranged it in.
+   See docs/PLAN_2026-08-12_app-builder-widgets.md */
+.design-dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(12, 1fr);
+  grid-auto-rows: 60px;
+  gap: 12px;
+}
+
+.tier1-widget {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 12px;
+  padding: 14px;
+  overflow: auto;
+}
+
+.tier1-text-block :is(h1, h2, h3) {
+  color: #e6edf3;
+  margin: 0 0 6px;
+}
+.tier1-text-block h1 { font-size: 22px; }
+.tier1-text-block h2 { font-size: 17px; }
+.tier1-text-block h3 { font-size: 14px; }
+.tier1-text-block p {
+  color: #c9d1d9;
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 0 0 6px;
+}
+.tier1-text-block ul { margin: 0 0 6px 18px; color: #c9d1d9; font-size: 13px; }
+.tier1-text-block a { color: #60a5fa; }
+.tier1-text-block:only-child { flex-basis: 100%; }
+
+.tier1-big-number {
+  text-align: center;
+}
+.tier1-bn-label {
+  font-size: 11px;
+  color: #8b949e;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 4px;
+}
+.tier1-bn-value {
+  font-family: monospace;
+  font-weight: 700;
+}
+.tier1-bn-sm { font-size: 20px; }
+.tier1-bn-md { font-size: 28px; }
+.tier1-bn-lg { font-size: 36px; }
+.tier1-bn-xl { font-size: 48px; }
+.tier1-bn-unit {
+  font-size: 14px;
+  color: #8b949e;
+  margin-left: 4px;
+}
+
+.tier1-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.tier1-status-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.tier1-status-label {
+  font-size: 13px;
+  color: #e6edf3;
+}
+
+.tier1-gauge {
+  text-align: center;
+}
+.tier1-gauge-label {
+  font-size: 11px;
+  color: #8b949e;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 4px;
+}
+.tier1-gauge-value {
+  font-family: monospace;
+  font-size: 16px;
+  font-weight: 600;
+  color: #e6edf3;
+  margin-top: -4px;
+}
+
+.tier1-button-feedback {
+  font-size: 11px;
+  margin-top: 6px;
+}
+.tier1-button-feedback.ok { color: #34d399; }
+.tier1-button-feedback.err { color: #f87171; }
 
 .app-dropzone {
   display: flex;

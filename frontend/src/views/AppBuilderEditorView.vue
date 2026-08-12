@@ -25,7 +25,7 @@
 
       <div class="topbar-tabs d-flex">
         <button
-          v-for="tab in ['BUILD','PREVIEW','PUBLISH']"
+          v-for="tab in ['BUILD','DESIGN','PREVIEW','PUBLISH']"
           :key="tab"
           class="topbar-tab"
           :class="{ active: activeTab === tab }"
@@ -511,6 +511,21 @@
                 </v-btn>
               </div>
 
+              <!-- textarea (generic multi-line / JSON — used by Tier 1 widgets for
+                   markdown content and JSON-shaped fields like thresholds/bands/state_map) -->
+              <v-textarea
+                v-else-if="field.type === 'textarea'"
+                :model-value="getConfigVal(selectedNode, field)"
+                @update:model-value="v => updateConfig(selectedNode.id, field.key, v)"
+                variant="outlined"
+                density="compact"
+                rows="4"
+                auto-grow
+                hide-details
+                :placeholder="field.placeholder || ''"
+                class="config-input"
+              />
+
               <!-- text (generic) -->
               <v-text-field
                 v-else-if="field.type === 'text'"
@@ -720,6 +735,62 @@
                 <span class="browser-model-info">{{ previewModelCap?.label }} · {{ previewModelCap?.algorithm }}</span>
               </div>
 
+              <!-- DESIGN dashboard widgets — mirror of PublishedAppView's grid.
+                   Renders the same widgets the DESIGN tab shows, positioned
+                   with the same CSS Grid semantics the published app uses,
+                   so the operator preview matches production. -->
+              <div v-if="widgets.length > 0" class="preview-dashboard-grid mb-4">
+                <template v-for="w in widgets" :key="w.id">
+                  <div
+                    v-if="w.type === 'widget.text_block'"
+                    class="preview-dashboard-widget"
+                    :style="{ textAlign: w.config.alignment || 'left', ...previewWidgetGridStyle(w) }"
+                  >
+                    <div style="color:#e6edf3; font-weight:600;" :style="{ fontSize: designTextBlockHeadingSize(w) }">
+                      {{ (w.config.content || '').split('\n')[0] || 'Text block' }}
+                    </div>
+                    <div style="color:#8b949e; font-size:11px; white-space:pre-wrap; margin-top:4px;">
+                      {{ (w.config.content || '').split('\n').slice(1).join('\n').trim() }}
+                    </div>
+                  </div>
+
+                  <div v-else-if="w.type === 'widget.big_number'" class="preview-dashboard-widget text-center" :style="previewWidgetGridStyle(w)">
+                    <div style="font-size:11px; color:#8b949e; text-transform:uppercase; letter-spacing:0.5px;">
+                      {{ w.config.label || 'Metric' }}
+                    </div>
+                    <div :style="{ fontSize: designBigNumberSize(w), fontWeight: 700, color: '#a78bfa', fontFamily: 'monospace' }">
+                      {{ (62.3).toFixed(w.config.decimal_places ?? 1) }}<span style="font-size:14px; color:#8b949e; margin-left:4px;">{{ w.config.unit }}</span>
+                    </div>
+                  </div>
+
+                  <div v-else-if="w.type === 'widget.status_indicator'" class="preview-dashboard-widget d-flex align-center gap-2" :style="previewWidgetGridStyle(w)">
+                    <div style="width:14px; height:14px; border-radius:50%; flex-shrink:0;" :style="{ background: designStatusPreview(w).color }" />
+                    <span style="color:#e6edf3; font-size:13px;">
+                      {{ w.config.label || 'Status' }}: {{ designStatusPreview(w).label }}
+                    </span>
+                  </div>
+
+                  <div v-else-if="w.type === 'widget.gauge'" class="preview-dashboard-widget text-center" :style="previewWidgetGridStyle(w)">
+                    <div class="chart-title">{{ w.config.label || 'Gauge' }}</div>
+                    <svg width="120" height="70" viewBox="0 0 140 80">
+                      <path d="M10,75 A60,60 0 0 1 130,75" fill="none" stroke="#21262d" stroke-width="10" />
+                      <path d="M10,75 A60,60 0 0 1 100,20" fill="none" stroke="#a78bfa" stroke-width="10" stroke-linecap="round" />
+                    </svg>
+                    <div style="color:#e6edf3; font-size:14px; font-weight:600; font-family:monospace;">
+                      65{{ w.config.unit }}
+                    </div>
+                  </div>
+
+                  <div v-else-if="w.type === 'widget.button'" class="preview-dashboard-widget" :style="previewWidgetGridStyle(w)">
+                    <button class="preview-action-btn" :style="{ background: designButtonColor(w), color: '#0d1117' }">
+                      <v-icon v-if="w.config.icon" size="14" style="margin-right:4px;">{{ w.config.icon }}</v-icon>
+                      {{ w.config.label || 'Run Action' }}
+                    </button>
+                    <div style="color:#8b949e; font-size:10px; margin-top:6px;">{{ w.config.action }}</div>
+                  </div>
+                </template>
+              </div>
+
               <!-- Input widget -->
               <div v-if="previewInputNode" class="browser-input-widget">
                 <div class="browser-widget-label">
@@ -800,6 +871,236 @@
           </div>
         </div>
       </main>
+    </div>
+
+    <!-- DESIGN Tab — grid dashboard of presentational widgets (2026-08-12   -->
+    <!-- refactor). Widgets no longer live in BUILD's pipeline; they're a    -->
+    <!-- separate layer bound to pipeline outputs via `data_source`.         -->
+    <div v-else-if="activeTab === 'DESIGN'" class="editor-body">
+
+      <!-- Left: Widget Palette + Templates -->
+      <aside class="palette-panel">
+        <div class="palette-group">
+          <div class="palette-group-header">Templates</div>
+          <div
+            v-for="tpl in DASHBOARD_TEMPLATES"
+            :key="tpl.id"
+            class="palette-item template-item"
+            @click="loadTemplate(tpl.id)"
+            :title="tpl.description"
+          >
+            <v-icon size="16" :style="{ color: tpl.color }">{{ tpl.icon }}</v-icon>
+            <span class="palette-item-label">{{ tpl.name }}</span>
+          </div>
+        </div>
+
+        <div class="palette-group" style="margin-top: 12px;">
+          <div class="palette-group-header">Widgets</div>
+          <div
+            v-for="item in widgetPaletteItems"
+            :key="item.type"
+            class="palette-item"
+            @click="addWidget(item.type)"
+            :title="`Add ${item.label}`"
+          >
+            <v-icon size="16" :style="{ color: item.color }">{{ item.icon }}</v-icon>
+            <span class="palette-item-label">{{ item.label }}</span>
+          </div>
+        </div>
+        <div class="palette-footer" style="line-height:1.5;">
+          Load a template to start from a common dashboard layout, or click
+          a widget to drop it on the grid. Drag widget body to move,
+          bottom-right corner to resize.
+        </div>
+      </aside>
+
+      <!-- Center: Grid Canvas -->
+      <main class="canvas-panel design-canvas-panel" @click.self="selectedWidgetId = null">
+        <div v-if="widgets.length === 0" class="canvas-empty">
+          <v-icon size="40" color="grey">mdi-view-dashboard-outline</v-icon>
+          <div class="text-caption text-medium-emphasis mt-2">Drop widgets from the left panel to build your dashboard.</div>
+        </div>
+
+        <grid-layout
+          v-else
+          :layout="gridLayoutModel"
+          :col-num="12"
+          :row-height="60"
+          :margin="[10, 10]"
+          :is-draggable="true"
+          :is-resizable="true"
+          :vertical-compact="true"
+          :use-css-transforms="true"
+          @layout-updated="onGridLayoutUpdated"
+        >
+          <grid-item
+            v-for="item in gridLayoutModel"
+            :key="item.i"
+            :x="item.x" :y="item.y" :w="item.w" :h="item.h" :i="item.i"
+            class="design-grid-item"
+            :class="{ selected: selectedWidgetId === item.i }"
+            @click="selectedWidgetId = item.i"
+          >
+            <button class="node-delete" @click.stop="removeWidget(item.i)" title="Remove widget">
+              <v-icon size="12">mdi-close</v-icon>
+            </button>
+            <div class="design-widget-body" v-if="widgetById(item.i)">
+              <!-- text_block -->
+              <div v-if="widgetById(item.i).type === 'widget.text_block'" :style="{ textAlign: widgetById(item.i).config.alignment || 'left' }">
+                <div style="color:#e6edf3; font-weight:600;" :style="{ fontSize: designTextBlockHeadingSize(widgetById(item.i)) }">
+                  {{ (widgetById(item.i).config.content || '').split('\n')[0] || 'Text block' }}
+                </div>
+                <div style="color:#8b949e; font-size:11px; white-space:pre-wrap; margin-top:4px;">
+                  {{ (widgetById(item.i).config.content || '').split('\n').slice(1).join('\n').trim() }}
+                </div>
+              </div>
+
+              <!-- big_number -->
+              <div v-else-if="widgetById(item.i).type === 'widget.big_number'" class="text-center">
+                <div style="font-size:11px; color:#8b949e; text-transform:uppercase; letter-spacing:0.5px;">
+                  {{ widgetById(item.i).config.label || 'Metric' }}
+                </div>
+                <div :style="{ fontSize: designBigNumberSize(widgetById(item.i)), fontWeight: 700, color: '#a78bfa', fontFamily: 'monospace' }">
+                  {{ (62.3).toFixed(widgetById(item.i).config.decimal_places ?? 1) }}<span style="font-size:14px; color:#8b949e; margin-left:4px;">{{ widgetById(item.i).config.unit }}</span>
+                </div>
+              </div>
+
+              <!-- status_indicator -->
+              <div v-else-if="widgetById(item.i).type === 'widget.status_indicator'" class="d-flex align-center gap-2">
+                <div style="width:14px; height:14px; border-radius:50%; flex-shrink:0;" :style="{ background: designStatusPreview(widgetById(item.i)).color }" />
+                <span style="color:#e6edf3; font-size:13px;">
+                  {{ widgetById(item.i).config.label || 'Status' }}: {{ designStatusPreview(widgetById(item.i)).label }}
+                </span>
+              </div>
+
+              <!-- gauge -->
+              <div v-else-if="widgetById(item.i).type === 'widget.gauge'" class="text-center">
+                <div class="chart-title">{{ widgetById(item.i).config.label || 'Gauge' }}</div>
+                <svg width="120" height="70" viewBox="0 0 140 80">
+                  <path d="M10,75 A60,60 0 0 1 130,75" fill="none" stroke="#21262d" stroke-width="10" />
+                  <path d="M10,75 A60,60 0 0 1 100,20" fill="none" stroke="#a78bfa" stroke-width="10" stroke-linecap="round" />
+                </svg>
+                <div style="color:#e6edf3; font-size:14px; font-weight:600; font-family:monospace;">
+                  65{{ widgetById(item.i).config.unit }}
+                </div>
+              </div>
+
+              <!-- button -->
+              <div v-else-if="widgetById(item.i).type === 'widget.button'">
+                <button class="preview-action-btn" :style="{ background: designButtonColor(widgetById(item.i)), color: '#0d1117' }">
+                  <v-icon v-if="widgetById(item.i).config.icon" size="14" style="margin-right:4px;">{{ widgetById(item.i).config.icon }}</v-icon>
+                  {{ widgetById(item.i).config.label || 'Run Action' }}
+                </button>
+                <div style="color:#8b949e; font-size:10px; margin-top:6px;">{{ widgetById(item.i).config.action }}</div>
+              </div>
+            </div>
+          </grid-item>
+        </grid-layout>
+      </main>
+
+      <!-- Right: Widget Config Panel (mirrors BUILD's config panel) -->
+      <aside class="config-panel">
+        <div class="config-panel-header">
+          {{ selectedWidget ? 'Widget Config' : 'Config Panel' }}
+        </div>
+
+        <div v-if="!selectedWidget" class="config-empty">
+          <v-icon size="32" color="grey">mdi-cursor-default-click-outline</v-icon>
+          <div class="text-caption text-medium-emphasis mt-2">Click a widget to configure</div>
+        </div>
+
+        <div v-else class="config-body">
+          <div class="config-node-header">
+            <div class="d-flex align-center gap-2">
+              <v-icon size="16" :style="{ color: selectedWidgetCap?.color }">{{ selectedWidgetCap?.icon }}</v-icon>
+              <span class="config-node-label">{{ selectedWidgetCap?.label }}</span>
+            </div>
+            <div class="config-node-type">{{ selectedWidget.type }}</div>
+          </div>
+
+          <div class="config-fields">
+            <div
+              v-for="field in selectedWidgetCap?.configSchema"
+              :key="field.key"
+              class="config-field"
+            >
+              <div class="d-flex align-center justify-space-between mb-1">
+                <label class="config-field-label">{{ field.label }}</label>
+                <v-switch
+                  v-if="field.type === 'toggle'"
+                  :model-value="getConfigVal(selectedWidget, field)"
+                  @update:model-value="v => updateWidgetConfig(selectedWidget.id, field.key, v)"
+                  density="compact"
+                  hide-details
+                  color="purple"
+                  class="toggle-inline"
+                />
+              </div>
+
+              <!-- data_source — dynamic list of BUILD pipeline output-producing nodes -->
+              <v-select
+                v-if="field.type === 'data_source'"
+                :model-value="getConfigVal(selectedWidget, field)"
+                @update:model-value="v => updateWidgetConfig(selectedWidget.id, field.key, v)"
+                :items="dataSourceOptions"
+                item-title="label"
+                item-value="value"
+                variant="outlined"
+                density="compact"
+                hide-details
+                clearable
+                placeholder="No pipeline nodes yet — add one in BUILD"
+                class="config-input"
+              />
+
+              <v-textarea
+                v-else-if="field.type === 'textarea'"
+                :model-value="getConfigVal(selectedWidget, field)"
+                @update:model-value="v => updateWidgetConfig(selectedWidget.id, field.key, v)"
+                variant="outlined"
+                density="compact"
+                rows="4"
+                auto-grow
+                hide-details
+                :placeholder="field.placeholder || ''"
+                class="config-input"
+              />
+
+              <v-text-field
+                v-else-if="field.type === 'text'"
+                :model-value="getConfigVal(selectedWidget, field)"
+                @update:model-value="v => updateWidgetConfig(selectedWidget.id, field.key, v)"
+                variant="outlined"
+                density="compact"
+                hide-details
+                class="config-input"
+              />
+
+              <v-text-field
+                v-else-if="field.type === 'number'"
+                :model-value="getConfigVal(selectedWidget, field)"
+                @update:model-value="v => updateWidgetConfig(selectedWidget.id, field.key, parseFloat(v) || 0)"
+                type="number"
+                variant="outlined"
+                density="compact"
+                hide-details
+                class="config-input"
+              />
+
+              <v-select
+                v-else-if="field.type === 'select'"
+                :model-value="getConfigVal(selectedWidget, field)"
+                @update:model-value="v => updateWidgetConfig(selectedWidget.id, field.key, v)"
+                :items="field.options"
+                variant="outlined"
+                density="compact"
+                hide-details
+                class="config-input"
+              />
+            </div>
+          </div>
+        </div>
+      </aside>
     </div>
 
     <!-- PUBLISH Tab -->
@@ -987,6 +1288,12 @@ import api from '@/services/api'
 import { useNotificationStore } from '@/stores/notification'
 import { useAssetTreeStore } from '@/stores/assetTree'
 import MachineTreePickerDialog from '@/components/MachineTreePickerDialog.vue'
+// DESIGN tab grid dashboard (2026-08-12 widget refactor) — Vue 3 fork of
+// vue-grid-layout (which is Vue 2 only). ~30 KB. See docs/PLAN_2026-08-12_app-builder-widgets.md.
+// NOTE: no separate CSS import needed/available — grid-layout-plus 1.1.1
+// self-injects its base styles (.vgl-layout / .vgl-item / .vgl-item__resizer)
+// via a side-effecting <style> tag the moment the module is imported.
+import { GridLayout, GridItem } from 'grid-layout-plus'
 
 const notificationStore = useNotificationStore()
 const assetTreeStore = useAssetTreeStore()
@@ -1041,6 +1348,104 @@ const STATIC_CAPS = {
 }
 
 const PALETTE_ORDER = ['Input', 'Transform', 'Model', 'Output']
+
+// ── DESIGN tab widgets (2026-08-12 refactor of the 2026-08-12 Tier 1
+// widget expansion) — moved OUT of BUILD's OUTPUT palette per customer
+// feedback: presentational widgets don't belong chained into the
+// data-flow pipeline. Renamed 'output.*' -> 'widget.*' so they can never
+// be mistaken for pipeline nodes again. See docs/PLAN_2026-08-12_app-builder-widgets.md.
+// Every widget except the button gets a `data_source` field so it can be
+// pointed at a BUILD pipeline node (see dataSourceOptions computed below).
+const WIDGET_CAPS = {
+  'widget.text_block':       { label: 'Text Block',       icon: 'mdi-text-box-outline',  color: '#94a3b8', category: 'Widget', configSchema: [{ key: 'content', label: 'Content (Markdown — headings, **bold**, *italic*, lists, links)', type: 'textarea', default: 'Section heading\n\nDescriptive text goes here. Supports **bold**, *italic*, [links](https://example.com), and lists.' }, { key: 'heading_level', label: 'Heading Level', type: 'select', options: ['h1','h2','h3','p'], default: 'h2' }, { key: 'alignment', label: 'Alignment', type: 'select', options: ['left','center','right'], default: 'left' }, { key: 'data_source', label: 'Data Source (optional)', type: 'data_source', default: '' }] },
+  'widget.big_number':       { label: 'Big Number',       icon: 'mdi-numeric',           color: '#94a3b8', category: 'Widget', configSchema: [{ key: 'data_source', label: 'Data Source', type: 'data_source', default: '' }, { key: 'label', label: 'Label', type: 'text', default: 'Metric' }, { key: 'source_field', label: 'Source Field (prediction / confidence / score)', type: 'text', default: 'prediction' }, { key: 'unit', label: 'Unit (optional)', type: 'text', default: '' }, { key: 'decimal_places', label: 'Decimal Places', type: 'number', default: 1 }, { key: 'thresholds', label: 'Thresholds (JSON array)', type: 'textarea', default: '[{"below": 20, "color": "info"}, {"below": 80, "color": "success"}, {"above": 80, "color": "warning"}]', placeholder: 'Format: [{"below":20,"color":"info"}, {"above":80,"color":"warning"}]' }, { key: 'size', label: 'Size', type: 'select', options: ['sm','md','lg','xl'], default: 'lg' }] },
+  'widget.status_indicator':  { label: 'Status Indicator', icon: 'mdi-circle-slice-8',    color: '#94a3b8', category: 'Widget', configSchema: [{ key: 'data_source', label: 'Data Source', type: 'data_source', default: '' }, { key: 'label', label: 'Label', type: 'text', default: 'Status' }, { key: 'source_field', label: 'Source Field', type: 'text', default: 'prediction' }, { key: 'state_map', label: 'State Map (JSON object)', type: 'textarea', default: '{"running": {"color":"success","label":"Running","icon":"mdi-check-circle"}, "warning": {"color":"warning","label":"Attention","icon":"mdi-alert"}, "stopped": {"color":"error","label":"Stopped","icon":"mdi-close-circle"}}', placeholder: 'Format: {"running": {"color":"success","label":"Running","icon":"mdi-check-circle"}}' }, { key: 'default_state', label: 'Default State (JSON, optional — used when value not in State Map)', type: 'textarea', default: '{"color":"grey","label":"Unknown","icon":"mdi-help-circle"}' }] },
+  'widget.gauge':             { label: 'Gauge',            icon: 'mdi-gauge',             color: '#94a3b8', category: 'Widget', configSchema: [{ key: 'data_source', label: 'Data Source', type: 'data_source', default: '' }, { key: 'label', label: 'Label', type: 'text', default: 'Gauge' }, { key: 'source_field', label: 'Source Field', type: 'text', default: 'prediction' }, { key: 'min', label: 'Min', type: 'number', default: 0 }, { key: 'max', label: 'Max', type: 'number', default: 100 }, { key: 'unit', label: 'Unit (optional)', type: 'text', default: '' }, { key: 'bands', label: 'Bands (JSON array)', type: 'textarea', default: '[{"from": 0, "to": 70, "color": "success"}, {"from": 70, "to": 90, "color": "warning"}, {"from": 90, "to": 100, "color": "error"}]', placeholder: 'Format: [{"from":0,"to":70,"color":"success"}]' }, { key: 'show_needle', label: 'Show Needle', type: 'toggle', default: true }] },
+  // download.pdf intentionally omitted — needs jsPDF (~200 KB dep), not in package.json.
+  // No data_source field — the button publishes/downloads, it doesn't read a pipeline value.
+  'widget.button':            { label: 'Action Button',    icon: 'mdi-gesture-tap-button', color: '#94a3b8', category: 'Widget', configSchema: [{ key: 'label', label: 'Button Label', type: 'text', default: 'Run Action' }, { key: 'icon', label: 'Icon (MDI name, optional — e.g. mdi-restart)', type: 'text', default: '' }, { key: 'color', label: 'Color', type: 'select', options: ['primary','success','warning','error'], default: 'primary' }, { key: 'action', label: 'Action', type: 'select', options: ['mqtt.publish','http.get','http.post','download.csv'], default: 'mqtt.publish' }, { key: 'topic', label: 'MQTT Topic (for action = mqtt.publish)', type: 'text', default: '' }, { key: 'payload', label: 'MQTT Payload (for action = mqtt.publish, JSON or text)', type: 'textarea', default: '{"command": "reset"}' }, { key: 'broker_url', label: 'MQTT Broker URL (optional — defaults to app broker)', type: 'text', default: '' }, { key: 'url', label: 'URL (for action = http.get / http.post)', type: 'text', default: '' }, { key: 'headers', label: 'HTTP Headers (JSON object, for action = http.*)', type: 'textarea', default: '{}' }, { key: 'body', label: 'HTTP Body (JSON, for action = http.post)', type: 'textarea', default: '{}' }, { key: 'source_field', label: 'Source Field (for action = download.csv, single-row fallback — full recording buffer used if available)', type: 'text', default: 'prediction' }, { key: 'filename', label: 'Download filename (for action = download.csv)', type: 'text', default: 'export.csv' }] },
+}
+const WIDGET_TYPES = Object.keys(WIDGET_CAPS)
+const DEFAULT_WIDGET_LAYOUT = { w: 4, h: 3 } // grid units — 12 cols wide, 60px rows
+
+// Dashboard templates — pre-built widget layouts customers can start from
+// and modify. Loaded via the Templates section in the DESIGN palette.
+// Each template's `widgets` field is a list of {type, config, layout}
+// entries (no id — they're generated on load so multiple loads don't
+// collide). Layouts use the 12-col grid, 60px row height.
+const DASHBOARD_TEMPLATES = [
+  {
+    id: 'machine_health',
+    name: 'Machine Health Overview',
+    description: 'OEE + cycle time + state + reset button. The go-to dashboard for a single-machine operator view.',
+    icon: 'mdi-cog-outline',
+    color: '#22c55e',
+    widgets: [
+      { type: 'widget.text_block', config: { content: '# Machine Status\nLive health for this workcell.', heading_level: 'h1', alignment: 'left' }, layout: { x: 0, y: 0, w: 12, h: 2 } },
+      { type: 'widget.big_number', config: { label: 'OEE', source_field: 'prediction', unit: '%', decimal_places: 1, size: 'lg', thresholds: '[{"below": 60, "color": "error"}, {"below": 80, "color": "warning"}, {"above": 80, "color": "success"}]', data_source: '' }, layout: { x: 0, y: 2, w: 4, h: 4 } },
+      { type: 'widget.gauge', config: { label: 'Cycle Time', source_field: 'value', min: 0, max: 60, unit: 's', bands: '[{"from": 0, "to": 30, "color": "success"}, {"from": 30, "to": 45, "color": "warning"}, {"from": 45, "to": 60, "color": "error"}]', show_needle: true, data_source: '' }, layout: { x: 4, y: 2, w: 4, h: 4 } },
+      { type: 'widget.status_indicator', config: { label: 'State', source_field: 'label', state_map: '{"running":{"color":"success","label":"Running","icon":"mdi-check-circle"},"idle":{"color":"warning","label":"Idle","icon":"mdi-clock-outline"},"fault":{"color":"error","label":"Fault","icon":"mdi-alert"}}', default_state: '{"color":"grey","label":"Unknown"}', data_source: '' }, layout: { x: 8, y: 2, w: 4, h: 4 } },
+      { type: 'widget.button', config: { label: 'Reset Alarms', icon: 'mdi-restart', color: 'warning', action: 'mqtt.publish', topic: 'factory/{{machine}}/control', payload: '{"command": "reset"}', broker_url: '', url: '', headers: '{}', body: '{}', source_field: 'prediction', filename: 'export.csv' }, layout: { x: 0, y: 6, w: 12, h: 2 } },
+    ],
+  },
+  {
+    id: 'production_kpi',
+    name: 'Production KPI Board',
+    description: 'Units produced, defect rate, uptime, and line efficiency gauge. Shift-supervisor dashboard.',
+    icon: 'mdi-chart-box-outline',
+    color: '#a78bfa',
+    widgets: [
+      { type: 'widget.text_block', config: { content: '# Production Metrics — Today', heading_level: 'h1', alignment: 'left' }, layout: { x: 0, y: 0, w: 12, h: 2 } },
+      { type: 'widget.big_number', config: { label: 'Units Produced', source_field: 'value', unit: '', decimal_places: 0, size: 'lg', thresholds: '[]', data_source: '' }, layout: { x: 0, y: 2, w: 4, h: 3 } },
+      { type: 'widget.big_number', config: { label: 'Defect Rate', source_field: 'confidence', unit: '%', decimal_places: 2, size: 'lg', thresholds: '[{"below": 2, "color": "success"}, {"below": 5, "color": "warning"}, {"above": 5, "color": "error"}]', data_source: '' }, layout: { x: 4, y: 2, w: 4, h: 3 } },
+      { type: 'widget.big_number', config: { label: 'Uptime', source_field: 'value', unit: '%', decimal_places: 1, size: 'lg', thresholds: '[{"below": 90, "color": "warning"}, {"above": 95, "color": "success"}]', data_source: '' }, layout: { x: 8, y: 2, w: 4, h: 3 } },
+      { type: 'widget.gauge', config: { label: 'Line Efficiency', source_field: 'prediction', min: 0, max: 100, unit: '%', bands: '[{"from": 0, "to": 60, "color": "error"}, {"from": 60, "to": 85, "color": "warning"}, {"from": 85, "to": 100, "color": "success"}]', show_needle: true, data_source: '' }, layout: { x: 0, y: 5, w: 12, h: 4 } },
+    ],
+  },
+  {
+    id: 'fleet_status',
+    name: 'Multi-Machine Fleet Status',
+    description: 'Grid of status indicators for up to 6 machines. Plant-manager view — one glance tells you what needs attention.',
+    icon: 'mdi-grid',
+    color: '#38bdf8',
+    widgets: [
+      { type: 'widget.text_block', config: { content: '# Fleet Status', heading_level: 'h1', alignment: 'left' }, layout: { x: 0, y: 0, w: 12, h: 2 } },
+      { type: 'widget.status_indicator', config: { label: 'Machine 1', source_field: 'label', state_map: '{"running":{"color":"success","label":"OK","icon":"mdi-check-circle"},"fault":{"color":"error","label":"Fault","icon":"mdi-alert"}}', default_state: '{"color":"grey","label":"Offline","icon":"mdi-power-off"}', data_source: '' }, layout: { x: 0, y: 2, w: 4, h: 2 } },
+      { type: 'widget.status_indicator', config: { label: 'Machine 2', source_field: 'label', state_map: '{"running":{"color":"success","label":"OK","icon":"mdi-check-circle"},"fault":{"color":"error","label":"Fault","icon":"mdi-alert"}}', default_state: '{"color":"grey","label":"Offline","icon":"mdi-power-off"}', data_source: '' }, layout: { x: 4, y: 2, w: 4, h: 2 } },
+      { type: 'widget.status_indicator', config: { label: 'Machine 3', source_field: 'label', state_map: '{"running":{"color":"success","label":"OK","icon":"mdi-check-circle"},"fault":{"color":"error","label":"Fault","icon":"mdi-alert"}}', default_state: '{"color":"grey","label":"Offline","icon":"mdi-power-off"}', data_source: '' }, layout: { x: 8, y: 2, w: 4, h: 2 } },
+      { type: 'widget.status_indicator', config: { label: 'Machine 4', source_field: 'label', state_map: '{"running":{"color":"success","label":"OK","icon":"mdi-check-circle"},"fault":{"color":"error","label":"Fault","icon":"mdi-alert"}}', default_state: '{"color":"grey","label":"Offline","icon":"mdi-power-off"}', data_source: '' }, layout: { x: 0, y: 4, w: 4, h: 2 } },
+      { type: 'widget.status_indicator', config: { label: 'Machine 5', source_field: 'label', state_map: '{"running":{"color":"success","label":"OK","icon":"mdi-check-circle"},"fault":{"color":"error","label":"Fault","icon":"mdi-alert"}}', default_state: '{"color":"grey","label":"Offline","icon":"mdi-power-off"}', data_source: '' }, layout: { x: 4, y: 4, w: 4, h: 2 } },
+      { type: 'widget.status_indicator', config: { label: 'Machine 6', source_field: 'label', state_map: '{"running":{"color":"success","label":"OK","icon":"mdi-check-circle"},"fault":{"color":"error","label":"Fault","icon":"mdi-alert"}}', default_state: '{"color":"grey","label":"Offline","icon":"mdi-power-off"}', data_source: '' }, layout: { x: 8, y: 4, w: 4, h: 2 } },
+    ],
+  },
+  {
+    id: 'quality_console',
+    name: 'Quality Control Console',
+    description: 'Pass rate + quality score + last-inspection status + defect-log button. For QC operators.',
+    icon: 'mdi-shield-check-outline',
+    color: '#f59e0b',
+    widgets: [
+      { type: 'widget.text_block', config: { content: '# Quality Control', heading_level: 'h1', alignment: 'left' }, layout: { x: 0, y: 0, w: 12, h: 2 } },
+      { type: 'widget.big_number', config: { label: 'Pass Rate', source_field: 'confidence', unit: '%', decimal_places: 1, size: 'lg', thresholds: '[{"below": 95, "color": "warning"}, {"below": 90, "color": "error"}, {"above": 98, "color": "success"}]', data_source: '' }, layout: { x: 0, y: 2, w: 4, h: 4 } },
+      { type: 'widget.gauge', config: { label: 'Quality Score', source_field: 'prediction', min: 0, max: 10, unit: '', bands: '[{"from": 0, "to": 5, "color": "error"}, {"from": 5, "to": 8, "color": "warning"}, {"from": 8, "to": 10, "color": "success"}]', show_needle: true, data_source: '' }, layout: { x: 4, y: 2, w: 4, h: 4 } },
+      { type: 'widget.status_indicator', config: { label: 'Latest Inspection', source_field: 'label', state_map: '{"pass":{"color":"success","label":"Pass","icon":"mdi-check"},"fail":{"color":"error","label":"Fail","icon":"mdi-close"},"warning":{"color":"warning","label":"Marginal","icon":"mdi-alert"}}', default_state: '{"color":"grey","label":"No data"}', data_source: '' }, layout: { x: 8, y: 2, w: 4, h: 4 } },
+      { type: 'widget.button', config: { label: 'Log Defect', icon: 'mdi-note-plus-outline', color: 'error', action: 'http.post', topic: '', payload: '{}', broker_url: '', url: 'https://your-mes/api/defects', headers: '{"Content-Type": "application/json"}', body: '{"defect_type": "visual"}', source_field: 'prediction', filename: 'export.csv' }, layout: { x: 0, y: 6, w: 6, h: 2 } },
+      { type: 'widget.text_block', config: { content: '**Shift Supervisor**\nJohn Doe · Ext. 4521', heading_level: 'p', alignment: 'left' }, layout: { x: 6, y: 6, w: 6, h: 2 } },
+    ],
+  },
+  {
+    id: 'simple_metric',
+    name: 'Simple Metric Report',
+    description: 'Minimal single-KPI dashboard: title + one big number + notes. Great for a display-only screen or report view.',
+    icon: 'mdi-view-agenda-outline',
+    color: '#94a3b8',
+    widgets: [
+      { type: 'widget.text_block', config: { content: '# Key Metric\nWhat this dashboard shows.', heading_level: 'h1', alignment: 'center' }, layout: { x: 0, y: 0, w: 12, h: 2 } },
+      { type: 'widget.big_number', config: { label: 'Current Value', source_field: 'value', unit: '', decimal_places: 2, size: 'xl', thresholds: '[]', data_source: '' }, layout: { x: 0, y: 2, w: 12, h: 4 } },
+      { type: 'widget.text_block', config: { content: '**Notes**\nAdd context, thresholds, or contact info here. Supports **bold**, *italic*, [links](https://example.com), and lists.', heading_level: 'p', alignment: 'left' }, layout: { x: 0, y: 6, w: 12, h: 3 } },
+    ],
+  },
+]
 
 // ── State ────────────────────────────────────────────────────────────
 const appName       = ref('My App')
@@ -1290,6 +1695,176 @@ const previewMultiCompareNode = computed(() => nodes.value.find(n => n.type === 
 const previewModelCap   = computed(() => previewModelNode.value ? capabilities.value[previewModelNode.value.type] : null)
 const previewMeta       = computed(() => previewModelCap.value ? MODE_META[previewModelCap.value.mode] : null)
 const previewSlug       = computed(() => (appName.value || '').toLowerCase().replace(/\s+/g, '-'))
+
+// ── DESIGN tab — widget dashboard state (2026-08-12 refactor) ──────
+const widgets          = ref([])   // [{ id, type: 'widget.*', config: {...}, layout: {x,y,w,h} }]
+const selectedWidgetId = ref(null)
+
+const WIDGET_COLOR_HEX = { primary: '#a78bfa', success: '#34d399', warning: '#fbbf24', error: '#f87171', info: '#60a5fa', grey: '#8b949e' }
+
+function safeJsonParse(text, fallback) {
+  try {
+    const parsed = JSON.parse(text)
+    return parsed ?? fallback
+  } catch {
+    return fallback
+  }
+}
+
+const widgetPaletteItems = computed(() =>
+  WIDGET_TYPES.map(type => ({ type, ...WIDGET_CAPS[type] }))
+)
+
+const selectedWidget = computed(() =>
+  widgets.value.find(w => w.id === selectedWidgetId.value) ?? null
+)
+
+const selectedWidgetCap = computed(() =>
+  selectedWidget.value ? WIDGET_CAPS[selectedWidget.value.type] : null
+)
+
+// Every output-producing node currently in the BUILD pipeline — models,
+// and the 6 remaining OUTPUT nodes — so a widget can be pointed at one.
+// Value is the node id; PublishedAppView resolves the live value the same
+// way regardless of which node.id is chosen (App Builder pipelines are a
+// single linear chain with one active prediction stream), but keeping the
+// node id lets the label stay accurate and future-proofs per-node values.
+// Model nodes declare an `outputs` array (regression_result etc. — see
+// MODE_META); the 6 pipeline OUTPUT nodes are terminal sinks and never
+// declared one in STATIC_CAPS, so they're included by category instead.
+// Transform/Input nodes are mid-pipeline and excluded — not meaningful
+// "data sources" for a display widget.
+const dataSourceOptions = computed(() =>
+  nodes.value
+    .filter(n => ['Model', 'Output'].includes(capabilities.value[n.type]?.category))
+    .map(n => {
+      const cap = capabilities.value[n.type]
+      const suffix = cap.outputs?.length ? `: ${cap.outputs[0]}` : ''
+      return { value: n.id, label: `${cap.label}${suffix}` }
+    })
+)
+
+// Grid layout — grid-layout-plus wants a flat array of {i,x,y,w,h,...}.
+// `i` doubles as the widget id so lookups stay O(1) via widgets.value.
+// IMPORTANT: one-way binding only (`:layout` not `v-model:layout`).
+// Two-way binding caused an infinite render loop — the library mutates the
+// array it's handed, we re-emit a new array from the computed getter, it
+// diffs, mutates again, and Chrome locks up. `@layout-updated` is now the
+// single write path.
+const gridLayoutModel = computed(() =>
+  widgets.value.map(w => ({
+    i: w.id,
+    x: w.layout?.x ?? 0,
+    y: w.layout?.y ?? 0,
+    w: w.layout?.w ?? DEFAULT_WIDGET_LAYOUT.w,
+    h: w.layout?.h ?? DEFAULT_WIDGET_LAYOUT.h,
+  }))
+)
+
+// grid-layout-plus fires this after drag/resize settles — persist positions.
+// Check-then-write so an unchanged callback (very common on layout init)
+// doesn't touch reactive state and doesn't kick off a re-render loop.
+function onGridLayoutUpdated(items) {
+  for (const item of items) {
+    const w = widgets.value.find(w => w.id === item.i)
+    if (!w) continue
+    const cur = w.layout || {}
+    if (cur.x === item.x && cur.y === item.y &&
+        cur.w === item.w && cur.h === item.h) continue
+    w.layout = { x: item.x, y: item.y, w: item.w, h: item.h }
+  }
+}
+
+function nextWidgetY() {
+  if (widgets.value.length === 0) return 0
+  return Math.max(...widgets.value.map(w => (w.layout?.y ?? 0) + (w.layout?.h ?? DEFAULT_WIDGET_LAYOUT.h)))
+}
+
+function addWidget(type) {
+  const cap = WIDGET_CAPS[type]
+  if (!cap) return
+  const widget = {
+    id: `w${Date.now()}_${Math.random().toString(36).slice(2)}`,
+    type,
+    config: initConfig(cap),
+    layout: { x: 0, y: nextWidgetY(), ...DEFAULT_WIDGET_LAYOUT },
+  }
+  widgets.value.push(widget)
+  selectedWidgetId.value = widget.id
+}
+
+// Load a DASHBOARD_TEMPLATE — replaces the current widgets if any exist.
+// Fresh IDs are generated each load so loading the same template twice
+// doesn't create duplicate-id collisions.
+function loadTemplate(templateId) {
+  const tpl = DASHBOARD_TEMPLATES.find(t => t.id === templateId)
+  if (!tpl) return
+  if (widgets.value.length > 0) {
+    if (!window.confirm(`Load "${tpl.name}" template? This will replace your current ${widgets.value.length} widget(s).`)) {
+      return
+    }
+  }
+  const stamp = Date.now()
+  widgets.value = tpl.widgets.map((w, i) => ({
+    id: `w${stamp}_${i}_${Math.random().toString(36).slice(2, 8)}`,
+    type: w.type,
+    // Deep-clone config so the template stays pristine for the next load.
+    config: JSON.parse(JSON.stringify(w.config)),
+    layout: { ...w.layout },
+  }))
+  selectedWidgetId.value = null
+}
+
+function removeWidget(id) {
+  widgets.value = widgets.value.filter(w => w.id !== id)
+  if (selectedWidgetId.value === id) selectedWidgetId.value = null
+}
+
+function updateWidgetConfig(widgetId, key, val) {
+  const widget = widgets.value.find(w => w.id === widgetId)
+  if (!widget) return
+  widget.config[key] = val
+}
+
+function widgetById(id) {
+  return widgets.value.find(w => w.id === id) ?? null
+}
+
+// Mockup values for the DESIGN canvas — same simulated-data approach BUILD's
+// PREVIEW tab uses; live values only exist once the app is published.
+function designTextBlockHeadingSize(w) {
+  const lvl = w?.config?.heading_level
+  return { h1: '20px', h2: '16px', h3: '14px', p: '12px' }[lvl] || '16px'
+}
+function designBigNumberSize(w) {
+  const size = w?.config?.size
+  return { sm: '20px', md: '28px', lg: '36px', xl: '48px' }[size] || '36px'
+}
+function designStatusPreview(w) {
+  const cfg = w?.config || {}
+  const stateMap = safeJsonParse(cfg.state_map, {})
+  const firstKey = Object.keys(stateMap)[0]
+  const entry = (firstKey && stateMap[firstKey]) || safeJsonParse(cfg.default_state, null) || { color: 'grey', label: 'Unknown' }
+  return { color: WIDGET_COLOR_HEX[entry.color] || entry.color || '#8b949e', label: entry.label || firstKey || 'Unknown' }
+}
+function designButtonColor(w) {
+  const color = w?.config?.color
+  return WIDGET_COLOR_HEX[color] || WIDGET_COLOR_HEX.primary
+}
+
+// CSS Grid placement for the PREVIEW-tab dashboard mock — matches how
+// PublishedAppView positions the same widgets so the operator preview
+// mirrors production.
+function previewWidgetGridStyle(w) {
+  const x = w?.layout?.x ?? 0
+  const y = w?.layout?.y ?? 0
+  const width = w?.layout?.w ?? 4
+  const height = w?.layout?.h ?? 2
+  return {
+    gridColumn: `${x + 1} / span ${width}`,
+    gridRow: `${y + 1} / span ${height}`,
+  }
+}
 
 // Simulated chart data
 const chartPts  = Array.from({ length: 40 }, (_, i) => 50 + Math.sin(i * 0.4) * 18 + Math.sin(i * 1.7) * 5)
@@ -1937,13 +2512,36 @@ function copyToClipboard(text) {
 }
 
 // ── API calls ────────────────────────────────────────────────────
+// ── DESIGN widget persistence (2026-08-12) ──────────────────────────
+// The backend has no dedicated `widgets` column (nodes/edges are real SQL
+// columns with an explicit allow-list in update_app() — see
+// backend/app/routes/app_builder.py ~line 484). Rather than add a backend
+// migration for a purely-frontend refactor, DESIGN widgets are appended to
+// the SAME `nodes` array the backend already stores verbatim as JSON —
+// they're just tagged `type: 'widget.*'` and filtered back out on load.
+// `edges` (which drives the backend's pipeline order/execution) is built
+// from `nodes.value` only, so widget entries can never corrupt the chain;
+// the runner's node-type dispatch also silently no-ops on unrecognized
+// `widget.*` types (falls through every `elif`), so this is safe even if
+// an edge ever pointed at one. Existing apps with no widgets naturally
+// default `widgets.value` to `[]`.
+function splitLoadedNodes(rawNodes) {
+  const all = Array.isArray(rawNodes) ? rawNodes : []
+  nodes.value   = all.filter(n => !WIDGET_TYPES.includes(n?.type))
+  widgets.value = all.filter(n => WIDGET_TYPES.includes(n?.type))
+}
+
+function mergedNodesForSave() {
+  return [...nodes.value, ...widgets.value]
+}
+
 async function loadApp() {
   if (!appId.value) return
   try {
     const resp = await api.get(`/api/app-builder/apps/${appId.value}`)
     const data = resp.data
     appName.value = data.name || 'My App'
-    nodes.value   = data.nodes || []
+    splitLoadedNodes(data.nodes)
     // Phase J — normalize legacy single-topic config into multi-topic shape.
     // Silent, per spec: user shouldn't see a migration prompt.
     migrateLegacyTopics()
@@ -1974,7 +2572,7 @@ async function saveApp() {
   try {
     await api.put(`/api/app-builder/apps/${appId.value}`, {
       name: appName.value,
-      nodes: nodes.value,
+      nodes: mergedNodesForSave(),
       edges: buildEdges(),
       // Phase I Q4 — persist toggle so a hard reload keeps the choice even
       // if localStorage is wiped.
@@ -1995,7 +2593,7 @@ async function publishApp() {
     // Save first to ensure nodes are persisted
     await api.put(`/api/app-builder/apps/${appId.value}`, {
       name: appName.value,
-      nodes: nodes.value,
+      nodes: mergedNodesForSave(),
       edges: buildEdges(),
       // Phase I Q4 — bake the toggle into the persisted app record so the
       // published URL is deterministic (any user visiting the app URL sees
@@ -2203,6 +2801,17 @@ onMounted(async () => {
 }
 
 .palette-item:hover { background: #161b22; }
+
+/* Template items look a bit richer than plain widget items — thicker
+   left border so they read as "one-click preset" not "single widget". */
+.template-item {
+  border-left: 2px solid transparent;
+  padding-left: 6px;
+}
+.template-item:hover {
+  border-left-color: #a78bfa;
+  background: #1a1520;
+}
 
 .palette-item-info {
   flex: 1;
@@ -2951,6 +3560,26 @@ onMounted(async () => {
   margin-bottom: 12px;
 }
 
+/* PREVIEW-tab dashboard mock grid — mirrors PublishedAppView's grid so
+   what the operator sees in production matches what the author sees in
+   the editor's PREVIEW. 12 columns, 60px rows, same as DESIGN. */
+.preview-dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(12, 1fr);
+  grid-auto-rows: 60px;
+  gap: 8px;
+}
+.preview-dashboard-widget {
+  background: #0d1117;
+  border: 1px solid #21262d;
+  border-radius: 6px;
+  padding: 12px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
 .browser-widget-label {
   font-size: 9px;
   color: #6e7681;
@@ -3076,6 +3705,15 @@ onMounted(async () => {
   border-color: rgba(248, 113, 113, 0.3);
 }
 
+.preview-action-btn {
+  border: none;
+  border-radius: 6px;
+  padding: 8px 18px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: default;
+}
+
 .preview-table {
   width: 100%;
   border-collapse: collapse;
@@ -3108,4 +3746,53 @@ onMounted(async () => {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: #484f58; }
+
+/* ── DESIGN tab — grid dashboard (2026-08-12 widget refactor) ─────── */
+.design-canvas-panel {
+  display: block;
+  align-items: initial;
+  cursor: default;
+  padding: 16px;
+}
+
+.design-grid-item {
+  position: relative;
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.design-grid-item:hover { border-color: #555; }
+.design-grid-item:hover .node-delete { opacity: 1; }
+
+.design-grid-item.selected {
+  border-color: #7c3aed;
+  background: #1a1230;
+  box-shadow: 0 0 16px rgba(124, 58, 237, 0.15);
+}
+
+.design-widget-body {
+  width: 100%;
+  height: 100%;
+  padding: 14px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+/* grid-layout-plus internals (class names: vgl-*) — resize handle +      */
+/* drag placeholder, themed dark. See node_modules/grid-layout-plus/src/  */
+/* helpers/common.ts useNameHelper('item', 'vgl') for the naming scheme.  */
+.design-canvas-panel :deep(.vgl-item--placeholder) {
+  background: #7c3aed;
+  border-radius: 12px;
+}
+.design-canvas-panel :deep(.vgl-item__resizer) {
+  opacity: 0.5;
+}
+.design-canvas-panel :deep(.vgl-item__resizer:before) {
+  border-color: #8b949e;
+}
 </style>
