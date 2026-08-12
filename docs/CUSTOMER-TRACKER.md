@@ -20,11 +20,48 @@ Each item lists commit SHAs where relevant. `git show <sha>` for details.
 
 ## OPEN ITEMS
 
-**None.** All three big customer requests from the 2026-06 / 2026-07
-round shipped 2026-07-04: F1 Folder Watcher (T15), F2 Multi-Dataset
-Wizard (T16), F4 Project Status view (T17). Small housekeeping items
-in [FOLLOW-UPS.md](./FOLLOW-UPS.md) (~40 min total) and larger parked
-initiatives in [FUTURE-WORK.md](./FUTURE-WORK.md) remain.
+Three new items opened 2026-08-12 from a customer co-development
+conversation. Two are active workstreams; one is parked pending
+customer answers.
+
+### F6. Partner Model Trainer SDK
+**Status:** 🔧 Active — start immediately | **Effort:** ~3 weeks
+**Type:** feature | **Requested:** 2026-08-12
+**Full plan:** [docs/PLAN_2026-08-12_partner-sdk.md](./PLAN_2026-08-12_partner-sdk.md)
+
+Enable third parties (customer's OEM partners) to ship their own
+proprietary model trainers as Docker containers that plug into CiRA ME
+over a versioned HTTP contract. Neither side sees the other's source.
+Partner ships to end-users independently of our release cycle.
+Generalizes the existing `cirame-ti-modelmaker` pattern into a public
+SDK. Partner-trained models appear as first-class ME-LAB endpoints,
+indistinguishable from ours.
+
+### F7. App Builder Widgets — Tier 1 expansion
+**Status:** 🔧 Active — start immediately | **Effort:** ~2 weeks
+**Type:** feature | **Requested:** 2026-08-12
+**Full plan:** [docs/PLAN_2026-08-12_app-builder-widgets.md](./PLAN_2026-08-12_app-builder-widgets.md)
+
+Add 5 new output node types so published apps look like real operator
+dashboards: `output.button`, `output.big_number`, `output.gauge`,
+`output.status_indicator`, `output.text_block`. Each is individually
+shippable (~1-3 days). Explicitly out of scope: variable/expression
+system (Tier 2) and full low-code layout (Tier 3).
+
+### F5. SQL data feed from Mitsubishi MES
+**Status:** ⏸ Parked — plan written, unblock later | **Effort:** ~2 weeks (Phase 1)
+**Type:** feature | **Requested:** 2026-08-12
+**Full plan:** [docs/PLAN_2026-08-12_sql-data-feed.md](./PLAN_2026-08-12_sql-data-feed.md)
+
+Ingest data from customer's MS SQL Server (Mitsubishi MES that stores
+PLC data) directly into CiRA ME's dataset section. Sample OEE file
+reviewed at `D:\tmp\OEE_202607.xlsx` — already wide format, 109k rows.
+Phase 1 scope reduced to one-shot SQL ingest only (connection + query
+editor + preview + auto-encode categoricals + NULL string handling +
+Windows Auth). Explicitly deferred: daily refresh scheduler (Phase 2),
+live SQL polling (Phase 3), time-based windowing primitive. Blocked on
+customer answers to: OEE formula, Windows Auth preference, and
+per-machine vs cross-machine model split.
 
 ---
 
