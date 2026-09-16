@@ -812,6 +812,46 @@
 
           <!-- ────────── Single-model prediction + live chart ────────── -->
           <div v-else class="dash-content dash-single">
+            <!-- Live signal preview — Phase K polish (2026-08-04): always
+                 shown when connected so the operator sees the sensor
+                 waveform even before the first inference. Was previously
+                 only in recorder mode; the classifier dashboard had no
+                 raw-signal view at all, which read as "the graph is
+                 missing" to workshop operators. -->
+            <div v-if="mqttConnected" class="dash-signal-preview">
+              <div class="dash-signal-preview-head">
+                <span class="text-caption font-weight-bold text-medium-emphasis">
+                  <v-icon size="12" class="mr-1">mdi-pulse</v-icon>
+                  LIVE SIGNAL
+                </span>
+                <v-chip v-if="signalPreviewChannelList.length > 0" size="x-small" variant="tonal" color="info">
+                  {{ signalPreviewChannelList.length }} channel{{ signalPreviewChannelList.length === 1 ? '' : 's' }}
+                </v-chip>
+                <v-spacer />
+                <v-select
+                  v-model="previewWindowSec"
+                  :items="[5, 10, 30, 60, 120]"
+                  label="Window (s)"
+                  variant="outlined"
+                  density="compact"
+                  hide-details
+                  style="max-width: 130px; font-size: 10px;"
+                />
+              </div>
+              <div v-if="previewBuffer.length > 1" class="dash-signal-preview-chart">
+                <Line :data="previewChartData" :options="previewChartOptions" />
+              </div>
+              <div v-else class="dash-signal-preview-empty">
+                <v-icon size="28" color="grey">mdi-chart-timeline-variant</v-icon>
+                <div class="text-caption text-medium-emphasis mt-1">
+                  Waiting for first MQTT message on
+                  <code v-if="mqttTopics && mqttTopics.length > 0">{{ mqttTopics.join(', ') }}</code>
+                  <code v-else>(no topics configured)</code>
+                </div>
+              </div>
+            </div>
+
+          <div class="dash-single-row">
             <!-- Big prediction card -->
             <div v-if="livePrediction !== null" class="dash-prediction-card" :style="{ borderColor: modeColor + '55' }">
               <div class="live-prediction-label">Latest Prediction</div>
@@ -915,6 +955,8 @@
                 <div class="text-caption text-medium-emphasis mt-2">Table appears once inferences begin</div>
               </div>
             </template>
+          </div>
+          <!-- /.dash-single-row -->
           </div>
         </div>
       </div>
@@ -3479,6 +3521,18 @@ const isMultiTopicRecorder = computed(() => (
   && Array.isArray(mqttTopics.value)
   && mqttTopics.value.length > 1
 ))
+
+// Channel names shown in the LIVE SIGNAL preview badge on the classifier
+// dashboard. Draws from the same fallbacks as the actual chart datasets
+// (config → sensor_columns → auto-detected on first message) so the badge
+// stays truthful even before any message has arrived and after we sniff
+// them out live (Phase K polish, 2026-08-04).
+const signalPreviewChannelList = computed(() => {
+  if (liveChannels.value && liveChannels.value.length > 0) return liveChannels.value
+  if (autoDetectedChannels.value && autoDetectedChannels.value.length > 0)
+    return autoDetectedChannels.value
+  return []
+})
 
 const previewChartData = computed(() => {
   void previewTicker.value
@@ -6122,13 +6176,64 @@ async function runPipeline() {
   padding: 24px;
 }
 
-/* Single-model layout */
+/* Single-model layout — signal-preview stripe at top, then a 2-column
+   grid of prediction card + chart/table below. Was a straight 2-column
+   grid until Phase K polish (2026-08-04) added the always-visible
+   LIVE SIGNAL panel that workshop operators had been asking for. */
 .dash-single {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  height: 100%;
+  min-height: 0;
+}
+.dash-single-row {
   display: grid;
   grid-template-columns: minmax(340px, 380px) 1fr;
   grid-template-rows: 1fr;
   gap: 12px;
-  height: 100%;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.dash-signal-preview {
+  display: flex;
+  flex-direction: column;
+  background: #0d1117;
+  border: 1px solid #21262d;
+  border-radius: 12px;
+  padding: 10px 14px;
+  gap: 6px;
+  flex: 0 0 auto;
+  max-height: 240px;
+  min-height: 140px;
+}
+.dash-signal-preview-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.dash-signal-preview-chart {
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+}
+.dash-signal-preview-empty {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: #6e7681;
+  text-align: center;
+  padding: 6px;
+}
+.dash-signal-preview-empty code {
+  background: #161b22;
+  padding: 1px 6px;
+  border-radius: 4px;
+  color: #a5d6ff;
+  font-family: monospace;
+  font-size: 10px;
 }
 .dash-prediction-card {
   background: #0d1117;
