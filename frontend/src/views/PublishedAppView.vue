@@ -3903,15 +3903,16 @@ async function startLiveStream() {
               console.error('[recorder] appendPerTopicRecorderRow failed', e)
             }
           }
-          // Preview buffer (recorder-mode only): always updates while connected,
-          // independent of whether the user has pressed Record. Tag with
-          // `_topic` so the preview chart can split-by-topic when the
-          // recorder is subscribed to multiple topics (Phase J follow-up).
-          if (isRecorderMode.value) {
-            previewBuffer.value.push({ ts: Date.now(), _topic, ...sample })
-            prunePreviewBuffer()
-            previewTicker.value++
-          }
+          // Preview buffer: always updates while connected, in ANY mode.
+          // Recorder uses it for the record-preview chart; classifier
+          // apps use it for the LIVE SIGNAL stripe added in the Phase K
+          // dashboard polish. Was previously gated on isRecorderMode only,
+          // which left the classifier's LIVE SIGNAL stuck on the empty
+          // state even after 1,000+ messages arrived. Tag with `_topic`
+          // so multi-topic subs render one series per topic.
+          previewBuffer.value.push({ ts: Date.now(), _topic, ...sample })
+          prunePreviewBuffer()
+          previewTicker.value++
           // Record if in recorder mode and recording
           if (isRecorderMode.value && recorderState.value.recording && recorderState.value.currentLabel) {
             const maxDur = (recorderConfig.value.max_duration || 300) * 1000
@@ -3947,10 +3948,11 @@ async function startLiveStream() {
     }, 1000)
 
     // Prune preview buffer even when messages slow down, so old points drop off
-    // the rolling window on the chart.
+    // the rolling window on the chart. Runs in every mode (matches the
+    // always-on previewBuffer push above).
     if (previewPruneInterval) clearInterval(previewPruneInterval)
     previewPruneInterval = setInterval(() => {
-      if (isRecorderMode.value && previewBuffer.value.length > 0) {
+      if (previewBuffer.value.length > 0) {
         prunePreviewBuffer()
         previewTicker.value++
       }
