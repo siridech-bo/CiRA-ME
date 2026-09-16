@@ -1019,6 +1019,21 @@
             <v-icon start>mdi-plus</v-icon>
             {{ hasUnsavedLabels ? 'Save Labels + Load More' : 'Load More Rows' }}
           </v-btn>
+          <v-btn
+            v-if="dataPreview.preview.length < dataPreview.metadata.total_rows && dataPreview.preview.length < maxPreviewRows"
+            variant="tonal"
+            size="small"
+            color="primary"
+            class="ml-2"
+            :loading="loadingMore || savingLabels"
+            :title="dataPreview.metadata.total_rows > maxPreviewRows
+              ? `Total ${dataPreview.metadata.total_rows.toLocaleString()} rows; preview is capped at ${maxPreviewRows.toLocaleString()}.`
+              : `Load all ${dataPreview.metadata.total_rows.toLocaleString()} rows in one go.`"
+            @click="loadAllPreviewWithSave"
+          >
+            <v-icon start>mdi-arrow-collapse-down</v-icon>
+            Load All ({{ loadAllTargetRows.toLocaleString() }})
+          </v-btn>
           <span v-else-if="dataPreview.preview.length >= maxPreviewRows" class="text-caption text-warning">
             Preview limit reached ({{ maxPreviewRows }} rows max)
           </span>
@@ -3382,7 +3397,9 @@ async function confirmTextImport() {
   }
 }
 
-async function loadMorePreview() {
+// targetRowCount overrides the default "add 100 more" behaviour so the
+// "Load all" button can jump straight to the max in one request.
+async function loadMorePreview(targetRowCount?: number) {
   if (!dataPreview.value) return
   const sourceUrl = dataPreview.value.metadata?.source_url as string | undefined
   if (!selectedFile.value && selectedFiles.value.length === 0 && !sourceUrl) return
@@ -3391,7 +3408,9 @@ async function loadMorePreview() {
     loadingMore.value = true
 
     const currentRows = dataPreview.value.preview.length
-    const newRowCount = Math.min(currentRows + 100, maxPreviewRows)
+    const newRowCount = targetRowCount != null
+      ? Math.min(targetRowCount, maxPreviewRows)
+      : Math.min(currentRows + 100, maxPreviewRows)
 
     // URL-loaded data: re-fetch. Cheaper alternative would need a backend
     // "session preview" endpoint; keep it simple and reuse load-from-url.
@@ -4426,6 +4445,22 @@ async function loadMorePreviewWithSave() {
   }
   await _originalLoadMorePreview()
 }
+
+// "Load all" — jumps to the full row count in one request, capped at
+// maxPreviewRows for backend safety. Same label-save-first guard so
+// pending edits don't get orphaned when the preview reloads.
+async function loadAllPreviewWithSave() {
+  if (!dataPreview.value) return
+  if (labelModeAvailable.value && hasUnsavedLabels.value) {
+    const ok = await saveLabels()
+    if (!ok) return
+  }
+  await _originalLoadMorePreview(dataPreview.value.metadata.total_rows)
+}
+const loadAllTargetRows = computed(() => {
+  const total = dataPreview.value?.metadata?.total_rows ?? 0
+  return Math.min(total, maxPreviewRows)
+})
 
 // ── beforeunload guard ──────────────────────────────────────────────────
 
