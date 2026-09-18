@@ -179,29 +179,40 @@
           />
 
           <div class="text-caption font-weight-bold text-medium-emphasis mb-2">TEMPLATE</div>
-          <v-row dense>
-            <v-col v-for="tpl in TEMPLATES" :key="tpl.id" cols="6">
-              <v-card
-                variant="outlined"
-                :color="selectedTemplate === tpl.id ? 'purple' : undefined"
-                class="pa-3 template-card"
-                :class="{ 'template-selected': selectedTemplate === tpl.id }"
-                @click="selectedTemplate = tpl.id"
-                style="cursor: pointer; min-height: 90px"
-              >
-                <div class="d-flex align-center gap-2 mb-1">
-                  <v-icon size="16" :color="tpl.color">{{ tpl.icon }}</v-icon>
-                  <span class="text-body-2 font-weight-bold">{{ tpl.name }}</span>
-                </div>
-                <div class="text-caption text-medium-emphasis">{{ tpl.description }}</div>
-                <div class="mt-1">
-                  <v-chip v-for="node in tpl.nodeLabels" :key="node" size="x-small" variant="tonal" class="mr-1 mt-1" style="font-size:9px">
-                    {{ node }}
-                  </v-chip>
-                </div>
-              </v-card>
-            </v-col>
-          </v-row>
+          <template v-for="grp in templateGroups" :key="grp.cat">
+            <div class="d-flex align-center mb-2 mt-3 cat-header" style="gap: 6px; cursor: pointer;"
+              @click="toggleCat(grp.cat)">
+              <v-icon size="18" class="chevron" :class="{ open: isExpanded(grp.cat) }">mdi-chevron-right</v-icon>
+              <v-icon size="15" :color="grp.color">{{ grp.icon }}</v-icon>
+              <span class="text-caption font-weight-bold" style="letter-spacing: .04em;">{{ grp.cat.toUpperCase() }}</span>
+              <span class="text-caption text-medium-emphasis">· {{ grp.items.length }}</span>
+            </div>
+            <v-expand-transition>
+              <v-row v-show="isExpanded(grp.cat)" dense>
+                <v-col v-for="tpl in grp.items" :key="tpl.id" cols="6">
+                <v-card
+                  variant="outlined"
+                  :color="selectedTemplate === tpl.id ? 'purple' : undefined"
+                  class="pa-3 template-card"
+                  :class="{ 'template-selected': selectedTemplate === tpl.id }"
+                  @click="selectedTemplate = tpl.id"
+                  style="cursor: pointer; min-height: 90px"
+                >
+                  <div class="d-flex align-center gap-2 mb-1">
+                    <v-icon size="16" :color="tpl.color">{{ tpl.icon }}</v-icon>
+                    <span class="text-body-2 font-weight-bold">{{ tpl.name }}</span>
+                  </div>
+                  <div class="text-caption text-medium-emphasis">{{ tpl.description }}</div>
+                  <div class="mt-1">
+                    <v-chip v-for="node in tpl.nodeLabels" :key="node" size="x-small" variant="tonal" class="mr-1 mt-1" style="font-size:9px">
+                      {{ node }}
+                    </v-chip>
+                  </div>
+                </v-card>
+                </v-col>
+              </v-row>
+            </v-expand-transition>
+          </template>
         </v-card-text>
         <v-card-actions class="px-5 pb-4">
           <v-spacer />
@@ -246,7 +257,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, nextTick } from 'vue'
+import { ref, reactive, computed, onMounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import api from '@/services/api'
 import { useNotificationStore } from '@/stores/notification'
@@ -270,6 +281,109 @@ const loading = ref(false)
 
 // Templates
 const TEMPLATES = [
+  {
+    id: 'motor_current_mcsa',
+    name: 'Motor Current Diagnosis (MCSA)',
+    description: 'CSV → Normalize → Window → MCSA Features → Model → Table. Bind an MCSA model — the window size and MCSA feature extraction auto-configure from it.',
+    icon: 'mdi-flash',
+    color: '#42a5f5',
+    nodeLabels: ['CSV', 'Normalize', 'Window', 'MCSA Features', 'Model', 'Table'],
+    nodes: [
+      { id: 'n1', type: 'input.csv_upload', config: { timestamp_col: 'timestamp', value_cols: 'Ia,Ib,Ic' } },
+      { id: 'n2', type: 'transform.normalize', config: { method: 'minmax' } },
+      { id: 'n3', type: 'transform.window', config: { window_size: 50000, step: 25000 } },
+      { id: 'n4', type: 'transform.feature_extract', config: { features: [] } },
+      // model node added by user (bind your saved MCSA model)
+      { id: 'n6', type: 'output.table', config: { max_rows: 100, show_confidence: true } },
+    ],
+  },
+  {
+    id: 'live_motor_current_mcsa',
+    name: 'Motor Current Diagnosis — Live (MQTT)',
+    description: 'MQTT current → Window → MCSA Features → Model → Alert. Live induction-motor fault detection from streaming stator current.',
+    icon: 'mdi-flash-alert',
+    color: '#42a5f5',
+    nodeLabels: ['MQTT', 'Window', 'MCSA Features', 'Model', 'Alert'],
+    nodes: [
+      { id: 'n1', type: 'input.live_stream', config: { broker_url: 'ws://localhost:9001/mqtt', topics: [], channels: 'Ia,Ib,Ic' } },
+      { id: 'n3', type: 'transform.window', config: { window_size: 50000, step: 25000 } },
+      { id: 'n4', type: 'transform.feature_extract', config: { features: [] } },
+      { id: 'n6', type: 'output.alert_badge', config: { label_normal: 'Healthy', label_anomaly: 'Fault Detected', webhook_url: '' } },
+    ],
+  },
+  {
+    id: 'machine_vibration',
+    name: 'Machine Vibration Diagnosis',
+    description: 'CSV → Normalize → Window → Bearing Envelope Features → Model → Table. Bind a bearing model — window and envelope features auto-configure from it.',
+    icon: 'mdi-vibrate',
+    color: '#66bb6a',
+    nodeLabels: ['CSV', 'Normalize', 'Window', 'Envelope Features', 'Model', 'Table'],
+    nodes: [
+      { id: 'n1', type: 'input.csv_upload', config: { timestamp_col: 'timestamp', value_cols: 'accel' } },
+      { id: 'n2', type: 'transform.normalize', config: { method: 'minmax' } },
+      { id: 'n3', type: 'transform.window', config: { window_size: 25600, step: 12800 } },
+      { id: 'n4', type: 'transform.feature_extract', config: { features: [] } },
+      { id: 'n6', type: 'output.table', config: { max_rows: 100, show_confidence: true } },
+    ],
+  },
+  {
+    id: 'live_machine_vibration',
+    name: 'Machine Vibration — Live (MQTT)',
+    description: 'MQTT vibration → Window → Bearing Envelope Features → Model → Alert. Live rolling-element bearing fault detection.',
+    icon: 'mdi-vibrate',
+    color: '#66bb6a',
+    nodeLabels: ['MQTT', 'Window', 'Envelope Features', 'Model', 'Alert'],
+    nodes: [
+      { id: 'n1', type: 'input.live_stream', config: { broker_url: 'ws://localhost:9001/mqtt', topics: [], channels: 'accel' } },
+      { id: 'n3', type: 'transform.window', config: { window_size: 25600, step: 12800 } },
+      { id: 'n4', type: 'transform.feature_extract', config: { features: [] } },
+      { id: 'n6', type: 'output.alert_badge', config: { label_normal: 'Healthy', label_anomaly: 'Bearing Fault', webhook_url: '' } },
+    ],
+  },
+  {
+    id: 'pump_analysis',
+    name: 'Pump Cavitation Diagnosis',
+    description: 'CSV → Normalize → Window → Pump Features → Model → Table. Bind a pump model — window and cavitation/blade-pass features auto-configure from it.',
+    icon: 'mdi-pump',
+    color: '#26c6da',
+    nodeLabels: ['CSV', 'Normalize', 'Window', 'Pump Features', 'Model', 'Table'],
+    nodes: [
+      { id: 'n1', type: 'input.csv_upload', config: { timestamp_col: 'timestamp', value_cols: 'vibration' } },
+      { id: 'n2', type: 'transform.normalize', config: { method: 'minmax' } },
+      { id: 'n3', type: 'transform.window', config: { window_size: 20000, step: 10000 } },
+      { id: 'n4', type: 'transform.feature_extract', config: { features: [] } },
+      { id: 'n6', type: 'output.table', config: { max_rows: 100, show_confidence: true } },
+    ],
+  },
+  {
+    id: 'live_pump_analysis',
+    name: 'Pump Cavitation — Live (MQTT)',
+    description: 'MQTT pump signal → Window → Pump Features → Model → Alert. Live cavitation / impeller-fault detection.',
+    icon: 'mdi-pump',
+    color: '#26c6da',
+    nodeLabels: ['MQTT', 'Window', 'Pump Features', 'Model', 'Alert'],
+    nodes: [
+      { id: 'n1', type: 'input.live_stream', config: { broker_url: 'ws://localhost:9001/mqtt', topics: [], channels: 'vibration' } },
+      { id: 'n3', type: 'transform.window', config: { window_size: 20000, step: 10000 } },
+      { id: 'n4', type: 'transform.feature_extract', config: { features: [] } },
+      { id: 'n6', type: 'output.alert_badge', config: { label_normal: 'Healthy', label_anomaly: 'Cavitation', webhook_url: '' } },
+    ],
+  },
+  {
+    id: 'pump_fusion',
+    name: 'Pump Fusion (Current + Vibration)',
+    description: 'CSV (vibration + 3-phase current) → Normalize → Window → Fusion Features → Model → Table. Bind a pump-fusion model — Park-vector + cavitation features auto-configure.',
+    icon: 'mdi-pump',
+    color: '#26c6da',
+    nodeLabels: ['CSV', 'Normalize', 'Window', 'Fusion Features', 'Model', 'Table'],
+    nodes: [
+      { id: 'n1', type: 'input.csv_upload', config: { timestamp_col: 'timestamp', value_cols: 'vibration,Ia,Ib,Ic' } },
+      { id: 'n2', type: 'transform.normalize', config: { method: 'minmax' } },
+      { id: 'n3', type: 'transform.window', config: { window_size: 20000, step: 10000 } },
+      { id: 'n4', type: 'transform.feature_extract', config: { features: [] } },
+      { id: 'n6', type: 'output.table', config: { max_rows: 100, show_confidence: true } },
+    ],
+  },
   {
     id: 'regression_monitor',
     name: 'Regression Monitor',
@@ -527,6 +641,33 @@ const TEMPLATES = [
   },
 ]
 
+// Template categorization — group the gallery so it doesn't sprawl.
+const VERTICAL_IDS = ['motor_current_mcsa', 'live_motor_current_mcsa', 'machine_vibration', 'live_machine_vibration', 'pump_analysis', 'live_pump_analysis', 'pump_fusion']
+function templateCategory(id: string): string {
+  if (VERTICAL_IDS.includes(id)) return 'Solution Apps'
+  if (id.startsWith('timesnet')) return 'Deep Learning (TimesNet)'
+  if (id === 'recorder') return 'Recording'
+  if (id.startsWith('live_')) return 'Live Stream (MQTT)'
+  return 'General ML (CSV)'
+}
+const CATEGORY_META: Record<string, { icon: string; color: string }> = {
+  'Solution Apps': { icon: 'mdi-shape-outline', color: '#42a5f5' },
+  'General ML (CSV)': { icon: 'mdi-file-delimited', color: '#a78bfa' },
+  'Deep Learning (TimesNet)': { icon: 'mdi-brain', color: '#0ea5e9' },
+  'Live Stream (MQTT)': { icon: 'mdi-access-point', color: '#f59e0b' },
+  'Recording': { icon: 'mdi-record-circle', color: '#94a3b8' },
+}
+const CATEGORY_ORDER = ['Solution Apps', 'General ML (CSV)', 'Deep Learning (TimesNet)', 'Live Stream (MQTT)', 'Recording']
+const templateGroups = computed(() =>
+  CATEGORY_ORDER
+    .map((cat) => ({ cat, ...CATEGORY_META[cat], items: TEMPLATES.filter((t) => templateCategory(t.id) === cat) }))
+    .filter((g) => g.items.length),
+)
+// Collapsible categories — Solution Apps open by default, others collapsed.
+const expanded = reactive<Record<string, boolean>>({ 'Solution Apps': true })
+function toggleCat(cat: string) { expanded[cat] = !expanded[cat] }
+function isExpanded(cat: string) { return !!expanded[cat] }
+
 // Access control options
 const accessOptions = [
   { value: 'public', label: 'Public', icon: 'mdi-earth', color: 'success', hint: 'Anyone with the link' },
@@ -550,7 +691,7 @@ const newAppName = ref('')
 const createError = ref('')
 const creating = ref(false)
 const createNameField = ref<HTMLElement | null>(null)
-const selectedTemplate = ref('regression_monitor')
+const selectedTemplate = ref('motor_current_mcsa')
 
 // Delete dialog
 const showDeleteDialog = ref(false)
@@ -716,6 +857,21 @@ onMounted(() => {
 </script>
 
 <style scoped>
+.cat-header {
+  border-radius: 6px;
+  padding: 2px 4px;
+  transition: background 0.12s;
+  user-select: none;
+}
+.cat-header:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+.chevron {
+  transition: transform 0.18s;
+}
+.chevron.open {
+  transform: rotate(90deg);
+}
 .template-card {
   transition: all 0.15s;
 }

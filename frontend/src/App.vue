@@ -161,6 +161,22 @@
           in localStorage. See SidebarCollapsibleGroup.vue.
         -->
         <SidebarCollapsibleGroup
+          ref="solutionsGroup"
+          title="SOLUTIONS"
+          storage-key="cira.sidebar.solutionsExpanded"
+          :active-routes="['solutions']"
+          :rail="rail"
+        >
+          <v-list-item
+            prepend-icon="mdi-shape-outline"
+            title="Solution Templates"
+            value="solutions"
+            :to="{ name: 'solutions' }"
+            rounded="lg"
+          />
+        </SidebarCollapsibleGroup>
+
+        <SidebarCollapsibleGroup
           ref="globalToolsGroup"
           title="GLOBAL TOOLS"
           storage-key="cira.sidebar.globalToolsExpanded"
@@ -529,6 +545,7 @@ const rail = ref(false)
 
 // Refs into the four collapsible sidebar groups so the sidebar-wide
 // "collapse all" button can call each one's exposed collapse() method.
+const solutionsGroup = ref<InstanceType<typeof SidebarCollapsibleGroup> | null>(null)
 const globalToolsGroup = ref<InstanceType<typeof SidebarCollapsibleGroup> | null>(null)
 const servicesGroup = ref<InstanceType<typeof SidebarCollapsibleGroup> | null>(null)
 const settingsGroup = ref<InstanceType<typeof SidebarCollapsibleGroup> | null>(null)

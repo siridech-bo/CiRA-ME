@@ -72,6 +72,10 @@ interface FeatureSelectionState {
     num_features: number
     num_windows: number
     feature_set?: string
+    // F8 Solutions — physics-aware registry extractor + its nameplate params,
+    // persisted so a reloaded pipeline restores the exact MCSA configuration.
+    extractor_id?: string
+    extractor_params?: Record<string, any>
   } | null
   // Selection result (before applying)
   selectionResult: {
@@ -108,6 +112,21 @@ export const usePipelineStore = defineStore('pipeline', () => {
   // F4: Active project — threaded through Apply endpoints. Null means legacy /
   // ad-hoc pipeline (no project persistence).
   const projectId = ref<number | null>(null)
+
+  // F8 Solutions — the active solution template (recipe), if the user launched
+  // one from the catalog. Seeds windowing/feature defaults across the pipeline.
+  // Persisted to localStorage so it survives navigation and reloads.
+  const activeSolution = ref<any>(
+    (() => { try { return JSON.parse(localStorage.getItem('cira.activeSolution') || 'null') } catch { return null } })(),
+  )
+  function setActiveSolution(s: any) {
+    activeSolution.value = s
+    try { localStorage.setItem('cira.activeSolution', JSON.stringify(s)) } catch { /* ignore */ }
+  }
+  function clearActiveSolution() {
+    activeSolution.value = null
+    try { localStorage.removeItem('cira.activeSolution') } catch { /* ignore */ }
+  }
 
   // Data session
   const dataSession = ref<DataSession | null>(null)
@@ -700,6 +719,9 @@ export const usePipelineStore = defineStore('pipeline', () => {
     trainingApproach,
     currentStep,
     projectId,
+    activeSolution,
+    setActiveSolution,
+    clearActiveSolution,
     setActiveProject,
     createProjectAndAdopt,
     dataSession,

@@ -289,6 +289,9 @@ def replay_ml_pipeline(csv_path: str, pipeline_config: dict,
         sensor_columns=active_sensor_cols,
         method=feat_config.get('method', 'lightweight'),
         feature_set=feat_config.get('feature_set', 'efficient'),
+        sampling_rate=feat_config.get('sampling_rate', 100.0),
+        extractor_id=feat_config.get('extractor_id'),
+        extractor_params=feat_config.get('extractor_params'),
     )
 
     # Step 5: Apply feature selection filter

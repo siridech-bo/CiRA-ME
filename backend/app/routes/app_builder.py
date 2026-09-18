@@ -1023,6 +1023,25 @@ def run_app(slug):
                         else:
                             actual_values.append(float(np.mean(window)))
 
+                # F8 — use the model's trained window size/stride when it
+                # declares one (MCSA needs the exact training window, e.g. 10s@fs).
+                params = dict(params)
+                for _n2 in ordered_nodes:
+                    _nt2 = _n2.get('type', '')
+                    _eid2 = _nt2.replace('model.endpoint.', '') if _nt2.startswith('model.endpoint.') else None
+                    if not _eid2:
+                        continue
+                    _ep2 = MeLabEndpoint.get_by_id(_eid2)
+                    _sv2 = SavedModel.get_by_id(_ep2.get('saved_model_id')) if _ep2 else None
+                    _pc2 = (_sv2 or {}).get('pipeline_config', {})
+                    if isinstance(_pc2, str):
+                        _pc2 = json.loads(_pc2) if _pc2 else {}
+                    _win = (_pc2 or {}).get('windowing', {}) or {}
+                    if _win.get('window_size'):
+                        params['window_size'] = _win['window_size']
+                        if _win.get('stride'):
+                            params['step'] = _win['stride']
+                        break
                 current_data = _apply_windowing(current_data, params)
 
             elif ntype == 'transform.normalize':
@@ -1059,9 +1078,30 @@ def run_app(slug):
                 current_data = _apply_fill_missing(current_data, params)
 
             elif ntype == 'transform.feature_extract':
+                params = dict(params)
                 if column_names:
-                    params = dict(params)
                     params['_column_names'] = column_names
+                # F8 — if a model in the pipeline uses a registry extractor (e.g.
+                # MCSA), extract THOSE features from the model's pipeline_config
+                # (not tsfresh/DSP), so a deployed MCSA dashboard works unchanged.
+                for _n2 in ordered_nodes:
+                    _nt2 = _n2.get('type', '')
+                    _eid2 = _nt2.replace('model.endpoint.', '') if _nt2.startswith('model.endpoint.') else None
+                    if not _eid2:
+                        continue
+                    _ep2 = MeLabEndpoint.get_by_id(_eid2)
+                    _sv2 = SavedModel.get_by_id(_ep2.get('saved_model_id')) if _ep2 else None
+                    _pc2 = (_sv2 or {}).get('pipeline_config', {})
+                    if isinstance(_pc2, str):
+                        _pc2 = json.loads(_pc2) if _pc2 else {}
+                    _fe2 = (_pc2 or {}).get('feature_extraction', {}) or {}
+                    if _fe2.get('extractor_id'):
+                        params['extractor_id'] = _fe2['extractor_id']
+                        params['extractor_params'] = _fe2.get('extractor_params')
+                        params['sampling_rate'] = _fe2.get('sampling_rate', params.get('sampling_rate', 100.0))
+                        if _fe2.get('feature_names'):
+                            params['features'] = _fe2['feature_names']
+                        break
                 current_data = _apply_feature_extraction(current_data, params)
                 logger.info(f"[AppBuilder] After feature_extract: shape={current_data.shape}")
 
@@ -2039,6 +2079,28 @@ def _apply_feature_extraction(data, params):
 
     if not isinstance(data, np.ndarray):
         data = np.array(data, dtype=np.float64)
+
+    # F8 — physics-aware registry extractor (e.g. MCSA). The Solution App Builder
+    # template bakes extractor_id + params + sampling_rate into the feature_extract
+    # node so a deployed MCSA dashboard extracts MCSA features on live current.
+    extractor_id = params.get('extractor_id')
+    if extractor_id:
+        from ..services.feature_extractor import FeatureExtractor
+        if data.ndim != 3:
+            raise ValueError(
+                f"Registry extractor '{extractor_id}' needs 3-D windowed data, got {data.ndim}-D")
+        column_names = params.get('_column_names') or []
+        sensor_cols = [c for c in column_names
+                       if c not in ('timestamp', 'label', 'class', 'target')][:data.shape[2]]
+        result_df = FeatureExtractor().extract_from_windows_direct(
+            data, sensor_cols, method='registry', extractor_id=extractor_id,
+            extractor_params=params.get('extractor_params'),
+            sampling_rate=params.get('sampling_rate', 100.0),
+        )
+        names = feature_names if feature_names else list(result_df.columns)
+        selected = [result_df[f].values if f in result_df.columns else np.zeros(len(result_df))
+                    for f in names]
+        return np.column_stack(selected) if selected else result_df.values
 
     # Use column names if available (passed from pipeline context)
     column_names = params.get('_column_names')

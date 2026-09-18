@@ -55,6 +55,7 @@ def create_app(config=None):
     from .routes.projects import projects_bp
     from .routes.asset_tree import asset_tree_bp
     from .routes.simulators import simulators_bp
+    from .routes.solutions import solutions_bp
 
     app.register_blueprint(auth_bp, url_prefix='/api/auth')
     app.register_blueprint(admin_bp, url_prefix='/api/admin')
@@ -72,6 +73,7 @@ def create_app(config=None):
     app.register_blueprint(projects_bp, url_prefix='/api/projects')
     app.register_blueprint(asset_tree_bp, url_prefix='/api/asset-tree')
     app.register_blueprint(simulators_bp, url_prefix='/api/simulators')
+    app.register_blueprint(solutions_bp, url_prefix='/api/solutions')
 
     # Health check endpoint
     @app.route('/api/health')

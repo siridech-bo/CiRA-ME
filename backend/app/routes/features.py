@@ -294,6 +294,71 @@ def extract_tsfresh_features():
         return jsonify({'error': str(e)}), 400
 
 
+@features_bp.route('/extract-solution', methods=['POST'])
+@login_required
+def extract_solution_features():
+    """Extract features with a physics-aware registry extractor (F8 Solutions
+    Catalog — e.g. the 'mcsa' extractor used by the Motor Current solution).
+
+    Body:
+      session_id    — windowed session id (required)
+      extractor_id  — registry extractor id, e.g. 'mcsa' (required)
+      params        — dict of nameplate params (validated by the extractor)
+      project_id    — optional, to persist the feature_sessions row
+    """
+    data = request.get_json() or {}
+    session_id = data.get('session_id')
+    extractor_id = data.get('extractor_id')
+    params = data.get('params') or {}
+    project_id = data.get('project_id')
+
+    if not session_id or not extractor_id:
+        return jsonify({'error': 'session_id and extractor_id are required'}), 400
+
+    try:
+        extractor = FeatureExtractor()
+        result = extractor.extract_with_registry(session_id, extractor_id, params)
+    except ValueError as e:
+        # user-facing (unknown extractor / incompatible signal / no windows)
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"solution extraction error ({extractor_id}): {e}")
+        return jsonify({'error': str(e)}), 500
+
+    # Persist a feature_sessions row + pickle, mirroring the tsfresh/DSP path.
+    if project_id:
+        try:
+            pid = int(project_id)
+            proj = Project.get_by_id(pid)
+            if proj and proj.get('user_id') == request.current_user['id']:
+                wins = WindowedSession.get_by_project(pid)
+                win_id = wins[0]['id'] if wins else None
+                if win_id:
+                    feat_sid = result.get('session_id')
+                    FeatureSession.create(
+                        project_id=pid,
+                        windowed_session_id=win_id,
+                        method=extractor_id,
+                        feature_names=result.get('feature_names', []),
+                        num_features=result.get('num_features'),
+                        selection={'extractor_id': extractor_id, 'params': params},
+                        session_id=feat_sid,
+                    )
+                    Project.touch(pid, 'features')
+                    try:
+                        from ..services.feature_extractor import _feature_sessions
+                        from ..services.session_persistence import persist_feature_session
+                        entry = _feature_sessions.get(feat_sid) if feat_sid else None
+                        if entry is not None:
+                            persist_feature_session(pid, feat_sid, entry)
+                    except Exception as e:
+                        logger.warning(f"[persist] solution feature pickle failed: {e}")
+        except Exception as e:
+            logger.warning(f"[persist] solution feature row failed: {e}")
+
+    return jsonify(result)
+
+
 @features_bp.route('/select-fresh', methods=['POST'])
 @login_required
 def select_features_fresh():

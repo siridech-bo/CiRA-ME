@@ -1375,6 +1375,19 @@ const DEFAULT_WIDGET_LAYOUT = { w: 4, h: 3 } // grid units — 12 cols wide, 60p
 // collide). Layouts use the 12-col grid, 60px row height.
 const DASHBOARD_TEMPLATES = [
   {
+    id: 'motor_current_mcsa',
+    name: 'Motor Current Diagnosis (MCSA)',
+    description: 'Live induction-motor fault status from stator current: healthy/fault indicator, fault confidence, and a likelihood gauge. Pair with an MCSA model endpoint.',
+    icon: 'mdi-flash',
+    color: '#42a5f5',
+    widgets: [
+      { type: 'widget.text_block', config: { content: '# Motor Current Diagnosis\nLive fault status from 3-phase stator current (MCSA).', heading_level: 'h1', alignment: 'left' }, layout: { x: 0, y: 0, w: 12, h: 2 } },
+      { type: 'widget.status_indicator', config: { label: 'Motor Status', source_field: 'label', state_map: '{"healthy":{"color":"success","label":"Healthy","icon":"mdi-check-circle"},"broken_bar":{"color":"error","label":"Broken Rotor Bar","icon":"mdi-alert"},"broken_rotor_bar":{"color":"error","label":"Broken Rotor Bar","icon":"mdi-alert"},"eccentricity":{"color":"error","label":"Eccentricity","icon":"mdi-alert"},"unbalance":{"color":"warning","label":"Unbalance","icon":"mdi-alert-outline"}}', default_state: '{"color":"grey","label":"No data","icon":"mdi-help-circle"}', data_source: '' }, layout: { x: 0, y: 2, w: 5, h: 4 } },
+      { type: 'widget.big_number', config: { label: 'Fault Confidence', source_field: 'confidence', unit: '%', decimal_places: 0, size: 'lg', thresholds: '[{"below": 50, "color": "success"}, {"below": 80, "color": "warning"}, {"above": 80, "color": "error"}]', data_source: '' }, layout: { x: 5, y: 2, w: 4, h: 4 } },
+      { type: 'widget.gauge', config: { label: 'Fault Likelihood', source_field: 'confidence', min: 0, max: 100, unit: '%', bands: '[{"from": 0, "to": 50, "color": "success"}, {"from": 50, "to": 80, "color": "warning"}, {"from": 80, "to": 100, "color": "error"}]', show_needle: true, data_source: '' }, layout: { x: 9, y: 2, w: 3, h: 4 } },
+    ],
+  },
+  {
     id: 'machine_health',
     name: 'Machine Health Overview',
     description: 'OEE + cycle time + state + reset button. The go-to dashboard for a single-machine operator view.',

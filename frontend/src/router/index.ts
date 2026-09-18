@@ -23,6 +23,36 @@ const router = createRouter({
       meta: { requiresAuth: true }
     },
     {
+      path: '/solutions',
+      name: 'solutions',
+      component: () => import('@/views/SolutionsView.vue'),
+      meta: { requiresAuth: true }
+    },
+    {
+      path: '/solutions/mcsa',
+      name: 'mcsa-solution',
+      component: () => import('@/views/solutions/MCSASolutionView.vue'),
+      meta: { requiresAuth: true }
+    },
+    {
+      path: '/solutions/vibration',
+      name: 'vibration-solution',
+      component: () => import('@/views/solutions/VibrationSolutionView.vue'),
+      meta: { requiresAuth: true }
+    },
+    {
+      path: '/solutions/pump',
+      name: 'pump-solution',
+      component: () => import('@/views/solutions/PumpSolutionView.vue'),
+      meta: { requiresAuth: true }
+    },
+    {
+      path: '/solutions/pump-fusion',
+      name: 'pump-fusion-solution',
+      component: () => import('@/views/solutions/PumpFusionSolutionView.vue'),
+      meta: { requiresAuth: true }
+    },
+    {
       path: '/pipeline',
       name: 'pipeline',
       redirect: { name: 'pipeline-data' },

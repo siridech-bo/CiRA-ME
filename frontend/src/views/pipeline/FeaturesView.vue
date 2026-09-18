@@ -103,6 +103,24 @@
                     <v-icon start size="small">mdi-atom</v-icon>
                     TSFresh Library (800+)
                   </v-btn>
+                  <v-tooltip
+                    v-if="fastMode"
+                    text="Physics-aware extractors need the server. Turn off Fast Mode to use them."
+                    location="top"
+                  >
+                    <template #activator="{ props: sp }">
+                      <div v-bind="sp">
+                        <v-btn value="solution" size="small" disabled>
+                          <v-icon start size="small">mdi-flash</v-icon>
+                          Physics-Aware
+                        </v-btn>
+                      </div>
+                    </template>
+                  </v-tooltip>
+                  <v-btn v-else value="solution" size="small">
+                    <v-icon start size="small">mdi-flash</v-icon>
+                    Physics-Aware
+                  </v-btn>
                 </v-btn-toggle>
               </div>
 
@@ -162,6 +180,74 @@
                     ~800 features per sensor - Full comprehensive extraction (may take longer)
                   </template>
                 </v-alert>
+              </div>
+
+              <!-- Physics-Aware (Solution) Mode — F8 registry extractor -->
+              <div v-else-if="extractionMode === 'solution'" class="mb-4">
+                <v-alert type="info" variant="tonal" density="compact" class="mb-4">
+                  <strong>Physics-aware extractor</strong> — turns each window into
+                  named, physically-meaningful features (e.g. MCSA broken-bar
+                  sidebands + slip). Runs on the server using the window's real
+                  sampling rate.
+                </v-alert>
+
+                <v-select
+                  v-model="selectedExtractorId"
+                  :items="availableExtractors"
+                  item-title="display_name"
+                  item-value="id"
+                  label="Extractor"
+                  density="compact"
+                  class="mb-3"
+                  :no-data-text="'No physics-aware extractors available'"
+                />
+
+                <template v-if="selectedExtractor">
+                  <p class="text-caption text-medium-emphasis mb-3">
+                    {{ selectedExtractor.description }}
+                  </p>
+
+                  <v-alert
+                    v-if="selectedExtractor.required_channels || selectedExtractor.min_sample_rate_hz"
+                    type="warning" variant="tonal" density="compact" class="mb-4"
+                  >
+                    Requires
+                    <template v-if="selectedExtractor.required_channels">{{ selectedExtractor.required_channels }} channels</template>
+                    <template v-if="selectedExtractor.required_channels && selectedExtractor.min_sample_rate_hz"> and </template>
+                    <template v-if="selectedExtractor.min_sample_rate_hz">sampling rate ≥ {{ selectedExtractor.min_sample_rate_hz }} Hz</template>.
+                  </v-alert>
+
+                  <v-row dense>
+                    <v-col
+                      v-for="p in selectedExtractor.param_schema"
+                      :key="p.name"
+                      cols="12" sm="6"
+                    >
+                      <v-switch
+                        v-if="p.type === 'bool'"
+                        v-model="extractorParams[p.name]"
+                        :label="p.label" color="primary" density="compact" hide-details
+                        :messages="p.help ? [p.help] : []"
+                      />
+                      <v-select
+                        v-else-if="p.choices"
+                        v-model="extractorParams[p.name]"
+                        :items="p.choices"
+                        :label="p.label + (p.unit ? ` (${p.unit})` : '')"
+                        density="compact" :messages="p.help ? [p.help] : []"
+                      />
+                      <v-text-field
+                        v-else
+                        v-model.number="extractorParams[p.name]"
+                        type="number"
+                        :label="p.label + (p.unit ? ` (${p.unit})` : '')"
+                        density="compact"
+                        :messages="p.help ? [p.help] : []"
+                        :placeholder="p.required ? '' : 'optional'"
+                      />
+                    </v-col>
+                  </v-row>
+                </template>
               </div>
 
               <!-- Lightweight Mode (Original) -->
@@ -1118,11 +1204,11 @@
             color="secondary"
             size="large"
             :loading="extracting && !activeJobId"
-            :disabled="(extractionMode === 'lightweight' && selectedFeatures.length === 0) || !!activeJobId"
-            @click="extractionMode === 'tsfresh' ? extractTSFreshFeatures() : extractFeatures()"
+            :disabled="(extractionMode === 'lightweight' && selectedFeatures.length === 0) || (extractionMode === 'solution' && !selectedExtractorId) || !!activeJobId"
+            @click="extractionMode === 'tsfresh' ? extractTSFreshFeatures() : (extractionMode === 'solution' ? extractSolutionFeatures() : extractFeatures())"
           >
-            <v-icon start>{{ extractionMode === 'tsfresh' ? 'mdi-atom' : 'mdi-lightning-bolt' }}</v-icon>
-            {{ extractionMode === 'tsfresh' ? 'Extract TSFresh Features' : 'Extract Features' }}
+            <v-icon start>{{ extractionMode === 'tsfresh' ? 'mdi-atom' : (extractionMode === 'solution' ? 'mdi-flash' : 'mdi-lightning-bolt') }}</v-icon>
+            {{ extractionMode === 'tsfresh' ? 'Extract TSFresh Features' : (extractionMode === 'solution' ? 'Extract Solution Features' : 'Extract Features') }}
           </v-btn>
           <div class="text-caption text-medium-emphasis mt-1" style="max-width: 320px; text-align: right;">
             <template v-if="fastMode">
@@ -1149,7 +1235,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue'
+import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { usePipelineStore } from '@/stores/pipeline'
 import { useNotificationStore } from '@/stores/notification'
@@ -1212,13 +1298,35 @@ const fastFeatureCount = computed(() => {
 })
 
 // Extraction mode
-const extractionMode = ref<'lightweight' | 'tsfresh'>('lightweight')
+const extractionMode = ref<'lightweight' | 'tsfresh' | 'solution'>('lightweight')
 const tsfreshFeatureSet = ref('efficient')
 const tsfreshFeatureSets = [
   { name: 'Minimal (~10 features/sensor)', value: 'minimal', description: 'Fast extraction with essential statistics only' },
   { name: 'Efficient (~100 features/sensor)', value: 'efficient', description: 'Balanced extraction without slow calculators' },
   { name: 'Comprehensive (~800 features/sensor)', value: 'comprehensive', description: 'Full tsfresh extraction with all features' }
 ]
+
+// F8 Solutions — physics-aware registry extractors (e.g. MCSA). Each turns a
+// whole multi-channel window into named, physically-meaningful features.
+const availableExtractors = ref<any[]>([])
+const selectedExtractorId = ref<string>('')
+const extractorParams = reactive<Record<string, any>>({})
+const selectedExtractor = computed(
+  () => availableExtractors.value.find((e) => e.id === selectedExtractorId.value) || null,
+)
+async function loadExtractors() {
+  try {
+    const resp = await api.get('/api/solutions/extractors')
+    // Hide the generic 'raw_stats' reference extractor from the picker.
+    availableExtractors.value = (resp.data.extractors || []).filter((e: any) => e.id !== 'raw_stats')
+  } catch { /* extractors are optional; ignore if endpoint unavailable */ }
+}
+// When the chosen extractor changes, reset its param form to schema defaults.
+watch(selectedExtractorId, () => {
+  Object.keys(extractorParams).forEach((k) => delete extractorParams[k])
+  const ext = selectedExtractor.value
+  if (ext) for (const p of ext.param_schema) extractorParams[p.name] = p.default
+})
 
 const searchQuery = ref('')
 // Filter: show only features that can run in the browser worker.
@@ -1843,6 +1951,51 @@ async function extractTSFreshFeatures() {
   }
 }
 
+// F8 Solutions — extract with a physics-aware registry extractor (e.g. MCSA).
+// Sends the whole window + nameplate params to /extract-solution; the backend
+// reads the real sampling rate from the windowed session.
+async function extractSolutionFeatures() {
+  if (!pipelineStore.windowedSession) {
+    notificationStore.showError('No windowed data available')
+    return
+  }
+  if (!selectedExtractorId.value) {
+    notificationStore.showError('Select a physics-aware extractor first')
+    return
+  }
+
+  extracting.value = true
+  try {
+    const response = await api.post('/api/features/extract-solution', {
+      session_id: pipelineStore.windowedSession.session_id,
+      extractor_id: selectedExtractorId.value,
+      params: { ...extractorParams },
+      project_id: pipelineStore.projectId || undefined,
+    })
+
+    extractionResult.value = response.data
+    pipelineStore.featureSession = response.data
+    pipelineStore.setExtractionResult({
+      session_id: response.data.session_id,
+      num_features: response.data.num_features,
+      num_windows: response.data.num_windows,
+      feature_set: response.data.extractor_id,
+      extractor_id: response.data.extractor_id,
+      extractor_params: { ...extractorParams },
+    })
+
+    let msg = `${selectedExtractor.value?.display_name || 'Extractor'}: ${response.data.num_features} features`
+    if (response.data.windows_failed) msg += ` (${response.data.windows_failed} window(s) skipped)`
+    notificationStore.showSuccess(msg)
+    await fetchFeaturePreview()
+    activeTab.value = 'select'
+  } catch (e: any) {
+    notificationStore.showError(e.response?.data?.error || 'Solution extraction failed')
+  } finally {
+    extracting.value = false
+  }
+}
+
 async function runFeatureSelection() {
   if (!extractionResult.value?.session_id) return
 
@@ -2091,10 +2244,20 @@ onMounted(async () => {
     selectedFeatures.value = ['mean', 'std', 'rms', 'kurtosis', 'spectral_entropy']
   }
 
+  // Load physics-aware extractors for the Solution mode (F8).
+  await loadExtractors()
+
   // Restore state from pipeline store when coming back
   const storedState = pipelineStore.featureSelectionState
   if (storedState.extractionResult) {
     extractionResult.value = storedState.extractionResult
+    // Restore a previously-chosen Solution extractor + its nameplate params.
+    if (storedState.extractionResult.extractor_id) {
+      extractionMode.value = 'solution'
+      selectedExtractorId.value = storedState.extractionResult.extractor_id
+      const savedParams = storedState.extractionResult.extractor_params || {}
+      Object.keys(savedParams).forEach((k) => { extractorParams[k] = savedParams[k] })
+    }
     await fetchFeaturePreview()
   }
   if (storedState.selectionResult) {

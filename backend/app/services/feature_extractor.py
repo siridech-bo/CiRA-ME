@@ -226,6 +226,8 @@ class FeatureExtractor:
         method: str = 'lightweight',
         feature_set: str = 'efficient',
         sampling_rate: float = 100.0,
+        extractor_id: Optional[str] = None,
+        extractor_params: Optional[Dict[str, Any]] = None,
     ) -> pd.DataFrame:
         """
         Extract features directly from numpy windows array (no session lookup).
@@ -237,10 +239,35 @@ class FeatureExtractor:
             method: 'lightweight' or 'tsfresh'
             feature_set: tsfresh feature set level (if method='tsfresh')
             sampling_rate: sampling rate for frequency analysis
+            extractor_id: F8 registry extractor id (e.g. 'mcsa'). When set (or
+                method == 'registry'), the physics-aware registry extractor runs
+                instead of tsfresh/DSP — this is what lets a deployed MCSA model
+                extract its features at inference time.
+            extractor_params: validated params for the registry extractor.
 
         Returns:
             DataFrame with feature columns, one row per window
         """
+        # F8 — physics-aware registry extractor path (e.g. MCSA at inference).
+        if extractor_id or method == 'registry':
+            from .extractors import registry
+            ext = registry.get(extractor_id)
+            if ext is None:
+                raise ValueError(f"Unknown registry extractor: {extractor_id!r}")
+            params = ext.validate_params(extractor_params or {})
+            rows: List[Dict[str, float]] = []
+            names: List[str] = []
+            for w in windows:
+                try:
+                    feats = ext.run(np.asarray(w, dtype=float), float(sampling_rate), params)
+                    if not names:
+                        names = list(feats.keys())
+                except Exception:
+                    feats = {n: 0.0 for n in names}
+                rows.append(feats)
+            df = pd.DataFrame(rows).reindex(columns=names)
+            return df.replace([np.inf, -np.inf], 0.0).fillna(0.0)
+
         num_windows = len(windows)
         all_features = []
         feature_names = []
@@ -442,6 +469,112 @@ class FeatureExtractor:
             'num_features': len(feature_names),
             'feature_names': feature_names,
             'preview': features_df.head(5).to_dict(orient='records')
+        }
+
+    def extract_with_registry(
+        self,
+        session_id: str,
+        extractor_id: str,
+        params: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Extract features using a physics-aware extractor from the pluggable
+        registry (F8 Solutions Catalog — e.g. 'mcsa').
+
+        Unlike the tsfresh/DSP path, a registry extractor consumes the WHOLE
+        multi-channel window at once (not per-channel), takes physically
+        meaningful `params` (nameplate fields), and needs the REAL sampling
+        rate (read from the windowed session metadata, not the 100 Hz default).
+
+        Produces the same `_feature_sessions` entry shape as `extract()` so all
+        downstream steps (selection, training, ME-LAB) work unchanged.
+        """
+        from .extractors import registry
+
+        ext = registry.get(extractor_id)
+        if ext is None:
+            raise ValueError(f"Unknown feature extractor: {extractor_id!r}")
+
+        session = _data_sessions.get(session_id)
+        if not session:
+            raise ValueError(f"Session not found: {session_id}")
+        if 'windows' not in session:
+            raise ValueError("Session does not contain windowed data. Apply windowing first.")
+
+        windows = session['windows']
+        labels = session.get('labels')
+        categories = session.get('categories')
+        metadata = session['metadata']
+        fs = float(metadata.get('sampling_rate', 100.0))
+        params = ext.validate_params(params or {})
+
+        # Fail fast with a clear, user-facing message if the signal can't
+        # support this extractor (wrong channel count / too-low sample rate),
+        # rather than erroring on every window opaquely.
+        first = np.asarray(windows[0], dtype=float)
+        try:
+            ext.check_signal(first, fs)
+        except ValueError as e:
+            raise ValueError(f"{ext.display_name}: {e}")
+
+        num_windows = len(windows)
+        logger.info(
+            f"[registry:{extractor_id}] extracting from {num_windows} windows "
+            f"@ {fs} Hz, params={params}"
+        )
+
+        all_features: List[Dict[str, float]] = []
+        feature_names: List[str] = []
+        n_failed = 0
+        for window in windows:
+            try:
+                feats = ext.run(np.asarray(window, dtype=float), fs, params)
+                if not feature_names:
+                    feature_names = list(feats.keys())
+            except Exception as e:  # noqa: BLE001 — one bad window must not sink the run
+                n_failed += 1
+                feats = {name: 0.0 for name in feature_names}
+                if n_failed == 1:
+                    logger.warning(f"[registry:{extractor_id}] a window failed: {e}")
+            all_features.append(feats)
+
+        if not feature_names:
+            raise ValueError(
+                f"{ext.display_name} produced no features — every window failed. "
+                "Check the sampling rate and channel count match the extractor's needs."
+            )
+
+        # Backfill rows that failed before feature_names was known.
+        features_df = pd.DataFrame(all_features).reindex(columns=feature_names)
+        features_df = features_df.replace([np.inf, -np.inf], 0.0).fillna(0.0)
+
+        feature_session_id = f"features_{session_id}"
+        _feature_sessions[feature_session_id] = {
+            'features': features_df,
+            'labels': labels,
+            'categories': categories,
+            'feature_names': feature_names,
+            'metadata': {
+                **metadata,
+                'num_features': len(feature_names),
+                'feature_set': extractor_id,
+                'extractor_id': extractor_id,
+                'extractor_params': params,
+                'sampling_rate': fs,
+            },
+            'created_at': time.monotonic(),
+        }
+
+        if n_failed:
+            logger.warning(f"[registry:{extractor_id}] {n_failed}/{num_windows} windows failed")
+
+        return {
+            'session_id': feature_session_id,
+            'num_windows': int(num_windows),
+            'num_features': len(feature_names),
+            'feature_names': feature_names,
+            'windows_failed': n_failed,
+            'extractor_id': extractor_id,
+            'preview': features_df.head(5).to_dict(orient='records'),
         }
 
     def extract_tsfresh(

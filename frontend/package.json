@@ -21,6 +21,8 @@
     "@mdi/font": "^7.4.47",
     "axios": "^1.6.2",
     "chart.js": "^4.4.1",
+    "chartjs-plugin-annotation": "^3.0.1",
+    "chartjs-plugin-zoom": "^2.0.1",
     "codemirror": "^6.0.2",
     "grid-layout-plus": "^1.1.1",
     "mqtt": "^5.15.1",
