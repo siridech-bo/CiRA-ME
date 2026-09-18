@@ -1498,17 +1498,26 @@ class AppBuilderApp:
 
     @staticmethod
     def create(user_id, name='Untitled App', nodes=None, edges=None, access='private'):
+        # Phase K polish (2026-09-18): new apps default to client_inference=1.
+        # The column default is 0 (from the original migration) but every
+        # ONNX-eligible model produces sub-ms browser predictions vs.
+        # ~50-100 ms server round-trips, and models WITHOUT ONNX just fall
+        # back to server anyway. Auditing prod found 30 published apps
+        # stuck server-side unnecessarily, causing the App-Builder-inference
+        # slowdown customers reported. Users can still turn it off from
+        # the editor if they want server-side for auditability etc.
         import json
         with get_db() as conn:
             cursor = conn.cursor()
             cursor.execute('''
-                INSERT INTO app_builder_apps (user_id, name, nodes, edges, access, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO app_builder_apps (user_id, name, nodes, edges, access, client_inference, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
             ''', (
                 user_id, name,
                 json.dumps(nodes or []),
                 json.dumps(edges or []),
                 access,
+                1,
                 datetime.utcnow().isoformat()
             ))
             conn.commit()
