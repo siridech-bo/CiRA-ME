@@ -86,7 +86,13 @@
       </v-card-text>
     </v-card>
 
-    <div class="d-flex justify-end mb-6">
+    <div class="d-flex justify-end align-center ga-4 mb-6">
+      <v-chip v-if="solutionRun.isBusy.value" color="info" variant="tonal">
+        <v-icon start size="small">
+          {{ solutionRun.status.value === 'queued' ? 'mdi-clock-outline' : 'mdi-loading mdi-spin' }}
+        </v-icon>
+        {{ solutionRun.progressText.value }}
+      </v-chip>
       <v-btn color="primary" size="large" :loading="running" :disabled="!canAnalyze" @click="analyze"><v-icon start>mdi-play</v-icon> Analyze</v-btn>
     </div>
 
@@ -188,6 +194,7 @@ import SignalChart from '@/components/SignalChart.vue'
 import PumpDiagram from '@/components/PumpDiagram.vue'
 import { useNotificationStore } from '@/stores/notification'
 import { usePipelineStore } from '@/stores/pipeline'
+import { useSolutionRun } from '@/composables/useSolutionRun'
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend, zoomPlugin, annotationPlugin)
 const notify = useNotificationStore()
@@ -250,22 +257,24 @@ async function pickFile(item: any) {
   } catch (e: any) { notify.showError(e.response?.data?.error || 'Failed to load file') }
 }
 
-const running = ref(false)
+const solutionRun = useSolutionRun('/api/solutions/pump-fusion/run')
+const running = computed(() => solutionRun.isBusy.value)
 const result = ref<any>(null)
 const canAnalyze = computed(() => !!loaded.value?.session_id && !!vibChannel.value && currentChannels.value.length === 3 && sampling_rate.value > 0)
 async function analyze() {
-  running.value = true; result.value = null
+  result.value = null
   try {
     const selected = [vibChannel.value as string, ...currentChannels.value]   // [vib, Ia, Ib, Ic]
-    const resp = await api.post('/api/solutions/pump-fusion/run', {
+    const runResult: any = await solutionRun.run({
       data_session_id: loaded.value.session_id, sampling_rate: sampling_rate.value, window_s: window_s.value,
       overlap: overlap.value, approach: approach.value, algorithm: algorithm.value,
       selected_columns: selected, params: { ...params }, project_id: pipeline.projectId || undefined,
     })
-    result.value = resp.data; selectedPreview.value = 0
-    notify.showSuccess(`Analysis complete — ${resp.data.num_windows} windows.`)
-  } catch (e: any) { notify.showError(e.response?.data?.error || 'Analysis failed') }
-  finally { running.value = false }
+    result.value = runResult; selectedPreview.value = 0
+    notify.showSuccess(`Analysis complete — ${runResult.num_windows} windows.`)
+  } catch (e: any) {
+    notify.showError(e?.message || e.response?.data?.error || 'Analysis failed')
+  }
 }
 
 const selectedPreview = ref(0)

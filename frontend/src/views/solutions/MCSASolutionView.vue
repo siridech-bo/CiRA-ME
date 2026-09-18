@@ -155,7 +155,13 @@
     </v-card>
 
     <!-- Analyze -->
-    <div class="d-flex justify-end mb-6">
+    <div class="d-flex justify-end align-center ga-4 mb-6">
+      <v-chip v-if="solutionRun.isBusy.value" color="info" variant="tonal">
+        <v-icon start size="small">
+          {{ solutionRun.status.value === 'queued' ? 'mdi-clock-outline' : 'mdi-loading mdi-spin' }}
+        </v-icon>
+        {{ solutionRun.progressText.value }}
+      </v-chip>
       <v-btn color="primary" size="large" :loading="running"
         :disabled="!canAnalyze" @click="analyze">
         <v-icon start>mdi-play</v-icon> Analyze
@@ -381,6 +387,7 @@ import SignalChart from '@/components/SignalChart.vue'
 import MotorCurrentDiagram from '@/components/MotorCurrentDiagram.vue'
 import { useNotificationStore } from '@/stores/notification'
 import { usePipelineStore } from '@/stores/pipeline'
+import { useSolutionRun } from '@/composables/useSolutionRun'
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend, zoomPlugin, annotationPlugin)
 
@@ -486,8 +493,9 @@ async function pickFile(item: any) {
   }
 }
 
-// ── Analyze ──
-const running = ref(false)
+// ── Analyze (queued via /api/solutions/mcsa/run — see useSolutionRun) ──
+const solutionRun = useSolutionRun('/api/solutions/mcsa/run')
+const running = computed(() => solutionRun.isBusy.value)
 const result = ref<any>(null)
 
 const canAnalyze = computed(() =>
@@ -498,7 +506,6 @@ const canAnalyze = computed(() =>
 )
 
 async function analyze() {
-  running.value = true
   result.value = null
   try {
     const params: Record<string, any> = {
@@ -511,7 +518,7 @@ async function analyze() {
     if (form.rotor_bars) params.rotor_bars = form.rotor_bars
     if (form.rated_rpm) params.rated_rpm = form.rated_rpm
 
-    const resp = await api.post('/api/solutions/mcsa/run', {
+    const runResult: any = await solutionRun.run({
       data_session_id: loaded.value.session_id,
       sampling_rate: form.sampling_rate,
       window_s: form.window_s,
@@ -522,14 +529,12 @@ async function analyze() {
       params,
       project_id: pipeline.projectId || undefined,
     })
-    result.value = resp.data
+    result.value = runResult
     selectedPreview.value = 0
-    const mode = resp.data.mode === 'classification' ? 'classifier' : 'anomaly baseline'
-    notify.showSuccess(`Analysis complete — trained ${mode} on ${resp.data.num_windows} windows.`)
+    const mode = runResult.mode === 'classification' ? 'classifier' : 'anomaly baseline'
+    notify.showSuccess(`Analysis complete — trained ${mode} on ${runResult.num_windows} windows.`)
   } catch (e: any) {
-    notify.showError(e.response?.data?.error || 'Analysis failed')
-  } finally {
-    running.value = false
+    notify.showError(e?.message || e.response?.data?.error || 'Analysis failed')
   }
 }
 
