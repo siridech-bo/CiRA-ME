@@ -102,7 +102,10 @@ _MACHINE_VIBRATION = Solution(
         'Bearing characteristic frequencies (BPFO/BPFI/BSF/FTF) via envelope '
         'analysis and kurtogram-selected demodulation.'
     ),
-    data_profile={'channels': 1, 'sample_rate_hz': 25600.0, 'unit': 'g'},
+    # 2026-09-18: aligned with bearing_healthy.csv demo (CWRU-style DE+FE rig
+    # at 12 kHz). Extractor's floor is 5 kHz; higher rates like 25.6 kHz work
+    # too but the shipped demo is 12 kHz.
+    data_profile={'channels': 2, 'sample_rate_hz': 12000.0, 'unit': 'g'},
     windowing={'window_s': 1.0},
     feature_extractor='bearing_envelope',               # Phase 2
     models={'default': 'iforest', 'advanced': 'xgb'},
